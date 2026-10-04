@@ -115,7 +115,26 @@ src/
 * インメモリキャッシュ（`cacheRef`）により、一度取得したページは再マウント時でも 0ms で描画。
 * スクロールにより世代番号が進んだ場合でも、受信したページデータは安全にキャッシュに格納され、無条件で `setVersionTick` を発行してスケルトン固まりを防止。
 
-### 2.4 ムードボードと共通メタデータ設計 (`MoodboardCanvas.tsx`, `ImageDetailPanel.tsx`, `imageMetadata.ts`)
+### 2.4 タイムライン複数選択とラバーバンドドラッグ選択設計 (`VirtualTimeline.tsx`, `GridCell.tsx`)
+* **グローバル選択状態管理 (`store/index.ts`)**:
+  * `selectedImageIds: number[]` を Zustand ストアで一元管理。
+  * `toggleSelectImageId(id)`: 個別選択のトグル。
+  * `setSelectedImageIds(ids)`: 範囲選択や全選択時の一括更新。
+  * `clearSelectedImageIds()`: 一括選択解除。
+* **仮想スクロール環境下での AABB 矩形交差判定**:
+  * グリッド背景のドラッグ開始時（ドラッグ距離 > 6px）にラバーバンド選択モードへ移行。
+  * ドラッグ開始点 $(x_1, y_1)$ と現在点 $(x_2, y_2)$ から選択矩形 $B = [\min(x_1, x_2), \max(x_1, x_2)] \times [\min(y_1, y_2), \max(y_1, y_2)]$ を算出。
+  * 画面内に仮想マウントされている全画像セル（`[data-grid-cell="true"]`）の `getBoundingClientRect()` と $B$ との交差（Axis-Aligned Bounding Box Intersection）を高速判定し、交差した全画像の `data-image-id` を即座に `selectedImageIds` に反映。
+* **操作性と安全ガード**:
+  * スクラブバー、ツールバー、各種ボタン、モーダル上のクリックを `target.closest` によりドラッグ選択開始から除外。
+  * グローバル `window.addEventListener("mouseup")` リスナーにより、ウィンドウ外やスクロールバー上でマウスを離した場合でも確実にドラッグ状態を解除。
+  * `Esc` キー押下で即座に全選択解除、`Ctrl + A` で現在読み込み済みの全画像を全選択。
+  * 選択中セルは青枠＋シャドウ＋半透明ブルーオーバーレイ＋左上チェックバッジで強調。未選択セルもホバー時に薄いチェックバッジを表示して選択可能性を明示。
+* **一括アクションバー＆ツールバー連携**:
+  * 1枚以上選択されている場合、タイムライン最上部に「○枚選択中」「➕ ムードボードに登録」「✕ 選択解除」の固定バーを表示。
+  * ツールバー右側の「ボードに追加」ボタンも「ボードに追加 (○枚)」へと動的に切り替わり、既存の `AddToBoardModal` へ選択配列をシームレスに引き渡し。
+
+### 2.5 ムードボードと共通メタデータ設計 (`MoodboardCanvas.tsx`, `ImageDetailPanel.tsx`, `imageMetadata.ts`)
 * **画像アイテムとテキストメモ矩形のハイブリッド描画**:
   * ムードボード上には、写真画像アイテム（`BoardItem`）とテキスト付箋メモ（`BoardNote`）が混在配置可能。
   * 共通の `z_index` を用いて、画像の上にメモを置いたり、メモの下に画像を潜り込ませる自然なコラージュ制御を実現。
@@ -125,6 +144,22 @@ src/
   * React の非同期ステートやクロージャ依存による移動先座標・対象IDの取りこぼしを防ぐため、ドラッグ中・リサイズ中の最新座標（`currentNotePosRef`）および対象ID（`draggingNoteIdRef`）を `useRef` でリアルタイム同期。
   * ウィンドウ外や他UI要素上でマウスボタンを離した場合のドラッグ残留（マウス追従）を根絶するため、グローバルな `window.addEventListener("mouseup")` 安全ガードリスナーを装備。
   * テキスト入力中の誤ドラッグ防止（`stopPropagation`）およびブラウザ標準テキスト選択との競合防止制御を実装。
+* **自動並び替え（Row-based Flow Packing）アルゴリズム (`handleAutoArrange`)**:
+  * **手動実行トリガー**: ユーザーが意図して重ねたりレイアウトした配置を勝手に破壊しないよう、上部コントロールバーの「📐 自動並び替え」ボタンからのみ明示的に実行。
+  * **実占有サイズの算出**:
+    * 各画像アイテムの幅・高さ: $W_i = \text{item.width} \times \text{item.scale}$, $H_i = \text{item.height} \times \text{item.scale}$
+    * 各付箋メモの幅・高さ: $W_n = \text{note.width}$, $H_n = \text{note.height}$
+  * **行ベース・フロー配置**:
+    * アイテム間隔（マージン）を $M = 28\text{px}$、行の最大幅ターゲットを $W_{\max} = 1800\text{px}$ と設定。
+    * アイテムを左から右へ順に並べ、現在の行幅 $+ W_k + M > W_{\max}$ となった場合に次行へ折り返し。
+    * 行内の最大高さ $\max(H_{\text{row}})$ にマージンを加算して次の行の Y 座標とし、すべての要素同士の重複（被り）を幾何学的に 100% 排除。
+    * 矩形の角の衝突や視認性低下を防ぐため、整列時に回転角（`rotation`）を 0° にリセット。
+  * **カメラの自動追従 (Zoom to Fit)**:
+    * 全整列要素の外接矩形 $[\min X, \max X] \times [\min Y, \max Y]$ を計算。
+    * キャンバスの表示領域（幅 $W_c$, 高さ $H_c$）と外接矩形寸法を比較し、全体が画面にすっぽり収まる最適なズーム率 $Z = \text{clamp}(0.9 \times \min(W_c / W_{\text{all}}, H_c / H_{\text{all}}), 0.2, 1.0)$ を算出。
+    * ビューポート中央に配置されるパン座標 $(P_x, P_y)$ を設定し、整列直後に全体像を美しく俯瞰可能。
+  * **非同期一括永続化**:
+    * 整列後の新座標を `backendApi.updateBoardItem` および `backendApi.updateBoardNote` により SQLite DB へ一括永続化。
 * **共通詳細情報パネル連携 (`ImageDetailPanel`)**:
   * タイムラインのビューアモーダルとムードボードのキャンバス右下で全く同一のコンポーネントを利用し、UI/UX の一貫性を担保。
   * 選択中画像の詳細をキーボードショートカット `I` またはアクションバーの「詳細情報」ボタンで即座に展開・格納。
@@ -300,7 +335,25 @@ CREATE TABLE board_notes (
 CREATE INDEX idx_board_notes_board_id ON board_notes(board_id);
 ```
 
-#### ⑥ `thumbnails` (サムネイル専用BLOBストア: `%LOCALAPPDATA%/.../cache/thumbnails.db`)
+#### ⑥ `bookmarks` (タイムラインしおり: マイグレーション v6)
+```sql
+CREATE TABLE bookmarks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    folder_id INTEGER REFERENCES watched_folders(id) ON DELETE SET NULL,
+    folder_name TEXT,
+    sort TEXT NOT NULL,
+    scroll_top REAL NOT NULL,
+    row_index INTEGER NOT NULL,
+    image_index INTEGER,
+    day_label TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_bookmarks_created ON bookmarks(created_at DESC);
+```
+
+#### ⑦ `thumbnails` (サムネイル専用BLOBストア: `%LOCALAPPDATA%/.../cache/thumbnails.db`)
 ```sql
 CREATE TABLE thumbnails (
     quick_hash  TEXT PRIMARY KEY,       -- BLAKE3 サンプリングハッシュ

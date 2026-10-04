@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { usePagedImages } from "../../hooks/usePagedImages";
 import { useScrollVelocity } from "../../hooks/useScrollVelocity";
@@ -7,13 +7,14 @@ import { useViewportPrioritizer } from "../../hooks/useViewportPrioritizer";
 import { useAppStore } from "../../store";
 import { DateHeader } from "./DateHeader";
 import { GridCell } from "./GridCell";
-import { Image } from "lucide-react";
+import { CheckSquare, Image, LayoutGrid, X } from "lucide-react";
 import { TimelineScrubber } from "./TimelineScrubber";
 
 /**
  * タイムライングリッドの仮想スクロール表示コンポーネント
  *
- * 変更理由: 仕様書§8.1およびユーザー要求（Ctrl+ホイール拡大縮小、矢印キーによる選択移動、Enterでのオープン）の実装。
+ * 変更理由: 仕様書§8.1およびユーザー要求（Ctrl+ホイール拡大縮小、矢印キーによる選択移動、Enterでのオープン、
+ * マウスドラッグ矩形選択およびCtrl+クリックによる複数選択、上部ムードボード一括登録アクションバー）の実装。
  */
 export const VirtualTimeline: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -25,12 +26,27 @@ export const VirtualTimeline: React.FC = () => {
   const totalImages = useAppStore((state) => state.totalImages);
   const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
   const setSelectedCellIndex = useAppStore((state) => state.setSelectedCellIndex);
+  const selectedImageIds = useAppStore((state) => state.selectedImageIds);
+  const setSelectedImageIds = useAppStore((state) => state.setSelectedImageIds);
+  const clearSelectedImageIds = useAppStore((state) => state.clearSelectedImageIds);
+  const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
   const openViewer = useAppStore((state) => state.openViewer);
   const isViewerOpen = useAppStore((state) => state.isViewerOpen);
   const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
   const refreshTimeline = useAppStore((state) => state.refreshTimeline);
   const targetScroll = useAppStore((state) => state.targetScroll);
   const setCurrentVisibleInfo = useAppStore((state) => state.setCurrentVisibleInfo);
+
+  // ドラッグ矩形選択（ラバーバンド選択）用のステートとRef
+  const [selectionBox, setSelectionBox] = useState<{
+    startX: number;
+    startY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
+  const isSelectingRef = useRef(false);
+  const dragStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const initialSelectedIdsRef = useRef<number[]>([]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -144,11 +160,135 @@ export const VirtualTimeline: React.FC = () => {
     });
   }, [virtualItems, rows, setCurrentVisibleInfo]);
 
-  // 矢印キー（↑↓←→）によるセル選択とEnter/Spaceによるビューア起動
+  // マウスドラッグ矩形選択（ラバーバンド選択）
+  const handleTimelineMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.button !== 0 || isViewerOpen) return;
+      const target = e.target as HTMLElement;
+      // スクラブバーやボタンなどのクリックはドラッグ矩形選択から除外
+      if (
+        target.closest("[data-scrubber='true']") ||
+        target.closest("button") ||
+        target.closest("select") ||
+        target.closest("input")
+      ) {
+        return;
+      }
+
+      dragStartPosRef.current = { x: e.clientX, y: e.clientY };
+      isSelectingRef.current = false;
+      initialSelectedIdsRef.current = e.ctrlKey || e.metaKey ? [...selectedImageIds] : [];
+    },
+    [isViewerOpen, selectedImageIds]
+  );
+
+  const handleTimelineMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (!dragStartPosRef.current || isViewerOpen) return;
+
+      const dx = e.clientX - dragStartPosRef.current.x;
+      const dy = e.clientY - dragStartPosRef.current.y;
+      const dist = Math.hypot(dx, dy);
+
+      // 6px以上移動した時点でドラッグ矩形選択モードへ突入
+      if (!isSelectingRef.current && dist > 6) {
+        isSelectingRef.current = true;
+      }
+
+      if (isSelectingRef.current) {
+        const startX = dragStartPosRef.current.x;
+        const startY = dragStartPosRef.current.y;
+        const currentX = e.clientX;
+        const currentY = e.clientY;
+
+        setSelectionBox({ startX, startY, currentX, currentY });
+
+        const boxLeft = Math.min(startX, currentX);
+        const boxRight = Math.max(startX, currentX);
+        const boxTop = Math.min(startY, currentY);
+        const boxBottom = Math.max(startY, currentY);
+
+        if (containerRef.current) {
+          const cells = containerRef.current.querySelectorAll<HTMLElement>("[data-grid-cell='true']");
+          const intersectedIds: number[] = [];
+
+          cells.forEach((cell) => {
+            const rect = cell.getBoundingClientRect();
+            // AABB矩形交差判定
+            const intersects = !(
+              rect.right < boxLeft ||
+              rect.left > boxRight ||
+              rect.bottom < boxTop ||
+              rect.top > boxBottom
+            );
+
+            if (intersects) {
+              const imageIdStr = cell.dataset.imageId;
+              if (imageIdStr) {
+                const id = Number(imageIdStr);
+                if (!isNaN(id)) {
+                  intersectedIds.push(id);
+                }
+              }
+            }
+          });
+
+          const combined = Array.from(
+            new Set([...initialSelectedIdsRef.current, ...intersectedIds])
+          );
+          setSelectedImageIds(combined);
+        }
+      }
+    },
+    [isViewerOpen, setSelectedImageIds]
+  );
+
+  const handleTimelineMouseUp = useCallback(() => {
+    isSelectingRef.current = false;
+    dragStartPosRef.current = null;
+    setSelectionBox(null);
+  }, []);
+
+  // グローバルなマウスアップ安全ガード
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      if (dragStartPosRef.current || isSelectingRef.current) {
+        handleTimelineMouseUp();
+      }
+    };
+
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => window.removeEventListener("mouseup", handleGlobalMouseUp);
+  }, [handleTimelineMouseUp]);
+
+  // 矢印キー（↑↓←→）によるセル選択とEnter/Spaceによるビューア起動、Escでの選択解除
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (isViewerOpen || totalImages === 0) return;
       if (["INPUT", "TEXTAREA", "SELECT"].includes((e.target as HTMLElement).tagName)) return;
+
+      // Escキーで複数選択を解除
+      if (e.key === "Escape") {
+        if (selectedImageIds.length > 0) {
+          e.preventDefault();
+          clearSelectedImageIds();
+          return;
+        }
+      }
+
+      // Ctrl + A ですべて選択（現在ロード済み画像、または最大500件）
+      if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        const allLoadedIds: number[] = [];
+        for (let i = 0; i < totalImages; i++) {
+          const rec = getImageByIndex(i);
+          if (rec) allLoadedIds.push(rec.id);
+        }
+        if (allLoadedIds.length > 0) {
+          setSelectedImageIds(allLoadedIds);
+        }
+        return;
+      }
 
       let nextIndex = selectedCellIndex;
 
@@ -206,11 +346,15 @@ export const VirtualTimeline: React.FC = () => {
       isViewerOpen,
       totalImages,
       selectedCellIndex,
+      selectedImageIds,
       columns,
       getImageByIndex,
       openViewer,
       setSelectedCellIndex,
+      setSelectedImageIds,
+      clearSelectedImageIds,
       scrollToCell,
+      refreshTimeline,
     ]
   );
 
@@ -230,10 +374,65 @@ export const VirtualTimeline: React.FC = () => {
 
   return (
     <div className="flex-1 relative h-full overflow-hidden flex flex-col">
+      {/* 画面上部の複数選択アクションバー（選択中のみ表示） */}
+      {selectedImageIds.length > 0 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-accent/60 shadow-2xl animate-in fade-in slide-in-from-top-3">
+          <div className="flex items-center gap-2">
+            <CheckSquare className="w-4 h-4 text-accent" />
+            <span className="font-semibold text-xs text-textPrimary whitespace-nowrap">
+              {selectedImageIds.length} 枚選択中
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-border/50" />
+
+          {/* ムードボード登録ボタン */}
+          <button
+            onClick={() => openAddToBoardModal(selectedImageIds)}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium shadow-md shadow-accent/25 transition cursor-pointer active:scale-95 whitespace-nowrap"
+            title="選択したすべての画像をムードボードに一括登録"
+          >
+            <LayoutGrid className="w-3.5 h-3.5" />
+            ムードボードに登録
+          </button>
+
+          <div className="h-4 w-px bg-border/50" />
+
+          {/* 選択解除ボタン */}
+          <button
+            onClick={clearSelectedImageIds}
+            className="flex items-center gap-1 text-xs text-textSecondary hover:text-textPrimary px-2 py-1 rounded hover:bg-surfaceLight/50 transition cursor-pointer whitespace-nowrap"
+            title="選択を解除 (Esc)"
+          >
+            <X className="w-3.5 h-3.5" />
+            選択解除
+          </button>
+        </div>
+      )}
+
+      {/* ドラッグ矩形選択（ラバーバンド）ボックス描画 */}
+      {selectionBox && (
+        <div
+          style={{
+            position: "fixed",
+            left: Math.min(selectionBox.startX, selectionBox.currentX),
+            top: Math.min(selectionBox.startY, selectionBox.currentY),
+            width: Math.abs(selectionBox.currentX - selectionBox.startX),
+            height: Math.abs(selectionBox.currentY - selectionBox.startY),
+            pointerEvents: "none",
+            zIndex: 9999,
+          }}
+          className="border-2 border-accent bg-accent/20 rounded shadow-md pointer-events-none"
+        />
+      )}
+
       <div
         ref={containerRef}
         tabIndex={0}
         onKeyDown={handleKeyDown}
+        onMouseDown={handleTimelineMouseDown}
+        onMouseMove={handleTimelineMouseMove}
+        onMouseUp={handleTimelineMouseUp}
         className="flex-1 overflow-y-auto overflow-x-hidden relative h-full bg-background select-none outline-none focus:ring-1 focus:ring-accent/40"
       >
         <div

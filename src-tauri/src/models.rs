@@ -435,6 +435,50 @@ pub struct UpdateBoardNotePayload {
     pub is_locked: Option<bool>,
 }
 
+/// タイムラインしおり（ブックマーク）レコード
+///
+/// 変更理由: 閲覧位置（日付、通し番号、スクロール位置、フォルダ、ソート順）をDBに永続化するため
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct BookmarkRecord {
+    pub id: String,
+    pub title: String,
+    #[ts(type = "number | null")]
+    pub folder_id: Option<i64>,
+    pub folder_name: Option<String>,
+    pub sort: String,
+    pub scroll_top: f64,
+    #[ts(type = "number")]
+    pub row_index: i32,
+    #[ts(type = "number | null")]
+    pub image_index: Option<i64>,
+    pub day_label: String,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+/// しおり作成ペイロード
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct CreateBookmarkPayload {
+    pub id: Option<String>,
+    pub title: String,
+    #[ts(type = "number | null")]
+    pub folder_id: Option<i64>,
+    pub folder_name: Option<String>,
+    pub sort: String,
+    pub scroll_top: f64,
+    #[ts(type = "number")]
+    pub row_index: i32,
+    #[ts(type = "number | null")]
+    pub image_index: Option<i64>,
+    pub day_label: String,
+    #[ts(type = "number | null")]
+    pub created_at: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +498,12 @@ mod tests {
         BoardNote::export().expect("Failed to export BoardNote bindings");
         CreateBoardNotePayload::export().expect("Failed to export CreateBoardNotePayload bindings");
         UpdateBoardNotePayload::export().expect("Failed to export UpdateBoardNotePayload bindings");
+    }
+
+    #[test]
+    fn export_bindings_bookmark() {
+        BookmarkRecord::export().expect("Failed to export BookmarkRecord bindings");
+        CreateBookmarkPayload::export().expect("Failed to export CreateBookmarkPayload bindings");
     }
 }
 

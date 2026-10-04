@@ -1060,6 +1060,45 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         }
                     }
 
+                    (Method::Get, "/api/bookmarks") => {
+                        match state.db.reader() {
+                            Ok(conn) => match crate::db::repo::get_bookmarks(&conn) {
+                                Ok(bookmarks) => json_response(&bookmarks, 200),
+                                Err(e) => error_response(AppError::from(e), 500),
+                            },
+                            Err(e) => error_response(AppError::from(e), 500),
+                        }
+                    }
+
+                    (Method::Post, "/api/bookmarks") => {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        match serde_json::from_str::<crate::models::CreateBookmarkPayload>(&body_str) {
+                            Ok(payload) => {
+                                let writer = state.db.writer();
+                                let now = chrono::Utc::now().timestamp();
+                                match crate::db::repo::create_bookmark(&writer, &payload, now) {
+                                    Ok(bookmark) => json_response(&bookmark, 200),
+                                    Err(e) => error_response(AppError::from(e), 500),
+                                }
+                            }
+                            Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
+                        }
+                    }
+
+                    (Method::Delete, p) if p.starts_with("/api/bookmarks/") => {
+                        let id = p.trim_start_matches("/api/bookmarks/");
+                        if !id.is_empty() {
+                            let writer = state.db.writer();
+                            match crate::db::repo::delete_bookmark(&writer, id) {
+                                Ok(_) => json_response(&serde_json::json!({ "success": true }), 200),
+                                Err(e) => error_response(AppError::from(e), 500),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
 
                     _ => {
                         if let Some(resp) = static_response(path) {

@@ -11,6 +11,7 @@ import {
   FlipVertical,
   Info,
   Layers,
+  LayoutGrid,
   Lock,
   RotateCcw,
   RotateCw,
@@ -957,6 +958,138 @@ export const MoodboardCanvas: React.FC = () => {
     setShowImageDetail((prev) => !prev);
   }, [selectedItemId]);
 
+  /**
+   * ボード上の全要素（画像アイテムおよびテキストメモ）の自動並び替え
+   *
+   * 変更理由: ユーザー要求に基づき、ムードボード上の画像やメモが互いに被らないよう、
+   * 手動操作で一括して自動整列（行ベースのパッキング配置）し、画面中央にフィットさせるため。
+   */
+  const handleAutoArrange = useCallback(async () => {
+    const currentItems = itemsRef.current;
+    const currentNotes = notesRef.current;
+    if (currentItems.length === 0 && currentNotes.length === 0) return;
+
+    // 全要素を統合し、z_index 順（昇順）に並べる
+    type SortableElement =
+      | { type: "item"; raw: BoardItem; width: number; height: number; zIndex: number }
+      | { type: "note"; raw: BoardNote; width: number; height: number; zIndex: number };
+
+    const elements: SortableElement[] = [
+      ...currentItems.map((it) => ({
+        type: "item" as const,
+        raw: it,
+        width: Math.round(it.width * it.scale),
+        height: Math.round(it.height * it.scale),
+        zIndex: it.zIndex,
+      })),
+      ...currentNotes.map((n) => ({
+        type: "note" as const,
+        raw: n,
+        width: Math.round(n.width * n.scale),
+        height: Math.round(n.height * n.scale),
+        zIndex: n.zIndex,
+      })),
+    ];
+
+    // z_index 昇順でソート（追加順・レイヤー順の自然な並び）
+    elements.sort((a, b) => a.zIndex - b.zIndex);
+
+    const GAP = 28;
+    const totalCount = elements.length;
+
+    // 列数の動的決定（アイテム数に応じて 2〜6 列）
+    const targetCols = Math.max(2, Math.min(6, Math.ceil(Math.sqrt(totalCount * 1.3))));
+    const avgWidth = elements.reduce((sum, el) => sum + el.width, 0) / totalCount;
+    const maxRowWidth = Math.max(800, targetCols * (avgWidth + GAP));
+
+    let curX = 0;
+    let curY = 0;
+    let rowMaxHeight = 0;
+    let maxOverallWidth = 0;
+
+    const itemUpdates: { id: number; x: number; y: number }[] = [];
+    const noteUpdates: { id: number; x: number; y: number }[] = [];
+
+    for (const el of elements) {
+      // 最初の要素でなく、行幅を超える場合は改行
+      if (curX > 0 && curX + el.width > maxRowWidth) {
+        maxOverallWidth = Math.max(maxOverallWidth, curX - GAP);
+        curX = 0;
+        curY += rowMaxHeight + GAP;
+        rowMaxHeight = 0;
+      }
+
+      if (el.type === "item") {
+        itemUpdates.push({ id: el.raw.id, x: curX, y: curY });
+      } else {
+        noteUpdates.push({ id: el.raw.id, x: curX, y: curY });
+      }
+
+      curX += el.width + GAP;
+      rowMaxHeight = Math.max(rowMaxHeight, el.height);
+    }
+
+    maxOverallWidth = Math.max(maxOverallWidth, curX - GAP);
+    const maxOverallHeight = curY + rowMaxHeight;
+
+    // ステートとRefを即座に更新（rotationも0°にリセットして重なりを完全排除）
+    const newItemPosMap = new Map(itemUpdates.map((u) => [u.id, u]));
+    const newNotePosMap = new Map(noteUpdates.map((u) => [u.id, u]));
+
+    const nextItems = currentItems.map((it) => {
+      const pos = newItemPosMap.get(it.id);
+      return pos ? { ...it, x: pos.x, y: pos.y, rotation: 0 } : it;
+    });
+    const nextNotes = currentNotes.map((n) => {
+      const pos = newNotePosMap.get(n.id);
+      return pos ? { ...n, x: pos.x, y: pos.y, rotation: 0 } : n;
+    });
+
+    setItems(nextItems);
+    itemsRef.current = nextItems;
+    setNotes(nextNotes);
+    notesRef.current = nextNotes;
+
+    // カメラを全要素の中央に自動フィット
+    const container = containerRef.current;
+    if (container) {
+      const containerW = container.clientWidth || 1000;
+      const containerH = container.clientHeight || 700;
+      const padding = 80;
+
+      const fitZoom = Math.min(
+        1.0,
+        Math.max(
+          0.12,
+          Math.min(
+            (containerW - padding * 2) / Math.max(1, maxOverallWidth),
+            (containerH - padding * 2) / Math.max(1, maxOverallHeight)
+          )
+        )
+      );
+
+      const newPanX = Math.round((containerW - maxOverallWidth * fitZoom) / 2);
+      const newPanY = Math.round((containerH - maxOverallHeight * fitZoom) / 2);
+
+      setZoom(fitZoom);
+      setPan({ x: newPanX, y: newPanY });
+      scheduleSaveCamera({ x: newPanX, y: newPanY }, fitZoom);
+    }
+
+    // SQLite DB へ非同期一括永続化
+    try {
+      const itemPromises = itemUpdates.map((u) =>
+        backendApi.updateBoardItem(u.id, { x: u.x, y: u.y, rotation: 0 })
+      );
+      const notePromises = noteUpdates.map((u) =>
+        backendApi.updateBoardNote(u.id, { x: u.x, y: u.y, rotation: 0 })
+      );
+      await Promise.all([...itemPromises, ...notePromises]);
+    } catch (err) {
+      console.error("自動並び替えの保存に失敗しました:", err);
+    }
+  }, [scheduleSaveCamera]);
+
   // キーボードショートカット（PureRef互換）
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1147,6 +1280,18 @@ export const MoodboardCanvas: React.FC = () => {
           <StickyNote className="w-3.5 h-3.5" />
           メモを追加
         </button>
+
+        {/* 自動並び替えボタン（被り解消・タイル整列） */}
+        {(items.length > 0 || notes.length > 0) && (
+          <button
+            onClick={handleAutoArrange}
+            className="flex items-center gap-1.5 text-xs text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight/80 border border-border/60 hover:border-accent px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
+            title="ボード上の画像とメモが被らないように自動整列して画面中央にフィット"
+          >
+            <LayoutGrid className="w-3.5 h-3.5 text-accent" />
+            自動並び替え
+          </button>
+        )}
       </div>
 
       {/* 2. ズーム & ツールバー（右上） */}

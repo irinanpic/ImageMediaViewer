@@ -20,6 +20,12 @@ export function useBackendEvents() {
   const setFolders = useAppStore((state) => state.setFolders);
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const timelineSort = useAppStore((state) => state.timelineSort);
+  const fetchBookmarks = useAppStore((state) => state.fetchBookmarks);
+
+  // 初回起動時のしおり同期
+  useEffect(() => {
+    fetchBookmarks();
+  }, [fetchBookmarks]);
 
   // カタログサマリ & サムネイル進捗再取得処理
   const refreshSummary = async () => {

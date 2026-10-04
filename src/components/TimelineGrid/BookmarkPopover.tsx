@@ -22,6 +22,7 @@ export const BookmarkPopover: React.FC = () => {
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const folders = useAppStore((state) => state.folders);
   const timelineSort = useAppStore((state) => state.timelineSort);
+  const fetchBookmarks = useAppStore((state) => state.fetchBookmarks);
 
   // 現在選択中のフォルダ名を取得
   const currentFolder = selectedFolderId ? folders.find((f) => f.id === selectedFolderId) : null;
@@ -39,12 +40,13 @@ export const BookmarkPopover: React.FC = () => {
     return day;
   };
 
-  // ポップオーバーを開いた際にデフォルトタイトルを入力欄にセット
+  // ポップオーバーを開いた際にデフォルトタイトルを入力欄にセット & 最新しおり一覧を同期
   useEffect(() => {
     if (isOpen) {
       setCustomTitle(generateDefaultTitle());
+      fetchBookmarks();
     }
-  }, [isOpen, currentVisibleInfo]);
+  }, [isOpen, currentVisibleInfo, fetchBookmarks]);
 
   // 外側クリックでポップオーバーを閉じる
   useEffect(() => {

@@ -1156,6 +1156,104 @@ pub fn delete_board_note(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// タイムラインの全しおり（ブックマーク）を取得
+///
+/// 変更理由: 保存されたタイムライン位置一覧を取得するため
+///
+/// @param conn DB読み取り接続
+/// @return しおりレコード一覧（作成日時の新しい順）
+pub fn get_bookmarks(conn: &Connection) -> Result<Vec<crate::models::BookmarkRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, folder_id, folder_name, sort, scroll_top, row_index, image_index, day_label, created_at
+         FROM bookmarks
+         ORDER BY created_at DESC;"
+    )?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok(crate::models::BookmarkRecord {
+            id: r.get(0)?,
+            title: r.get(1)?,
+            folder_id: r.get(2)?,
+            folder_name: r.get(3)?,
+            sort: r.get(4)?,
+            scroll_top: r.get(5)?,
+            row_index: r.get(6)?,
+            image_index: r.get(7)?,
+            day_label: r.get(8)?,
+            created_at: r.get(9)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// タイムラインのしおりを作成または保存
+///
+/// 変更理由: 閲覧位置（日付、通し番号、スクロール位置、フォルダ、ソート順）をDBに永続化するため
+///
+/// @param conn DB書き込み接続
+/// @param payload しおり作成データ
+/// @param now 作成日時エポック秒
+/// @return 作成されたBookmarkRecord
+pub fn create_bookmark(
+    conn: &Connection,
+    payload: &crate::models::CreateBookmarkPayload,
+    now: i64,
+) -> Result<crate::models::BookmarkRecord> {
+    let id = payload.id.clone().unwrap_or_else(|| {
+        let hash = blake3::hash(format!("{}_{}_{}", now, payload.title, payload.scroll_top).as_bytes());
+        format!("bm_{}", &hash.to_hex()[..16])
+    });
+    let created_at = payload.created_at.unwrap_or(now);
+
+    conn.execute(
+        "INSERT OR REPLACE INTO bookmarks (
+            id, title, folder_id, folder_name, sort,
+            scroll_top, row_index, image_index, day_label, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);",
+        params![
+            id,
+            payload.title,
+            payload.folder_id,
+            payload.folder_name,
+            payload.sort,
+            payload.scroll_top,
+            payload.row_index,
+            payload.image_index,
+            payload.day_label,
+            created_at,
+        ],
+    )?;
+
+    Ok(crate::models::BookmarkRecord {
+        id,
+        title: payload.title.clone(),
+        folder_id: payload.folder_id,
+        folder_name: payload.folder_name.clone(),
+        sort: payload.sort.clone(),
+        scroll_top: payload.scroll_top,
+        row_index: payload.row_index,
+        image_index: payload.image_index,
+        day_label: payload.day_label.clone(),
+        created_at,
+    })
+}
+
+/// タイムラインのしおりを削除
+///
+/// 変更理由: 不要になったしおりを削除するため
+///
+/// @param conn DB書き込み接続
+/// @param id しおりID
+pub fn delete_bookmark(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM bookmarks WHERE id = ?1;", params![id])?;
+    Ok(())
+}
+
 
 /// 実アクセス時に画像ファイルの更新（サイズ・更新日時）が検知された際、画像レコードをアトミックに更新する
 ///
@@ -1336,6 +1434,45 @@ mod tests {
         delete_board_note(&conn, note.id).expect("メモ削除失敗");
         let after_delete = get_board_notes(&conn, board.id).expect("削除後メモ一覧取得失敗");
         assert_eq!(after_delete.len(), 0);
+    }
+
+    #[test]
+    fn test_bookmarks_crud() {
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let conn = db.writer();
+
+        // 1. しおり作成
+        let bm = create_bookmark(
+            &conn,
+            &crate::models::CreateBookmarkPayload {
+                id: Some("bm_test_1".to_string()),
+                title: "テストしおり".to_string(),
+                folder_id: None,
+                folder_name: Some("すべての画像".to_string()),
+                sort: "date_desc".to_string(),
+                scroll_top: 1250.0,
+                row_index: 10,
+                image_index: Some(42),
+                day_label: "2024-05-01".to_string(),
+                created_at: Some(1000),
+            },
+            1000,
+        )
+        .expect("しおり作成失敗");
+
+        assert_eq!(bm.id, "bm_test_1");
+        assert_eq!(bm.title, "テストしおり");
+        assert_eq!(bm.scroll_top, 1250.0);
+
+        // 2. しおり一覧取得
+        let bookmarks = get_bookmarks(&conn).expect("しおり一覧取得失敗");
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].id, "bm_test_1");
+
+        // 3. しおり削除
+        delete_bookmark(&conn, "bm_test_1").expect("しおり削除失敗");
+        let after = get_bookmarks(&conn).expect("削除後しおり一覧取得失敗");
+        assert_eq!(after.len(), 0);
     }
 }
 

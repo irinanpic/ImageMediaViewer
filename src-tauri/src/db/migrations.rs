@@ -227,5 +227,38 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("マイグレーション v5 の適用完了 (user_version = 5)");
     }
 
+    if current_version < 6 {
+        info!("マイグレーション v6 (タイムラインしおりテーブル bookmarks) を適用中...");
+        let tx = conn.transaction()?;
+
+        // タイムラインしおり（ブックマーク）テーブル
+        // 変更理由: 閲覧位置（日付、通し番号、スクロール位置、フォルダ、ソート順）をDBに永続化し、
+        // アプリ再起動やブラウザプロファイル変更後も確実に保持するため
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS bookmarks (
+                id          TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                folder_id   INTEGER REFERENCES watched_folders(id) ON DELETE SET NULL,
+                folder_name TEXT,
+                sort        TEXT NOT NULL,
+                scroll_top  REAL NOT NULL,
+                row_index   INTEGER NOT NULL,
+                image_index INTEGER,
+                day_label   TEXT NOT NULL,
+                created_at  INTEGER NOT NULL
+            );",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bookmarks_created ON bookmarks (created_at DESC);",
+            [],
+        )?;
+
+        tx.pragma_update(None, "user_version", 6)?;
+        tx.commit()?;
+        info!("マイグレーション v6 の適用完了 (user_version = 6)");
+    }
+
     Ok(())
 }

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { ImageOff, Loader2 } from "lucide-react";
+import { Check, ImageOff, Loader2 } from "lucide-react";
 import { getThumbnailUrl } from "../../lib/thumbUrl";
 import { useAppStore } from "../../store";
 import type { ImageRecord } from "../../types/generated/ImageRecord";
@@ -20,15 +20,19 @@ const loadedThumbUrls = new Set<string>();
  * 変更理由: 仕様書§8.3およびPicasa並みの快適さ追求。
  * 一度ロードしたサムネイルはメモリキャッシュ(loadedThumbUrls)により再マウント時でもゼロ遅延で即時表示し、
  * 高速スクロール中であってもロード済み画像はアンマウントせず滑らかに維持する。
+ * また、Ctrl+クリックおよびドラッグ複数選択、チェックボックスによる選択をサポート。
  */
 export const GridCell: React.FC<GridCellProps> = React.memo(
   ({ record, globalIndex, isScrollingFast, size }) => {
     const openViewer = useAppStore((state) => state.openViewer);
     const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
     const setSelectedCellIndex = useAppStore((state) => state.setSelectedCellIndex);
+    const selectedImageIds = useAppStore((state) => state.selectedImageIds);
+    const toggleSelectImageId = useAppStore((state) => state.toggleSelectImageId);
     const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
-    const isSelected = selectedCellIndex === globalIndex;
+    const isFocused = selectedCellIndex === globalIndex;
+    const isMultiSelected = record ? selectedImageIds.includes(record.id) : false;
     const thumbUrl = record ? getThumbnailUrl(record.id, record.rev) : "";
     const isCached = thumbUrl ? loadedThumbUrls.has(thumbUrl) : false;
 
@@ -72,7 +76,6 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
 
     // 読込失敗時の自動リトライ
     const handleError = React.useCallback(() => {
-      // 高速スクロール中はキューパージによる正常な一時中断のため、エラーカウントを浪費させない
       if (isScrollingFast) {
         return;
       }
@@ -94,7 +97,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
         <div
           style={{ width: size, height: size }}
           className={`bg-surface rounded overflow-hidden flex items-center justify-center border ${
-            isSelected ? "border-accent ring-2 ring-accent" : "border-border/30"
+            isFocused ? "border-accent ring-2 ring-accent" : "border-border/30"
           }`}
         >
           <div className="w-8 h-8 rounded-full bg-surfaceLight/30 animate-pulse" />
@@ -102,16 +105,41 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       );
     }
 
-    const handleClick = () => {
+    const handleClick = (e: React.MouseEvent) => {
       if (hasError) {
-        // エラー発生時は単体セルを即座に再試行
         setHasError(false);
         setRetryCount(0);
         setIsLoaded(false);
         return;
       }
+
+      // Ctrl + クリック（または Cmd + クリック）、または既に複数選択モード中の場合は選択トグル
+      if (e.ctrlKey || e.metaKey || selectedImageIds.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSelectedCellIndex(globalIndex);
+        toggleSelectImageId(record.id);
+        return;
+      }
+
+      // 通常クリック時はビューアを起動
       setSelectedCellIndex(globalIndex);
       openViewer(record.id, globalIndex);
+    };
+
+    const handleDoubleClick = (e: React.MouseEvent) => {
+      if (hasError) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedCellIndex(globalIndex);
+      openViewer(record.id, globalIndex);
+    };
+
+    const handleCheckboxClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedCellIndex(globalIndex);
+      toggleSelectImageId(record.id);
     };
 
     // リフレッシュ回数やリトライ回数をクエリに付与してブラウザの画像エラーキャッシュをバイパス
@@ -127,12 +155,18 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
 
     return (
       <div
+        data-grid-cell="true"
+        data-image-id={record.id}
+        data-global-index={globalIndex}
         style={{ width: size, height: size }}
         onClick={handleClick}
-        title={hasError ? "クリックして再読込を試行" : record ? `画像 #${record.id}` : ""}
-        className={`relative bg-surface rounded overflow-hidden cursor-pointer group transition-all duration-150 ${
-          isSelected
-            ? "ring-2 ring-accent ring-offset-2 ring-offset-background border-accent shadow-lg shadow-accent/20"
+        onDoubleClick={handleDoubleClick}
+        title={hasError ? "クリックして再読込を試行" : record ? `画像 #${record.id} (Ctrl+クリックで複数選択)` : ""}
+        className={`relative bg-surface rounded overflow-hidden cursor-pointer group transition-all duration-150 select-none ${
+          isMultiSelected
+            ? "ring-2 ring-accent ring-offset-2 ring-offset-background border-accent shadow-lg shadow-accent/30"
+            : isFocused
+            ? "ring-2 ring-accent/70 ring-offset-1 ring-offset-background border-accent/80"
             : "border border-transparent hover:border-accent hover:scale-[1.02]"
         }`}
       >
@@ -159,11 +193,29 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
               setIsLoaded(true);
             }}
             onError={handleError}
-            className={`w-full h-full object-cover ${
+            className={`w-full h-full object-cover pointer-events-none ${
               isLoaded || isCached ? "opacity-100" : "opacity-0"
             }`}
           />
         )}
+
+        {/* 複数選択時の半透明オーバーレイ */}
+        {isMultiSelected && (
+          <div className="absolute inset-0 bg-accent/20 pointer-events-none border-2 border-accent rounded" />
+        )}
+
+        {/* 左上チェックボックス（選択中、またはホバー時表示） */}
+        <div
+          onClick={handleCheckboxClick}
+          className={`absolute top-1.5 left-1.5 z-10 w-5 h-5 rounded flex items-center justify-center transition-all cursor-pointer ${
+            isMultiSelected
+              ? "bg-accent text-white shadow-md scale-105"
+              : "opacity-0 group-hover:opacity-100 bg-black/50 text-white/80 hover:bg-accent hover:text-white border border-white/60 shadow-xs"
+          }`}
+          title={isMultiSelected ? "選択を解除" : "選択に追加"}
+        >
+          <Check className="w-3.5 h-3.5 stroke-[3]" />
+        </div>
       </div>
     );
   }

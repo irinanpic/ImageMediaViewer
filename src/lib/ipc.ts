@@ -19,6 +19,7 @@ import type {
   UpdateBoardNotePayload,
   UpdateBoardPayload,
 } from "../types/board";
+import type { Bookmark } from "../types/bookmark";
 import { isTauriEnvironment } from "./thumbUrl";
 
 function getBaseHttpUrl(): string {
@@ -217,6 +218,22 @@ async function callIpc<T>(command: string, args?: Record<string, unknown>): Prom
 
       case "delete_board_note":
         url += `/board_notes/${args?.id}`;
+        options.method = "DELETE";
+        break;
+
+      case "get_bookmarks":
+        url += "/bookmarks";
+        options.method = "GET";
+        break;
+
+      case "create_bookmark":
+        url += "/bookmarks";
+        options.method = "POST";
+        options.body = JSON.stringify(args?.payload || {});
+        break;
+
+      case "delete_bookmark":
+        url += `/bookmarks/${args?.id}`;
         options.method = "DELETE";
         break;
 
@@ -465,6 +482,25 @@ export const backendApi = {
   deleteBoardNote: (id: number): Promise<{ success: boolean }> =>
     callIpc<{ success: boolean }>("delete_board_note", { id }),
 
+  /**
+   * タイムラインのしおり（ブックマーク）一覧を取得
+   */
+  getBookmarks: (): Promise<Bookmark[]> =>
+    callIpc<Bookmark[]>("get_bookmarks"),
+
+  /**
+   * タイムラインのしおりを新規登録・永続化
+   * @param payload しおりデータ
+   */
+  createBookmark: (payload: Omit<Bookmark, "createdAt"> & { createdAt?: number }): Promise<Bookmark> =>
+    callIpc<Bookmark>("create_bookmark", { payload }),
+
+  /**
+   * タイムラインのしおりを削除
+   * @param id しおりID
+   */
+  deleteBookmark: (id: string): Promise<{ success: boolean }> =>
+    callIpc<{ success: boolean }>("delete_bookmark", { id }),
 
   /**
    * サーバー生存確認（ハートビート）

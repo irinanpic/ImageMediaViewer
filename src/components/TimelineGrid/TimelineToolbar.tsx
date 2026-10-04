@@ -17,6 +17,7 @@ export const TimelineToolbar: React.FC = () => {
   const setTimelineSort = useAppStore((state) => state.setTimelineSort);
   const totalImages = useAppStore((state) => state.totalImages);
   const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
+  const selectedImageIds = useAppStore((state) => state.selectedImageIds);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
   const refreshTimeline = useAppStore((state) => state.refreshTimeline);
   const { getImageByIndex } = usePagedImages();
@@ -65,16 +66,25 @@ export const TimelineToolbar: React.FC = () => {
         {/* 表示位置のしおり（ブックマーク）ポップオーバー */}
         <BookmarkPopover />
 
-        {selectedRecord && (
+        {selectedImageIds.length > 0 ? (
+          <button
+            onClick={() => openAddToBoardModal(selectedImageIds)}
+            className="flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-white border border-accent/40 px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-sm cursor-pointer"
+            title={`${selectedImageIds.length}枚の画像をムードボードに資料として追加`}
+          >
+            <Plus className="w-3.5 h-3.5" />
+            ボードに追加 ({selectedImageIds.length}枚)
+          </button>
+        ) : selectedRecord ? (
           <button
             onClick={() => openAddToBoardModal([selectedRecord.id])}
-            className="flex items-center gap-1.5 bg-accent/20 hover:bg-accent text-accent hover:text-white border border-accent/40 px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-sm"
+            className="flex items-center gap-1.5 bg-accent/20 hover:bg-accent text-accent hover:text-white border border-accent/40 px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-sm cursor-pointer"
             title="選択中の画像をムードボードに資料として追加"
           >
             <Plus className="w-3.5 h-3.5" />
             ボードに追加
           </button>
-        )}
+        ) : null}
       </div>
 
       {/* 右側: 通信状態インジケータおよび再接続コントローラー */}

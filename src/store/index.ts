@@ -6,6 +6,7 @@ import type { TimelineSort } from "../types/generated/TimelineSort";
 import type { WatchedFolder } from "../types/generated/WatchedFolder";
 import type { Board } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
+import { backendApi } from "../lib/ipc";
 
 export interface ViewerTransformState {
   rotation: 0 | 90 | 180 | 270;
@@ -79,6 +80,10 @@ interface AppStoreState {
   setCellSize: (size: number) => void;
   selectedCellIndex: number | null;
   setSelectedCellIndex: (index: number | null) => void;
+  selectedImageIds: number[];
+  setSelectedImageIds: (ids: number[]) => void;
+  toggleSelectImageId: (id: number) => void;
+  clearSelectedImageIds: () => void;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
   timelineRefreshTick: number;
@@ -96,6 +101,8 @@ interface AppStoreState {
 
   // しおり（ブックマーク）スライス
   bookmarks: Bookmark[];
+  setBookmarks: (bookmarks: Bookmark[]) => void;
+  fetchBookmarks: () => Promise<void>;
   addBookmark: (bookmark: Omit<Bookmark, "id" | "createdAt">) => void;
   removeBookmark: (id: string) => void;
   targetScroll: { scrollTop: number; rowIndex?: number; timestamp: number } | null;
@@ -237,6 +244,17 @@ export const useAppStore = create<AppStoreState>((set) => ({
   setCellSize: (cellSize) => set({ cellSize }),
   selectedCellIndex: null,
   setSelectedCellIndex: (selectedCellIndex) => set({ selectedCellIndex }),
+  selectedImageIds: [],
+  setSelectedImageIds: (selectedImageIds) => set({ selectedImageIds }),
+  toggleSelectImageId: (id) =>
+    set((state) => {
+      const exists = state.selectedImageIds.includes(id);
+      const next = exists
+        ? state.selectedImageIds.filter((item) => item !== id)
+        : [...state.selectedImageIds, id];
+      return { selectedImageIds: next };
+    }),
+  clearSelectedImageIds: () => set({ selectedImageIds: [] }),
   isSidebarOpen: true,
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
   timelineRefreshTick: 0,
@@ -253,7 +271,7 @@ export const useAppStore = create<AppStoreState>((set) => ({
   markConnected: () => set({ connectionStatus: "connected", lastConnectedAt: Date.now() }),
   markDisconnected: () => set({ connectionStatus: "disconnected" }),
 
-  // しおり初期状態
+  // しおり初期状態（ローカルキャッシュから初期表示を高速復元）
   bookmarks: (() => {
     try {
       const saved = localStorage.getItem("imv_bookmarks");
@@ -262,31 +280,99 @@ export const useAppStore = create<AppStoreState>((set) => ({
       return [];
     }
   })(),
-  addBookmark: (bookmarkData) =>
+  setBookmarks: (bookmarks) => {
+    try {
+      localStorage.setItem("imv_bookmarks", JSON.stringify(bookmarks));
+    } catch {
+      // 保存失敗時は何もしない
+    }
+    set({ bookmarks });
+  },
+  fetchBookmarks: async () => {
+    try {
+      const remoteBookmarks = await backendApi.getBookmarks();
+      if (remoteBookmarks && Array.isArray(remoteBookmarks)) {
+        if (remoteBookmarks.length > 0) {
+          // DBにしおりが存在する場合、それを正として反映
+          try {
+            localStorage.setItem("imv_bookmarks", JSON.stringify(remoteBookmarks));
+          } catch {}
+          set({ bookmarks: remoteBookmarks });
+        } else {
+          // DBが空の場合、localStorageに既存のしおりがあればマイグレーションとしてDBへ一括保存
+          let localSaved: Bookmark[] = [];
+          try {
+            const saved = localStorage.getItem("imv_bookmarks");
+            if (saved) localSaved = JSON.parse(saved);
+          } catch {}
+
+          if (localSaved.length > 0) {
+            for (const b of localSaved) {
+              await backendApi.createBookmark({
+                id: b.id,
+                title: b.title,
+                folderId: b.folderId,
+                folderName: b.folderName,
+                sort: b.sort,
+                scrollTop: b.scrollTop,
+                rowIndex: b.rowIndex,
+                imageIndex: b.imageIndex,
+                dayLabel: b.dayLabel,
+                createdAt: b.createdAt,
+              });
+            }
+            set({ bookmarks: localSaved });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("しおりのDB取得に失敗しました（ローカルキャッシュを使用）:", err);
+    }
+  },
+  addBookmark: (bookmarkData) => {
+    const newBookmark: Bookmark = {
+      ...bookmarkData,
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+    };
     set((state) => {
-      const newBookmark: Bookmark = {
-        ...bookmarkData,
-        id: crypto.randomUUID(),
-        createdAt: Date.now(),
-      };
       const nextBookmarks = [newBookmark, ...state.bookmarks];
       try {
         localStorage.setItem("imv_bookmarks", JSON.stringify(nextBookmarks));
-      } catch {
-        // 保存失敗時は何もしない
-      }
+      } catch {}
       return { bookmarks: nextBookmarks };
-    }),
-  removeBookmark: (id) =>
+    });
+
+    // バックエンドSQLiteへ非同期永続化
+    backendApi.createBookmark({
+      id: newBookmark.id,
+      title: newBookmark.title,
+      folderId: newBookmark.folderId,
+      folderName: newBookmark.folderName,
+      sort: newBookmark.sort,
+      scrollTop: newBookmark.scrollTop,
+      rowIndex: newBookmark.rowIndex,
+      imageIndex: newBookmark.imageIndex,
+      dayLabel: newBookmark.dayLabel,
+      createdAt: newBookmark.createdAt,
+    }).catch((err) => {
+      console.error("しおりのDB保存に失敗しました:", err);
+    });
+  },
+  removeBookmark: (id) => {
     set((state) => {
       const nextBookmarks = state.bookmarks.filter((b) => b.id !== id);
       try {
         localStorage.setItem("imv_bookmarks", JSON.stringify(nextBookmarks));
-      } catch {
-        // 保存失敗時は何もしない
-      }
+      } catch {}
       return { bookmarks: nextBookmarks };
-    }),
+    });
+
+    // バックエンドSQLiteから非同期削除
+    backendApi.deleteBookmark(id).catch((err) => {
+      console.error("しおりのDB削除に失敗しました:", err);
+    });
+  },
   targetScroll: null,
   jumpToBookmark: (bookmark) =>
     set((state) => {

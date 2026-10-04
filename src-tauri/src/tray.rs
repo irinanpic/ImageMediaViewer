@@ -24,6 +24,13 @@ pub fn launch_client() {
         cmd.arg(format!("--app={}", app_url));
         cmd.arg("--no-first-run");
         cmd.arg("--no-default-browser-check");
+        cmd.arg("--disable-background-mode");
+
+        #[cfg(target_os = "windows")]
+        if let Ok(local_app_data) = std::env::var("LocalAppData") {
+            let profile_dir = PathBuf::from(local_app_data).join("ImageMediaViewer\\BrowserProfile");
+            cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()));
+        }
 
         // ウィンドウ状態（サイズ・位置）の復元
         let state_path = PathBuf::from("window_state.json");
