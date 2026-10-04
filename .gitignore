@@ -1,0 +1,57 @@
+# OS generated files
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+.obsidian/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Node / Frontend build & dependencies
+node_modules/
+dist/
+dist-desktop/
+dist-electron/
+dist-web/
+tmp/
+temp/
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Rust / Tauri build artifacts (GB規模の中間成果物・バイナリを除外)
+target/
+**/target/
+src-tauri/target/
+*.pdb
+
+# Local App State & Database (アプリ実行データ・キャッシュを完全除外)
+window_state.json
+com.imagemediaviewer.app/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+thumbs/
+thumbnails/
+AGENTS.md
