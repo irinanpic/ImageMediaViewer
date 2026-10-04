@@ -7,6 +7,8 @@ import type { TimelineSort } from "../types/generated/TimelineSort";
 import type { TimelineSummary } from "../types/generated/TimelineSummary";
 import type { WatchedFolder } from "../types/generated/WatchedFolder";
 import type { WindowState } from "../types/generated/WindowState";
+import type { FailedImageRecord } from "../types/generated/FailedImageRecord";
+import type { LogEntry } from "../types/generated/LogEntry";
 import type {
   Board,
   BoardItem,
@@ -198,6 +200,25 @@ async function callIpc<T>(command: string, args?: Record<string, unknown>): Prom
         options.method = "POST";
         break;
 
+      case "get_failed_thumbnails": {
+        const limit = args?.limit ?? 100;
+        url += `/thumbnails/failed?limit=${limit}`;
+        options.method = "GET";
+        break;
+      }
+
+      case "get_logs": {
+        const limit = args?.limit ?? 200;
+        url += `/logs?limit=${limit}`;
+        options.method = "GET";
+        break;
+      }
+
+      case "open_log_folder":
+        url += "/logs/open";
+        options.method = "POST";
+        break;
+
       default:
         throw { code: "Internal", message: `未知のコマンド: ${command}` } as AppError;
     }
@@ -307,10 +328,10 @@ export const backendApi = {
     callIpc<{ success: boolean; resetCount: number }>("rescan_missing_thumbnails"),
 
   /**
-   * サムネイル生成完了・全体件数・処理中状態を取得
+   * サムネイル生成完了・失敗・全体件数・処理中状態を取得
    */
-  getThumbProgress: (): Promise<{ done: number; total: number; isGenerating: boolean }> =>
-    callIpc<{ done: number; total: number; isGenerating: boolean }>("get_thumb_progress"),
+  getThumbProgress: (): Promise<{ done: number; failed: number; total: number; isGenerating: boolean }> =>
+    callIpc<{ done: number; failed: number; total: number; isGenerating: boolean }>("get_thumb_progress"),
 
   /**
    * OSのファイルマネージャ（エクスプローラ）でファイルを表示
@@ -416,5 +437,25 @@ export const backendApi = {
       return false;
     }
   },
+
+  /**
+   * サムネイル生成に失敗した画像の一覧を取得
+   * @param limit 取得件数上限（デフォルト100）
+   */
+  getFailedThumbnails: (limit = 100): Promise<FailedImageRecord[]> =>
+    callIpc<FailedImageRecord[]>("get_failed_thumbnails", { limit }),
+
+  /**
+   * 直近のログ一覧を取得
+   * @param limit 取得件数上限（デフォルト200）
+   */
+  getLogs: (limit = 200): Promise<LogEntry[]> =>
+    callIpc<LogEntry[]>("get_logs", { limit }),
+
+  /**
+   * ログ保存先ディレクトリをOSのファイルマネージャで開く
+   */
+  openLogFolder: (): Promise<{ success: boolean; path: string }> =>
+    callIpc<{ success: boolean; path: string }>("open_log_folder"),
 };
 

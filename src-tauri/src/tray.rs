@@ -115,9 +115,10 @@ pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Bo
     let open_client_i = MenuItem::with_id(app, "open_client", "クライアントを開く", true, None::<&str>)?;
     let rescan_i = MenuItem::with_id(app, "rescan", "フォルダを再走査", true, None::<&str>)?;
     let open_folder_i = MenuItem::with_id(app, "open_folder", "データフォルダを開く", true, None::<&str>)?;
+    let open_logs_i = MenuItem::with_id(app, "open_logs", "ログフォルダを開く", true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&open_client_i, &rescan_i, &open_folder_i, &quit_i])?;
+    let menu = Menu::with_items(app, &[&open_client_i, &rescan_i, &open_folder_i, &open_logs_i, &quit_i])?;
 
     let state_clone = Arc::clone(&state);
 
@@ -152,7 +153,7 @@ pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Bo
                                 let f_id = folder.id;
                                 let f_path = folder.path;
                                 std::thread::spawn(move || {
-                                    let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path);
+                                    let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path, false);
                                 });
                             }
                         }
@@ -161,6 +162,11 @@ pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Bo
                 "open_folder" => {
                     let cache_dir = &state_clone.cache_dir;
                     let _ = opener::reveal(cache_dir);
+                }
+                "open_logs" => {
+                    if let Some(lm) = crate::logger::get_log_manager() {
+                        let _ = opener::reveal(lm.log_dir());
+                    }
                 }
                 "quit" => {
                     info!("トレイメニューから終了が指示されました。アプリケーションを終了します。");

@@ -567,15 +567,16 @@ impl ThumbnailPipeline {
             }
 
             // 新しいジョブの到着、またはバックグラウンド枠の空きを待つ
+            // ヒープが空で未生成ジョブもない場合は、無駄な定期起床・DB負荷を防ぐため60秒間完全に静止待機
             let timeout = if heap_empty {
-                Duration::from_secs(5)
+                Duration::from_secs(60)
             } else {
                 Duration::from_millis(50)
             };
             let (guard, res) = self.condvar.wait_timeout(state, timeout).unwrap();
             drop(guard);
             if res.timed_out() && heap_empty {
-                // 一定時間アイドルなら再度補充を試みる
+                // 60秒経過した場合は再度未生成分があるか軽く確認
                 idle_rounds = 0;
             }
         }
@@ -595,7 +596,8 @@ impl ThumbnailPipeline {
                 self.process_job(&job)
             };
 
-            if job.priority == JobPriority::Low {
+            let was_low = job.priority == JobPriority::Low;
+            if was_low {
                 self.active_low.fetch_sub(1, AtomicOrdering::SeqCst);
             }
             self.completed_count.fetch_add(1, AtomicOrdering::Relaxed);
@@ -610,6 +612,14 @@ impl ThumbnailPipeline {
             drop(state);
             // バックグラウンド枠が空いた可能性があるため他ワーカーを起こす
             self.condvar.notify_one();
+
+            // 変更理由: ユーザー要求「CPU使用量を少量に抑えるような処理の仕方にして。
+            // 長時間起動させておくことになるソフトなので、CPU仕様率を消費したり、ファンを強く動かし続けるとよくないです」
+            // バックグラウンド生成（Low優先度）処理後は、20msのクーリング休止を挟み、CPUファンが回るのを確実に抑える。
+            // （High/Mid優先度の表示要求は休止なしで最速処理）
+            if was_low {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
         info!("サムネイルワーカー {} を停止しました", worker_id);
     }
@@ -653,7 +663,10 @@ impl ThumbnailPipeline {
                 true
             }
             Err(e) => {
-                warn!("サムネイル生成失敗 (id: {}): {}", job.image_id, e);
+                warn!(
+                    "サムネイル生成失敗 (id: {}, パス: {:?}): {}",
+                    job.image_id, job.file_path, e
+                );
                 crate::db::repo::update_thumb_status(&conn, job.image_id, 2).ok();
                 false
             }

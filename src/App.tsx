@@ -6,6 +6,7 @@ import { VirtualTimeline } from "./components/TimelineGrid/VirtualTimeline";
 import { ImageViewerModal } from "./components/Viewer/ImageViewerModal";
 import { MoodboardCanvas } from "./components/Moodboard/MoodboardCanvas";
 import { AddToBoardModal } from "./components/Moodboard/AddToBoardModal";
+import { LogViewerModal } from "./components/Common/LogViewerModal";
 import { useBackendEvents } from "./hooks/useBackendEvents";
 import { useWindowState } from "./hooks/useWindowState";
 import { useAppStore } from "./store";
@@ -43,6 +44,9 @@ export const App: React.FC = () => {
 
       {/* ムードボード追加ダイアログ */}
       <AddToBoardModal />
+
+      {/* システムログ & エラー診断モーダル */}
+      <LogViewerModal />
     </div>
   );
 };

@@ -72,12 +72,20 @@ fn is_hidden_or_ignored(entry: &walkdir::DirEntry) -> bool {
 
 /// フォルダの再帰走査およびDBインデックス処理を実行する（共通コアロジック）
 ///
-/// 変更理由: Tauri UI起動時およびHTTPサーバー経由の両方からヘッドレス走査を安全に実行可能にするため
+/// 変更理由: Tauri UI起動時およびHTTPサーバー経由の両方からヘッドレス走査を安全に実行可能にするため。
+/// また、アイドル時バックグラウンド走査ではスロットリングによりCPU使用率とファン稼働を極小化する
+///
+/// @param app Tauri AppHandle（UI通知用、ヘッドレス時はNone）
+/// @param state アプリケーション共有状態
+/// @param folder_id 監視フォルダID
+/// @param folder_path フォルダの絶対パス
+/// @param is_background バックグラウンド省電力走査フラグ（true時はスロットリングを適用しユーザー操作時に即座に中断）
 pub fn scan_folder_core(
     app: Option<&AppHandle>,
     state: Arc<AppState>,
     folder_id: i64,
     folder_path: String,
+    is_background: bool,
 ) -> Result<(), AppError> {
     let root = Path::new(&folder_path);
     if !root.exists() {
@@ -120,6 +128,7 @@ pub fn scan_folder_core(
 
     let mut discovered_files = Vec::new();
     let mut current_paths_in_fs = HashSet::new();
+    let mut file_count = 0usize;
 
     for entry in WalkDir::new(root)
         .into_iter()
@@ -128,6 +137,18 @@ pub fn scan_folder_core(
         if cancel_flag.load(Ordering::SeqCst) {
             info!("走査がキャンセルされました");
             return Ok(());
+        }
+
+        // バックグラウンド走査時: ユーザーのサムネイル要求が発生したら即座に中断してCPUを譲る
+        if is_background && file_count % 50 == 0 && !state.thumb_pipeline.is_idle() {
+            info!("ユーザー操作・サムネイル要求を検知したためバックグラウンド走査を一時中断します");
+            return Ok(());
+        }
+
+        // バックグラウンド走査時: 100ファイル毎に5ms休止し、CPU使用率の急上昇とファンの回転を防止
+        file_count += 1;
+        if is_background && file_count % 100 == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
         let entry = match entry {
@@ -184,9 +205,17 @@ pub fn scan_folder_core(
 
     let mut processed_count = 0u64;
 
-    for chunk in discovered_files.chunks(BATCH_SIZE) {
+    let chunk_size = if is_background { 100 } else { BATCH_SIZE };
+
+    for chunk in discovered_files.chunks(chunk_size) {
         if cancel_flag.load(Ordering::SeqCst) {
             info!("走査がキャンセルされました");
+            return Ok(());
+        }
+
+        // バックグラウンド走査時: ユーザー操作発生時は直ちに中断
+        if is_background && !state.thumb_pipeline.is_idle() {
+            info!("ユーザー操作・サムネイル要求を検知したためインデックス処理を一時中断します");
             return Ok(());
         }
 
@@ -241,6 +270,11 @@ pub fn scan_folder_core(
         } else {
             state.bump_catalog_version();
         }
+
+        // バックグラウンド走査時: バッチ毎に30ms休止し、CPUコアの過熱とファンの回転を防止
+        if is_background {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
     }
 
     // 3. Cleanup フェーズ: 削除されたファイルの検知
@@ -282,21 +316,26 @@ pub fn scan_folder_core(
     }
 
     // 4. 未生成サムネイルをパイプライン（優先度 LOW）に投入
-    let pending_thumbs = {
-        let conn = state.db.reader()?;
-        crate::db::repo::get_pending_thumb_images(&conn, 2000)?
-    };
+    // 変更理由: バックグラウンドアイドル走査で新規ファイルが0件の場合は無駄な大量再投入を回避
+    let should_enqueue_thumbs = !is_background || total_discovered > 0;
+    if should_enqueue_thumbs {
+        let fetch_limit = if is_background { 100 } else { 2000 };
+        let pending_thumbs = {
+            let conn = state.db.reader()?;
+            crate::db::repo::get_pending_thumb_images(&conn, fetch_limit)?
+        };
 
-    for (id, file_path_str, quick_hash) in pending_thumbs {
-        state.thumb_pipeline.enqueue(
-            id,
-            PathBuf::from(file_path_str),
-            quick_hash,
-            1,
-            None,
-            None,
-            JobPriority::Low,
-        );
+        for (id, file_path_str, quick_hash) in pending_thumbs {
+            state.thumb_pipeline.enqueue(
+                id,
+                PathBuf::from(file_path_str),
+                quick_hash,
+                1,
+                None,
+                None,
+                JobPriority::Low,
+            );
+        }
     }
 
     // 走査完了記録
@@ -328,5 +367,5 @@ pub fn scan_folder(
     folder_id: i64,
     folder_path: String,
 ) -> Result<(), AppError> {
-    scan_folder_core(Some(&app), state, folder_id, folder_path)
+    scan_folder_core(Some(&app), state, folder_id, folder_path, false)
 }

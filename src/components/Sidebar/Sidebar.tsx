@@ -114,7 +114,7 @@ export const Sidebar: React.FC = () => {
     try {
       await backendApi.rescanMissingThumbnails();
       const thumbInfo = await backendApi.getThumbProgress();
-      useAppStore.getState().setThumbProgress({ done: thumbInfo.done, total: thumbInfo.total });
+      useAppStore.getState().setThumbProgress({ done: thumbInfo.done, failed: thumbInfo.failed, total: thumbInfo.total });
       const updated = await backendApi.getWatchFolders();
       useAppStore.getState().setFolders(updated);
     } catch (err: any) {

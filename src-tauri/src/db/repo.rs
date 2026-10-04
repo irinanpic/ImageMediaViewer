@@ -548,8 +548,11 @@ pub fn get_pending_thumb_sources(
     after_id: i64,
     limit: usize,
 ) -> Result<Vec<ThumbSource>> {
+    // 変更理由: 失敗（thumb_status = 2）した画像がバックグラウンドで無限に再投入されて
+    // CPUやログを浪費するのを防止するため、未処理（0）のみを対象とする。
+    // 手動再作成時は reset_failed_thumbnails で 0 に戻るため再試行可能。
     let sql = format!(
-        "SELECT {} FROM images WHERE thumb_status != 1 AND id > ?1 ORDER BY id ASC LIMIT ?2;",
+        "SELECT {} FROM images WHERE thumb_status = 0 AND id > ?1 ORDER BY id ASC LIMIT ?2;",
         THUMB_SOURCE_COLUMNS
     );
     let mut stmt = conn.prepare_cached(&sql)?;
@@ -561,13 +564,13 @@ pub fn get_pending_thumb_sources(
     Ok(items)
 }
 
-/// サムネイル生成未完了（thumb_status != 1）の画像ID一覧を取得
+/// サムネイル生成未完了（thumb_status = 0）の画像ID一覧を取得
 pub fn get_pending_thumb_images(
     conn: &Connection,
     limit: usize,
 ) -> Result<Vec<(i64, String, String)>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, file_path, quick_hash FROM images WHERE thumb_status != 1 ORDER BY id ASC LIMIT ?1;",
+        "SELECT id, file_path, quick_hash FROM images WHERE thumb_status = 0 ORDER BY id ASC LIMIT ?1;",
     )?;
     let rows = stmt.query_map(params![limit as i64], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -600,14 +603,39 @@ pub fn update_thumb_status(conn: &Connection, id: i64, status: i32) -> Result<()
     Ok(())
 }
 
-/// サムネイル生成完了・全体数を集計
+/// サムネイル生成完了・失敗・全体数を集計
 ///
-/// 変更理由: thumb_status = 1（成功）のみを完了としてカウントし、
-/// 生成失敗（2）が完了数に含まれてサムネイル未存在のままループする不具合を解消
-pub fn get_thumb_progress(conn: &Connection) -> Result<(u64, u64)> {
+/// 変更理由: 完了（1）だけでなく失敗件数（2）も取得し、
+/// UIステータスバーで「進まない」と誤認されるのを防ぎ、失敗件数を明確にユーザーへ提示する
+///
+/// @return (完了数, 失敗数, 総画像数)
+pub fn get_thumb_progress(conn: &Connection) -> Result<(u64, u64, u64)> {
     let total: i64 = conn.query_row("SELECT COUNT(*) FROM images;", [], |r| r.get(0))?;
     let done: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE thumb_status = 1;", [], |r| r.get(0))?;
-    Ok((done as u64, total as u64))
+    let failed: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE thumb_status = 2;", [], |r| r.get(0))?;
+    Ok((done as u64, failed as u64, total as u64))
+}
+
+/// サムネイル生成に失敗した画像の一覧を取得
+///
+/// @param limit 上限件数
+/// @return 失敗した画像レコード配列
+pub fn get_failed_thumb_images(conn: &Connection, limit: usize) -> Result<Vec<crate::models::FailedImageRecord>> {
+    let sql = "SELECT id, file_path, format, file_size FROM images WHERE thumb_status = 2 ORDER BY id ASC LIMIT ?1;";
+    let mut stmt = conn.prepare_cached(sql)?;
+    let rows = stmt.query_map(params![limit as i64], |row| {
+        Ok(crate::models::FailedImageRecord {
+            id: row.get(0)?,
+            file_path: row.get(1)?,
+            format: row.get(2)?,
+            file_size: row.get::<_, i64>(3)? as u64,
+        })
+    })?;
+    let mut items = Vec::new();
+    for item in rows {
+        items.push(item?);
+    }
+    Ok(items)
 }
 
 /// カタログバージョンを取得

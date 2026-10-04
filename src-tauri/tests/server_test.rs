@@ -56,4 +56,29 @@ fn test_http_server_heartbeat_and_health() {
         assert!(res_buf.contains("200 OK"), "POST heartbeat で 200 OK が返されること: {}", res_buf);
         assert!(res_buf.contains("\"alive\":true"), "alive: true が含まれること: {}", res_buf);
     }
+
+    // 3. GET /api/logs のテスト
+    if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", test_port)) {
+        use std::io::{Read, Write};
+        let req = format!("GET /api/logs?limit=50 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n", test_port);
+        stream.write_all(req.as_bytes()).unwrap();
+
+        let mut res_buf = String::new();
+        stream.read_to_string(&mut res_buf).unwrap();
+
+        assert!(res_buf.contains("200 OK"), "GET /api/logs で 200 OK が返されること: {}", res_buf);
+    }
+
+    // 4. GET /api/thumbnails/failed のテスト
+    if let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{}", test_port)) {
+        use std::io::{Read, Write};
+        let req = format!("GET /api/thumbnails/failed HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n", test_port);
+        stream.write_all(req.as_bytes()).unwrap();
+
+        let mut res_buf = String::new();
+        stream.read_to_string(&mut res_buf).unwrap();
+
+        assert!(res_buf.contains("200 OK"), "GET /api/thumbnails/failed で 200 OK が返されること: {}", res_buf);
+        assert!(res_buf.contains("[]"), "初期状態では空配列が返ること: {}", res_buf);
+    }
 }

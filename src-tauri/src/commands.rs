@@ -259,3 +259,43 @@ pub async fn set_viewport(
     Ok(gen)
 }
 
+/// サムネイル生成に失敗した画像の一覧を取得
+#[command]
+pub async fn get_failed_thumbnails(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<usize>,
+) -> Result<Vec<crate::models::FailedImageRecord>, AppError> {
+    let conn = state.db.reader()?;
+    let failed = crate::db::repo::get_failed_thumb_images(&conn, limit.unwrap_or(100))?;
+    Ok(failed)
+}
+
+/// 直近のログ一覧を取得
+#[command]
+pub async fn get_logs(
+    limit: Option<usize>,
+) -> Result<Vec<crate::models::LogEntry>, AppError> {
+    if let Some(manager) = crate::logger::get_log_manager() {
+        Ok(manager.get_recent_logs(limit.unwrap_or(200)))
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// ログ保存先ディレクトリをOSのファイルマネージャで開く
+#[command]
+pub async fn open_log_folder(
+    app: AppHandle,
+) -> Result<serde_json::Value, AppError> {
+    use tauri_plugin_opener::OpenerExt;
+    if let Some(manager) = crate::logger::get_log_manager() {
+        let dir = manager.log_dir();
+        let dir_str = dir.to_string_lossy().to_string();
+        let _ = app.opener().reveal_item_in_dir(&dir_str);
+        Ok(serde_json::json!({ "success": true, "path": dir_str }))
+    } else {
+        Err(AppError::internal("ロガーが初期化されていません"))
+    }
+}
+
+

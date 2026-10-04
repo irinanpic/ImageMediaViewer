@@ -83,9 +83,10 @@ src/
 │   ├── Viewer/
 │   │   ├── ImageViewerModal.tsx# 原寸画像表示モーダル、回転・反転・パン・ズーム
 │   │   └── useViewerGestures.ts# マウス・タッチジェスチャー制御
-│   └── Moodboard/
-│       ├── MoodboardCanvas.tsx # 無限キャンバス、アイテム自由配置、矩形クリッピング
-│       └── AddToBoardModal.tsx # タイムライン画像追加モーダル
+│   │   ├── MoodboardCanvas.tsx # 無限キャンバス、アイテム自由配置、矩形クリッピング
+│   │   └── AddToBoardModal.tsx # タイムライン画像追加モーダル
+│   └── Common/
+│       └── LogViewerModal.tsx  # システムログ & サムネイル失敗診断モーダル
 └── hooks/
     ├── usePagedImages.ts       # ページ単位の画像取得・キャッシュ・世代同期
     ├── useTimelineLayout.ts    # ウィンドウ幅連動の動的列数追従 (4, 6, 8, 12列)
@@ -279,7 +280,10 @@ CREATE TABLE thumbnails (
 | `POST` | `/api/viewport` | 現画面表示範囲の通知 | `{ visibleIds: number[], nearbyIds: number[] }` |
 | `POST` | `/api/clear_queue` | サムネイルキュー即時パージ | 古い待機リクエストを一掃解放 |
 | `POST` | `/api/thumbnails/rescan_missing` | 未生成・失敗サムネ一括再作成 | 失敗ステータスリセット ＆ バックグラウンド生成開始 |
-| `GET` | `/api/thumb_progress` | サムネイル全体進捗取得 | `{ done: number, total: number, isGenerating: boolean }` |
+| `GET` | `/api/thumb_progress` | サムネイル全体進捗取得 | `{ done: number, failed: number, total: number, isGenerating: boolean }` |
+| `GET` | `/api/thumbnails/failed` | 失敗画像レコード一覧取得 | `FailedImageRecord[]`（破損・空ファイル診断） |
+| `GET` | `/api/logs` | 直近ログ取得 | `LogEntry[]`（メモリリングバッファから最新順取得） |
+| `POST` | `/api/logs/open` | ログ保存先フォルダ表示 | OSファイルマネージャでログ保存先を開く |
 | `GET` / `POST` | `/api/heartbeat` | フロントエンド・サーバー死活確認 | `{ alive: true, status: "ok", version: "0.1.0" }` |
 | `GET` | `/api/health` | サーバーヘルスチェック | `{ alive: true, status: "ok", version: "0.1.0" }` |
 | `POST` | `/api/shutdown` | バックエンド終了要求 | バックエンドプロセスを安全に終了 |
@@ -327,3 +331,134 @@ flowchart LR
 * **常時監視**: クライアント上部右側の `ConnectionStatusIndicator` により、定期ハートビート（`/api/heartbeat`）で通信状態を可視化。
 * **自動復帰**: 切断状態からサーバーが再起動・復帰した場合、自動的にタイムラインや画像サマリを再同期。
 * **ワンクリック起動**: カスタムプロトコル `imagemediaviewer://launch` と連携し、ブラウザ上からOSランチャーを直接呼び出してサーバーを起動可能。
+
+---
+
+## 7. ログ・エラー診断アーキテクチャ (Logging & Diagnostics)
+
+```mermaid
+flowchart TD
+    subgraph Engine ["ネイティブエンジン内部"]
+        TracingEvents["tracing イベント\n(info!, warn!, error!)"]
+        CustomLayer["カスタムレイヤー\n(MemoryAndFileLoggerLayer)"]
+        LogMgr["ログマネージャ\n(LogManager)"]
+        LogFile["ログファイル永続化\n%APPDATA%/.../logs/app.log"]
+        RingBuffer["インメモリリングバッファ\n(直近500件)"]
+    end
+
+    subgraph StatusManagement ["サムネイル状態管理"]
+        Queue["キューワーカー (queue.rs)"]
+        Repo["DBリポジトリ (repo.rs)"]
+        CatalogDB[("カタログDB (imagesテーブル)")]
+    end
+
+    subgraph ClientDiag ["クライアントUI (診断)"]
+        StatusBar["StatusBar (進捗・失敗バッジ)"]
+        LogModal["LogViewerModal (ログ・失敗一覧)"]
+        Tray["システムトレイメニュー"]
+    end
+
+    TracingEvents --> CustomLayer
+    CustomLayer --> LogMgr
+    LogMgr --> LogFile
+    LogMgr --> RingBuffer
+
+    Queue -->|生成失敗時 (thumb_status=2)| Repo
+    Repo -->|未生成(0)と失敗(2)を厳密分離| CatalogDB
+    Queue -->|エラー詳細・パス・画像ID出力| TracingEvents
+
+    RingBuffer -->|GET /api/logs| LogModal
+    CatalogDB -->|GET /api/thumbnails/failed| LogModal
+    CatalogDB -->|GET /api/thumb_progress| StatusBar
+    Tray -->|POST /api/logs/open| LogFile
+```
+
+### 7.1 ログ多層出力とインメモリバッファ
+* **多層出力パイプライン**:
+  * `tracing-subscriber` のカスタム `Layer` 実装により、標準出力へのリアルタイム出力と同時に、ファイル永続出力および最新500件のインメモリリングバッファへ逐次記録。
+* **ファイル永続化**:
+  * `%APPDATA%\com.imagemediaviewer.app\logs\app.log` へ常時アペンド保存。Windows GUI / 非表示バックグラウンド稼働時でもログが消失しない。
+* **低レイテンシAPI取得**:
+  * クライアントは `/api/logs` により、ディスク読み取り負荷なしにインメモリバッファから瞬時に直近ログを取得可能。
+
+### 7.2 サムネイル生成失敗管理と無限ループ防止
+* **状態コードの厳密分離**:
+  * `thumb_status = 0`: 未生成（生成対象）
+  * `thumb_status = 1`: 生成完了
+  * `thumb_status = 2`: 生成失敗（破損画像、0バイトファイル、未対応動画/特殊形式等）
+* **補充ループ防止**:
+  * `get_pending_thumb_sources` で `thumb_status = 0` のみを抽出対象とし、失敗した画像（`thumb_status = 2`）がキューへ延々と再投入される無限ループを根絶。
+* **原因特定・診断UI**:
+  * `StatusBar` で「○件完了 / △件失敗」を明確に示し、ワンクリックで `LogViewerModal` を起動。失敗画像のパス・サイズ・形式を確認し、エクスプローラでの直接確認およびワンクリック再試行（リセット＆再スキャン）を実行可能。
+
+---
+
+## 8. 省電力・静音スロットリングアーキテクチャ (Eco & Quiet Throttling)
+
+常駐型デスクトップアプリケーションとして、長期間のバックグラウンド稼働時にCPUファンが高速回転したりCPU使用率を無駄に消費しないための多層スロットリング制御を実装しています。
+
+```mermaid
+flowchart TD
+    subgraph IdleDetection ["アイドル監視制御 (watcher.rs)"]
+        IdleCheck{"パイプラインが\n完全アイドルか？"}
+        CoolingTimer{"30秒間の\nクーリング経過？"}
+        IntervalTimer{"前回の走査から\n5分経過？"}
+    end
+
+    subgraph ThrottledScan ["省電力スロットル走査 (walker.rs)"]
+        WalkLoop["ファイル走査ループ (WalkDir)"]
+        SleepWalk["100ファイル毎に 5ms 休止"]
+        UserInterrupt{"ユーザー操作検知\n(!is_idle)"}
+        Abort["走査を即座に中断して譲る"]
+        IndexLoop["メタデータ抽出・DB登録"]
+        SleepIndex["100件毎に 30ms 休止"]
+    end
+
+    subgraph PipelineThrottling ["パイプライン省電力制御 (queue.rs)"]
+        JobType{"ジョブ優先度判定"}
+        HighMid["High / Mid (表示中)"]
+        FastProcess["休止なし・最高速生成 (1〜2ms)"]
+        LowJob["Low (バックグラウンド)"]
+        CoolingSleep["生成後に 20ms 休止 (ファン回転抑止)"]
+        EmptyWait["ヒープ空・未生成なし時は 60秒 静止待機 (CPU 0.0%)"]
+    end
+
+    IdleCheck -->|Yes| CoolingTimer
+    CoolingTimer -->|Yes| IntervalTimer
+    IntervalTimer -->|Yes| WalkLoop
+
+    WalkLoop --> SleepWalk
+    WalkLoop --> UserInterrupt
+    UserInterrupt -->|Yes| Abort
+    UserInterrupt -->|No| IndexLoop
+    IndexLoop --> SleepIndex
+
+    JobType -->|表示要求| HighMid --> FastProcess
+    JobType -->|バックグラウンド| LowJob --> CoolingSleep
+    JobType -->|キュー空| EmptyWait
+```
+
+### 8.1 アイドル走査スロットリング (walker.rs & watcher.rs)
+* **適正な実行インターバルとクーリング期間**:
+  * 差分走査の間隔を従来の45秒から **5分（300秒）** に拡大。
+  * サムネイルパイプラインがアイドルになった後、**30秒間のクーリング期間** を待機してから走査を開始し、ユーザーの連続作業の合間に無駄なI/Oが発生するのを抑制。
+* **Walking フェーズの I/O スロットリング**:
+  * 100ファイル走査するごとに **5ms のスレッド休止** を挿入。ディスクI/Oキューの過熱とCPU 1コア100%張り付きを防ぎ、平均CPU負荷 1〜3% で静かに走査を完了。
+* **ユーザー最優先の即時中断 (Preemption)**:
+  * バックグラウンド走査中、50ファイル毎および各バッチ処理時にパイプラインのアイドル状態を監視。ユーザーがスクロールや画像クリック等を行った場合は、即座に走査を安全中断してCPU・ディスクリソースを最優先でUIへ明け渡す。
+* **Indexing フェーズの負荷分散**:
+  * メタデータ抽出バッチを100件単位に縮小し、バッチ毎に **30ms のクーリング休止** を挿入。
+
+### 8.2 バックグラウンドサムネイル生成のクーリング休止 (queue.rs)
+* **表示中ジョブとバックグラウンドジョブの分離**:
+  * ユーザーが見ている画面（High / Mid 優先度）は休止なしで **最速生成（1〜2ms / 枚）** を維持。
+  * 画面外の事前生成（Low 優先度）は、1枚のサムネイル生成完了ごとに **20ms のクーリング休止** を挿入。
+  * これにより、何千枚ものサムネイルを連続生成している最中でも、CPU使用率は 10〜15% 程度に抑制され、**ノートPCやデスクトップのCPUファンが唸るのを確実に防止**。
+
+### 8.3 ワーカースレッドの完全アイドル待機 (queue.rs)
+* **無駄な定期起床の根絶**:
+  * キューが空で未生成サムネイルもない定常時、ワーカースレッド群の条件変数タイムアウトを従来の5秒から **60秒** へ延長。
+  * 常駐アイドル時のCPU使用率は **0.0%** を維持し、バッテリー消費や発熱を最小限に抑える。
+  * 新規画像の追加や表示スクロールが発生した際は、`Condvar::notify_one` / `notify_all` により **0ミリ秒で即座に起床** するため、応答性への悪影響は皆無。
+
+

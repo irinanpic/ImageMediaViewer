@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod logger;
 pub mod models;
 pub mod pipeline;
 pub mod protocol;
@@ -23,16 +24,6 @@ use crate::state::AppState;
 /// デフォルトで軽量かつ堅牢なスタンドアロンHTTPサーバーモードで稼働し、
 /// 独立ウィンドウ(Electron/Edge App Mode)およびブラウザへ安定したAPI・画像配信を提供する
 pub fn run() {
-    // ログ初期化
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,image_media_viewer=debug".into()),
-        )
-        .init();
-
-    info!("ImageMediaViewer バックエンド初期化開始");
-
     let app_data_dir = std::env::var("APPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -44,6 +35,11 @@ pub fn run() {
 
     std::fs::create_dir_all(&app_data_dir).ok();
     std::fs::create_dir_all(&app_cache_dir).ok();
+
+    // ファイルおよびメモリロガーの初期化
+    let _ = crate::logger::init_logger(&app_data_dir);
+
+    info!("ImageMediaViewer バックエンド初期化開始 (ログ出力先: {:?})", app_data_dir.join("logs"));
 
     let db_path = app_data_dir.join("catalog.db");
     let db = Database::open(&db_path).expect("カタログDBの初期化に失敗");
@@ -121,6 +117,9 @@ pub fn run() {
                 commands::prefetch_thumbnails,
                 commands::set_viewport,
                 commands::reveal_in_file_manager,
+                commands::get_failed_thumbnails,
+                commands::get_logs,
+                commands::open_log_folder,
             ]);
 
         builder

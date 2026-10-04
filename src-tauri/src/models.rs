@@ -6,7 +6,7 @@ use ts_rs::TS;
 /// 変更理由: 仕様書§9のImageRecordインターフェースに準拠。不要なフィールドを除去しIPC転送量を最小化
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct ImageRecord {
     /// 画像ID (DB primary key)
     #[ts(type = "number")]
@@ -26,7 +26,7 @@ pub struct ImageRecord {
 /// 撮影日時の取得元情報
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub enum TakenAtSource {
     Exif,
     Mtime,
@@ -37,7 +37,7 @@ pub enum TakenAtSource {
 /// 変更理由: 仕様書§9のImageDetailインターフェースに準拠
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct ImageDetail {
     #[ts(type = "number")]
     pub id: i64,
@@ -63,10 +63,42 @@ pub struct ImageDetail {
     pub original_available: bool,
 }
 
+/// サムネイル生成に失敗した画像のレコード（原因分析・ログ確認用）
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct FailedImageRecord {
+    /// 画像ID
+    #[ts(type = "number")]
+    pub id: i64,
+    /// 元ファイルの絶対パス
+    pub file_path: String,
+    /// 画像フォーマット ('png', 'webp' 等)
+    pub format: Option<String>,
+    /// ファイルサイズ（バイト）
+    #[ts(type = "number")]
+    pub file_size: u64,
+}
+
+/// ログエントリのデータ構造（ログ取得・画面表示用）
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct LogEntry {
+    /// 発生日時文字列 ("YYYY-MM-DD HH:MM:SS.mmm")
+    pub timestamp: String,
+    /// ログレベル ("INFO", "WARN", "ERROR", "DEBUG", "TRACE")
+    pub level: String,
+    /// ログのターゲットモジュール
+    pub target: String,
+    /// ログメッセージ本文
+    pub message: String,
+}
+
 /// 日別集計バケット（タイムラインの日付ヘッダおよび仮想スクロール高さ計算用）
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct DayBucket {
     /// 日付文字列 ('YYYY-MM-DD')
     pub day: String,
@@ -78,7 +110,7 @@ pub struct DayBucket {
 /// タイムライン全体サマリ情報
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct TimelineSummary {
     /// 登録画像総数
     #[ts(type = "number")]
@@ -93,7 +125,7 @@ pub struct TimelineSummary {
 /// フォルダの稼働状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub enum FolderStatus {
     Online,
     Offline,
@@ -103,7 +135,7 @@ pub enum FolderStatus {
 /// 監視対象フォルダ情報
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct WatchedFolder {
     /// フォルダID
     #[ts(type = "number")]
@@ -123,7 +155,7 @@ pub struct WatchedFolder {
 /// タイムラインの表示ソート順
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub enum TimelineSort {
     /// 撮影日時 降順（新しい順）
     TakenAtDesc,
@@ -140,7 +172,7 @@ pub enum TimelineSort {
 /// タイムライン画像一覧取得リクエストペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct GetImagesPayload {
     /// 取得開始オフセット
     #[ts(type = "number")]
@@ -159,7 +191,7 @@ pub struct GetImagesPayload {
 /// 走査フェーズ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub enum ScanPhase {
     Walking,
     Indexing,
@@ -170,7 +202,7 @@ pub enum ScanPhase {
 /// 走査進捗イベント通知ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct ScanProgress {
     #[ts(type = "number")]
     pub folder_id: i64,
@@ -184,10 +216,12 @@ pub struct ScanProgress {
 /// サムネイル生成進捗イベント通知ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct ThumbProgress {
     #[ts(type = "number")]
     pub done: u64,
+    #[ts(type = "number")]
+    pub failed: u64,
     #[ts(type = "number")]
     pub total: u64,
 }
@@ -195,7 +229,7 @@ pub struct ThumbProgress {
 /// カタログ変更通知イベントペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct CatalogChangedPayload {
     #[ts(type = "number")]
     pub version: i64,
@@ -206,7 +240,7 @@ pub struct CatalogChangedPayload {
 /// 変更理由: アプリ再起動時に前回のウィンドウサイズや位置、最大化状態を忠実に復元するため
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct WindowState {
     pub width: u32,
     pub height: u32,
@@ -230,7 +264,7 @@ impl Default for WindowState {
 /// ムードボード（グループ）情報
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct Board {
     #[ts(type = "number")]
     pub id: i64,
@@ -250,7 +284,7 @@ pub struct Board {
 /// ムードボード上の配置アイテム情報（非破壊変形・クリッピング対応）
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct BoardItem {
     #[ts(type = "number")]
     pub id: i64,
@@ -282,7 +316,7 @@ pub struct BoardItem {
 /// ボード新規作成ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct CreateBoardPayload {
     pub name: String,
     pub background_color: Option<String>,
@@ -291,7 +325,7 @@ pub struct CreateBoardPayload {
 /// ボード更新ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct UpdateBoardPayload {
     pub name: Option<String>,
     pub background_color: Option<String>,
@@ -303,7 +337,7 @@ pub struct UpdateBoardPayload {
 /// ボードアイテム一括追加ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct AddBoardItemsPayload {
     #[ts(type = "number")]
     pub board_id: i64,
@@ -314,7 +348,7 @@ pub struct AddBoardItemsPayload {
 /// ボードアイテム変形・クリッピング更新ペイロード
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/types/generated/")]
+#[ts(export, export_to = "../src/types/generated/")]
 pub struct UpdateBoardItemPayload {
     #[serde(default)]
     #[ts(type = "number")]
@@ -334,5 +368,20 @@ pub struct UpdateBoardItemPayload {
     pub is_locked: Option<bool>,
     pub flip_h: Option<bool>,
     pub flip_v: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_bindings_failed_image_record() {
+        FailedImageRecord::export().expect("Failed to export FailedImageRecord bindings");
+    }
+
+    #[test]
+    fn export_bindings_log_entry() {
+        LogEntry::export().expect("Failed to export LogEntry bindings");
+    }
 }
 

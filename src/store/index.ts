@@ -83,6 +83,9 @@ interface AppStoreState {
   toggleSidebar: () => void;
   timelineRefreshTick: number;
   refreshTimeline: () => void;
+  isLogModalOpen: boolean;
+  openLogModal: () => void;
+  closeLogModal: () => void;
 
   // 通信状態スライス
   connectionStatus: "connected" | "connecting" | "disconnected";
@@ -239,6 +242,9 @@ export const useAppStore = create<AppStoreState>((set) => ({
   timelineRefreshTick: 0,
   refreshTimeline: () =>
     set((state) => ({ timelineRefreshTick: state.timelineRefreshTick + 1 })),
+  isLogModalOpen: false,
+  openLogModal: () => set({ isLogModalOpen: true }),
+  closeLogModal: () => set({ isLogModalOpen: false }),
 
   // 通信状態初期値
   connectionStatus: "connected",

@@ -31,7 +31,7 @@ export function useBackendEvents() {
 
       // サムネイル進捗の取得
       const thumbInfo = await backendApi.getThumbProgress();
-      setThumbProgress({ done: thumbInfo.done, total: thumbInfo.total });
+      setThumbProgress({ done: thumbInfo.done, failed: thumbInfo.failed, total: thumbInfo.total });
     } catch (err) {
       console.error("サマリ取得に失敗しました:", err);
     }
@@ -48,9 +48,9 @@ export function useBackendEvents() {
     const poll = async () => {
       try {
         const thumbInfo = await backendApi.getThumbProgress();
-        setThumbProgress({ done: thumbInfo.done, total: thumbInfo.total });
+        setThumbProgress({ done: thumbInfo.done, failed: thumbInfo.failed, total: thumbInfo.total });
         // 生成が進行中であればフォルダの生成数表示も同期
-        if (thumbInfo.isGenerating || thumbInfo.done < thumbInfo.total) {
+        if (thumbInfo.isGenerating || thumbInfo.done + thumbInfo.failed < thumbInfo.total) {
           const folders = await backendApi.getWatchFolders();
           setFolders(folders);
         }

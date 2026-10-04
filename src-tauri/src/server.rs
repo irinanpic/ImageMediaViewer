@@ -500,7 +500,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                                         let f_id = folder.id;
                                                         let f_path = folder.path.clone();
                                                         thread::spawn(move || {
-                                                            let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path);
+                                                            let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path, false);
                                                         });
                                                         json_response(&folder, 200)
                                                     }
@@ -544,7 +544,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                         let f_id = folder.id;
                                         let f_path = folder.path;
                                         thread::spawn(move || {
-                                            let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path);
+                                            let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path, false);
                                         });
                                     }
                                 }
@@ -680,20 +680,22 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                     (Method::Get, "/api/thumb_progress") => {
                         match state.db.reader() {
                             Ok(conn) => match crate::db::repo::get_thumb_progress(&conn) {
-                                Ok((done, total)) => {
+                                Ok((done, failed, total)) => {
                                     let is_idle = state.thumb_pipeline.is_idle();
                                     #[derive(serde::Serialize)]
                                     #[serde(rename_all = "camelCase")]
                                     struct ThumbProgressResp {
                                         done: u64,
+                                        failed: u64,
                                         total: u64,
                                         is_generating: bool,
                                     }
                                     json_response(
                                         &ThumbProgressResp {
                                             done,
+                                            failed,
                                             total,
-                                            is_generating: !is_idle && done < total,
+                                            is_generating: !is_idle && (done + failed) < total,
                                         },
                                         200,
                                     )
@@ -701,6 +703,47 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                 Err(e) => error_response(AppError::from(e), 500),
                             },
                             Err(e) => error_response(AppError::from(e), 500),
+                        }
+                    },
+
+                    (Method::Get, "/api/thumbnails/failed") => {
+                        match state.db.reader() {
+                            Ok(conn) => match crate::db::repo::get_failed_thumb_images(&conn, 200) {
+                                Ok(records) => json_response(&records, 200),
+                                Err(e) => error_response(AppError::from(e), 500),
+                            },
+                            Err(e) => error_response(AppError::from(e), 500),
+                        }
+                    },
+
+                    (Method::Get, "/api/logs") => {
+                        let limit = query.split('&').find_map(|pair| {
+                            let mut parts = pair.split('=');
+                            if parts.next() == Some("limit") {
+                                parts.next().and_then(|v| v.parse::<usize>().ok())
+                            } else {
+                                None
+                            }
+                        }).unwrap_or(200);
+
+                        if let Some(lm) = crate::logger::get_log_manager() {
+                            let logs = lm.get_recent_logs(limit);
+                            json_response(&logs, 200)
+                        } else {
+                            json_response(&Vec::<crate::logger::LogEntry>::new(), 200)
+                        }
+                    },
+
+                    (Method::Post, "/api/logs/open") => {
+                        if let Some(lm) = crate::logger::get_log_manager() {
+                            let dir = lm.log_dir();
+                            let _ = opener::reveal(&dir);
+                            json_response(&serde_json::json!({
+                                "success": true,
+                                "path": dir.to_string_lossy()
+                            }), 200)
+                        } else {
+                            error_response(AppError::internal("ロガーが初期化されていません"), 500)
                         }
                     },
 
