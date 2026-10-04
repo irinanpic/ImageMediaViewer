@@ -315,11 +315,19 @@ flowchart LR
     TrayHandler -->|クライアントを開く| Client
     UIHeader -->|2.5秒定期ヘルスチェック| ServerCore
     UIRetry -->|切断時の再起動トリガー| Protocol
-    Protocol -->|run.bat / exe起動| ServerCore
+    Protocol -->|run-server.bat / run-server.sh| ServerCore
 ```
 
-### 6.1 システムトレイ常駐 (System Tray Resident)
+### 6.1 システムトレイ常駐とプロセス常駐保護 (Process Lifecycle & Tray)
 * **独立常駐**: サーバープロセスはクライアントウィンドウの開閉に左右されずバックグラウンドで安定常駐。
+* **スリープ・省電力タスクキル防止（常駐保護設計）**:
+  * ブラウザの「メモリセーバー」やタブサスペンド、PCスリープ復帰時にブラウザが勝手に発火する `pagehide` / `beforeunload` イベントでのシャットダウン要求（`navigator.sendBeacon("/api/shutdown")`）を完全撤廃。
+  * サーバー側で `AUTO_EXIT_ON_IDLE: AtomicBool` による常駐ガードを導入。`--auto-exit` フラグが明示されていない常駐稼働時は、万一 `/api/shutdown` リクエストが届いてもプロセスを終了させず常駐を死守。
+  * プロセスの明示的終了は、タスクトレイメニューの「終了」からのみ行われる設計とし、長時間放置での勝手な停止を根絶。
+* **サーバー単体起動ランチャー (`run-server.bat` / `run-server.sh`)**:
+  * クライアントウィンドウを起動せず、サーバープロセスのみをバックグラウンド起動。
+  * スクリプト内の `cd /d "%~dp0"` により作業ディレクトリをスクリプト位置へ確実に固定し、URIプロトコル呼び出し時（CWDがSystem32等になる問題）でも確実にバイナリを実行。
+  * 多重起動防止ガード（PowerShell `Get-Process` / `pgrep`）を備え、既に起動中の場合は重複してプロセスを立ち上げない安全設計。
 * **ネイティブトレイアイコン**: Windows通知領域、macOSメニューバー、Linuxシステムトレイ（AppIndicator）に対応。
 * **トレイ右クリックメニュー**:
   * **クライアントを開く**: Chrome/Edge App Mode（または既定ブラウザ）でクライアントを即時起動。
@@ -327,10 +335,17 @@ flowchart LR
   * **データフォルダを開く**: カタログDBおよびサムネイルキャッシュのディレクトリをOSファイルマネージャで開く。
   * **終了**: サーバープロセスを安全に終了。
 
-### 6.2 通信状態監視と再接続 (Heartbeat & Auto Reconnect)
+### 6.2 通信状態監視と再接続 (Heartbeat & Multi-platform Recovery)
 * **常時監視**: クライアント上部右側の `ConnectionStatusIndicator` により、定期ハートビート（`/api/heartbeat`）で通信状態を可視化。
+* **多重起動防止型ワンクリック起動**:
+  * カスタムプロトコル `imagemediaviewer://launch` のターゲットを、クライアント起動スクリプト（`run.bat`）からサーバー専用ランチャー（`run-server.bat`）へ変更。
+  * クライアント画面が開いている状態で回復ボタンを押しても、新しいクライアントウィンドウが多重起動しない仕様に改善。
+* **OS自動判定によるクロスプラットフォーム回復対応**:
+  * フロントエンドがユーザーの `navigator.userAgent` / `navigator.platform` から稼働OS（Windows / macOS / Linux）を自動判定。
+  * 手動回復用コマンドのコピーボタンを、Windows環境では `.\run-server.bat`、macOS / Linux 環境では `./run-server.sh` に自動で切り替え。
+* **段階的自動リトライ機構**:
+  * URIスキーム呼び出し直後、OSプロセス起動のタイムラグ（1.2秒、3秒、5秒）を考慮した段階的自動再接続リトライを実施し、復旧成功率を大幅に向上。
 * **自動復帰**: 切断状態からサーバーが再起動・復帰した場合、自動的にタイムラインや画像サマリを再同期。
-* **ワンクリック起動**: カスタムプロトコル `imagemediaviewer://launch` と連携し、ブラウザ上からOSランチャーを直接呼び出してサーバーを起動可能。
 
 ---
 

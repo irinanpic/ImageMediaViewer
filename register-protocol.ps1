@@ -1,6 +1,6 @@
 # ImageMediaViewer Custom URI Protocol (imagemediaviewer://) Registration Script
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$runBat = Join-Path $scriptDir "run.bat"
+$runServerBat = Join-Path $scriptDir "run-server.bat"
 
 Write-Host "Registering ImageMediaViewer URI Protocol (imagemediaviewer://)..." -ForegroundColor Cyan
 
@@ -11,7 +11,7 @@ Set-ItemProperty -Path $regKey -Name "URL Protocol" -Value "" | Out-Null
 
 $cmdKey = "$regKey\shell\open\command"
 New-Item -Path $cmdKey -Force | Out-Null
-$cmdValue = "`"$runBat`" `"%1`""
+$cmdValue = "cmd.exe /c `"`"cd /d `"`"$scriptDir`"`" && `"`"$runServerBat`"`"`""
 Set-ItemProperty -Path $cmdKey -Name "(Default)" -Value $cmdValue | Out-Null
 
 Write-Host "[OK] Registered URI Protocol: imagemediaviewer://" -ForegroundColor Green

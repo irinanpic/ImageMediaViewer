@@ -60,19 +60,11 @@ export function useWindowState() {
       fetch(`${getBaseUrl()}/api/heartbeat`, { method: "POST" }).catch(() => {});
     }, 2500);
 
-    // ウィンドウ終了時の明示的シャットダウン送信
+    // ウィンドウ状態の保存（アンロード時）
+    // 変更理由: サーバ常駐化仕様に基づき、クライアント画面が閉じたりOSがスリープに入っても
+    // サーバを勝手に終了させないよう、ウィンドウ状態の保存のみを行いシャットダウン要求は送信しない
     const handleUnload = () => {
       persistWindowState();
-      try {
-        const shutdownUrl = `${getBaseUrl()}/api/shutdown`;
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(shutdownUrl, "");
-        } else {
-          fetch(shutdownUrl, { method: "POST", keepalive: true }).catch(() => {});
-        }
-      } catch {
-        // シャットダウン送信エラーは無視
-      }
     };
 
     window.addEventListener("resize", handleResize);

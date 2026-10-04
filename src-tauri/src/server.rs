@@ -19,6 +19,8 @@ use crate::state::AppState;
 static LAST_CLIENT_SEEN: AtomicI64 = AtomicI64::new(0);
 // 少なくとも1回フロントエンドから通信があったフラグ
 static CLIENT_CONNECTED: AtomicBool = AtomicBool::new(false);
+// アイドル自動終了（--auto-exit）モードフラグ（常駐モード時はfalse）
+static AUTO_EXIT_ON_IDLE: AtomicBool = AtomicBool::new(false);
 
 /// フロントエンドのアクティビティを記録
 fn record_client_activity() {
@@ -178,6 +180,7 @@ fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
 /// @param port リッスンするポート番号
 /// @param auto_exit_on_idle フロントエンド無通信時に自動終了するか（常駐時はfalse）
 pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: bool) {
+    AUTO_EXIT_ON_IDLE.store(auto_exit_on_idle, Ordering::SeqCst);
     let addr = format!("127.0.0.1:{}", port);
     thread::spawn(move || {
         let server = match Server::http(&addr) {
@@ -757,12 +760,17 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                     },
 
                     (Method::Post, "/api/shutdown") => {
-                        info!("フロントエンドから明示的な終了リクエストを受信しました。バックエンドをシャットダウンします。");
-                        thread::spawn(|| {
-                            thread::sleep(Duration::from_millis(80));
-                            std::process::exit(0);
-                        });
-                        json_response(&serde_json::json!({ "success": true }), 200)
+                        if AUTO_EXIT_ON_IDLE.load(Ordering::SeqCst) {
+                            info!("--auto-exit モードのためフロントエンドからの終了要求に基づきシャットダウンします。");
+                            thread::spawn(|| {
+                                thread::sleep(Duration::from_millis(80));
+                                std::process::exit(0);
+                            });
+                            json_response(&serde_json::json!({ "success": true, "status": "shutting_down" }), 200)
+                        } else {
+                            info!("サーバ常駐モードのためシャットダウン要求を無視し、常駐を維持します（タスクトレイメニュー等から終了可能）");
+                            json_response(&serde_json::json!({ "success": true, "status": "resident_mode_kept" }), 200)
+                        }
                     }
 
                     (Method::Post, "/api/prefetch_thumbnails") => {
