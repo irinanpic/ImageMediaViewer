@@ -99,7 +99,13 @@ fn get_window_state_path() -> PathBuf {
         }
     }
 
-    // 3. フォールバック
+    // 3. フォールバック（インストール版）: 書き込み可能なユーザーデータ領域に保存
+    // 変更理由: Program Files 配下などカレントディレクトリが書き込み不可でも状態を保存できるようにする
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("com.imagemediaviewer.app")
+            .join("window_state.json");
+    }
     PathBuf::from("window_state.json")
 }
 
@@ -135,17 +141,49 @@ fn image_response(data: Vec<u8>, mime: &str) -> Response<std::io::Cursor<Vec<u8>
 }
 
 
-/// dist/ ディレクトリ内の静的フロントエンドアセットを配信する
-fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
-    let dist_dirs = [
-        PathBuf::from("dist"),
-        PathBuf::from("../dist"),
-    ];
+/// フロントエンド(dist/)の探索候補ディレクトリを優先順に返す
+///
+/// 変更理由: インストール版ではカレントディレクトリが不定のため、実行ファイル基準の
+/// `dist`（Tauri の bundle.resources で同梱）を最優先で探索する必要がある。
+/// 開発時（target/debug|release 配下からの実行）は従来の相対パスにフォールバックする。
+///
+/// @return 探索候補ディレクトリの配列（優先順）
+fn dist_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            // インストール版: <インストール先>/dist
+            dirs.push(exe_dir.join("dist"));
+            // 開発時: src-tauri/target/{debug,release} -> プロジェクトルート/dist
+            if let Some(root) = exe_dir.ancestors().nth(3) {
+                dirs.push(root.join("dist"));
+            }
+        }
+    }
+    dirs.push(PathBuf::from("dist"));
+    dirs.push(PathBuf::from("../dist"));
+    dirs
+}
 
+/// dist/ ディレクトリ内の静的フロントエンドアセットを配信する
+///
+/// 変更理由: `..` を含むパスで dist 外のファイルを読み出せないよう拒否する（パストラバーサル対策）。
+///
+/// @param path リクエストパス（例: "/assets/index.js"）
+/// @return 見つかった場合はレスポンス、見つからない・不正なパスの場合は None
+fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
     let clean_path = path.trim_start_matches('/');
     let target_file = if clean_path.is_empty() { "index.html" } else { clean_path };
 
-    for dir in &dist_dirs {
+    // 親ディレクトリ参照・絶対パス・ドライブ指定を拒否
+    let has_unsafe_component = std::path::Path::new(target_file)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)));
+    if has_unsafe_component || target_file.contains('\\') {
+        return None;
+    }
+
+    for dir in &dist_search_dirs() {
         let file_path = dir.join(target_file);
         if file_path.is_file() {
             if let Ok(bytes) = std::fs::read(&file_path) {

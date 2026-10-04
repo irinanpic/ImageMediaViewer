@@ -1,9 +1,18 @@
 [package]
 name = "image-media-viewer"
+default-run = "image-media-viewer"
 version = "0.1.0"
 description = "Lightweight cross-platform image catalog viewer"
 authors = ["ImageMediaViewer Team"]
 edition = "2021"
+
+[[bin]]
+name = "image-media-viewer"
+path = "src/main.rs"
+
+[[bin]]
+name = "gen_thumbs"
+path = "src/bin/gen_thumbs.rs"
 
 [lib]
 name = "image_media_viewer_lib"
