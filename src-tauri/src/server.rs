@@ -170,8 +170,14 @@ fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
 /// バックエンド HTTP サーバーをバックグラウンドスレッドで起動
 ///
 /// 変更理由: Windows環境でのスレッド生成オーバーヘッドを排除する固定スレッドプール（12スレッド）を導入し、
-/// インメモリキャッシュ（メタデータ＋WebPバイナリ）と連携してPicasa同等の極限レスポンスを実現
-pub fn start_http_server(state: Arc<AppState>, port: u16) {
+/// インメモリキャッシュ（メタデータ＋WebPバイナリ）と連携してPicasa同等の極限レスポンスを実現。
+/// また、ユーザー要求「サーバはクライアントによらず常駐することも可能とする」に対応し、
+/// 常駐モードではフロントエンド通信途絶による自動停止を無効化する。
+///
+/// @param state アプリケーション共有状態
+/// @param port リッスンするポート番号
+/// @param auto_exit_on_idle フロントエンド無通信時に自動終了するか（常駐時はfalse）
+pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: bool) {
     let addr = format!("127.0.0.1:{}", port);
     thread::spawn(move || {
         let server = match Server::http(&addr) {
@@ -211,25 +217,29 @@ pub fn start_http_server(state: Arc<AppState>, port: u16) {
                 .expect("HTTPワーカースレッド起動失敗");
         }
 
-        // フロントエンド監視スレッド:
-        // 変更理由: ユーザー要求「フロントエンドを落とした際にバックエンドが落ちない場合があり、バックエンドの処理が困難となるため出来る限り同期する」。
-        // フロントエンドとの接続確立後、通信が10秒以上途絶えた場合はフロントエンドが終了したと判断して安全に自己終了する。
-        thread::Builder::new()
-            .name("frontend-heartbeat-watcher".to_string())
-            .spawn(|| {
-                loop {
-                    thread::sleep(Duration::from_secs(2));
-                    if CLIENT_CONNECTED.load(Ordering::Relaxed) {
-                        let last = LAST_CLIENT_SEEN.load(Ordering::Relaxed);
-                        let now = chrono::Utc::now().timestamp();
-                        if now - last > 10 {
-                            info!("フロントエンドの終了（10秒間無通信）を検知しました。バックエンドを正常終了します。");
-                            std::process::exit(0);
+        // フロントエンド監視スレッド（auto_exit_on_idle が有効な場合のみ稼働）:
+        // 常駐モード時は自動終了せず、タスクトレイまたはAPI経由の明示的終了指示まで常駐し続ける。
+        if auto_exit_on_idle {
+            info!("アイドル自動終了機能が有効化されています（10秒無通信で終了）");
+            thread::Builder::new()
+                .name("frontend-heartbeat-watcher".to_string())
+                .spawn(|| {
+                    loop {
+                        thread::sleep(Duration::from_secs(2));
+                        if CLIENT_CONNECTED.load(Ordering::Relaxed) {
+                            let last = LAST_CLIENT_SEEN.load(Ordering::Relaxed);
+                            let now = chrono::Utc::now().timestamp();
+                            if now - last > 10 {
+                                info!("フロントエンドの終了（10秒間無通信）を検知しました。バックエンドを正常終了します。");
+                                std::process::exit(0);
+                            }
                         }
                     }
-                }
-            })
-            .expect("ハートビート監視スレッド起動失敗");
+                })
+                .expect("ハートビート監視スレッド起動失敗");
+        } else {
+            info!("サーバ常駐モードで稼働中（フロントエンド終了後もタスクトレイに常駐維持）");
+        }
 
         for request in server.incoming_requests() {
             if let Err(e) = tx.send(request) {
@@ -694,9 +704,13 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         }
                     },
 
-                    (Method::Post, "/api/heartbeat") => {
+                    (Method::Post, "/api/heartbeat") | (Method::Get, "/api/heartbeat") | (Method::Get, "/api/health") => {
                         record_client_activity();
-                        json_response(&serde_json::json!({ "alive": true }), 200)
+                        json_response(&serde_json::json!({
+                            "alive": true,
+                            "status": "ok",
+                            "version": "0.1.0"
+                        }), 200)
                     },
 
                     (Method::Post, "/api/shutdown") => {

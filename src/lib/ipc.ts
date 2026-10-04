@@ -193,6 +193,11 @@ async function callIpc<T>(command: string, args?: Record<string, unknown>): Prom
         options.method = "DELETE";
         break;
 
+      case "heartbeat":
+        url += "/heartbeat";
+        options.method = "POST";
+        break;
+
       default:
         throw { code: "Internal", message: `未知のコマンド: ${command}` } as AppError;
     }
@@ -384,5 +389,32 @@ export const backendApi = {
    */
   deleteBoardItem: (id: number): Promise<{ success: boolean }> =>
     callIpc<{ success: boolean }>("delete_board_item", { id }),
+
+  /**
+   * サーバー生存確認（ハートビート）
+   */
+  checkHeartbeat: (): Promise<{ alive: boolean }> =>
+    callIpc<{ alive: boolean }>("heartbeat"),
+
+  /**
+   * サーバーの稼働確認（高速軽量Ping）
+   * @param timeoutMs タイムアウトミリ秒（デフォルト3000ms）
+   * @returns 稼働しているかどうか
+   */
+  pingServer: async (timeoutMs = 3000): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(`${getBaseHttpUrl()}/api/heartbeat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
 };
 

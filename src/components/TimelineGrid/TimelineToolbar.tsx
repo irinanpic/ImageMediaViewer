@@ -1,22 +1,20 @@
 import React from "react";
-import { Plus, RotateCw, SlidersHorizontal, ZoomIn, ZoomOut } from "lucide-react";
+import { Plus, RotateCw, SlidersHorizontal } from "lucide-react";
 import { BookmarkPopover } from "./BookmarkPopover";
+import { ConnectionStatusIndicator } from "../Common/ConnectionStatusIndicator";
 import { usePagedImages } from "../../hooks/usePagedImages";
 import { useAppStore } from "../../store";
 import type { TimelineSort } from "../../types/generated/TimelineSort";
 
 /**
- * タイムライン表示ツールバー（表示順切替・サムネイルサイズスライダー・ムードボード追加・現画面再読込）
+ * タイムライン表示ツールバー（表示順切替・ムードボード追加・現画面再読込・通信状態表示＆再接続）
  *
- * 変更理由: Picasa風の快適な操作性を実現するため、フォルダ順・日時順等のソート切替および
- * サムネイルサイズの無段階調整（スライダー＋Ctrlホイール連携）、資料ボード追加アクション、
- * そして読込不可時やキュー滞留時の現画面即時再読込アクションを提供する。
+ * 変更理由: 上部サムネイルサイズスライダーを廃止してステータスバーへ一本化し、
+ * 空いた上部右側に通信途絶検知・再接続（サーバー起動）コントローラーを配置する
  */
 export const TimelineToolbar: React.FC = () => {
   const timelineSort = useAppStore((state) => state.timelineSort);
   const setTimelineSort = useAppStore((state) => state.setTimelineSort);
-  const cellSize = useAppStore((state) => state.cellSize);
-  const setCellSize = useAppStore((state) => state.setCellSize);
   const totalImages = useAppStore((state) => state.totalImages);
   const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
@@ -79,44 +77,8 @@ export const TimelineToolbar: React.FC = () => {
         )}
       </div>
 
-      {/* 右側: サムネイルサイズスライダー（ホイールでも直接変更可能） */}
-      <div
-        className="flex items-center gap-2 cursor-pointer py-1 px-2 rounded hover:bg-surfaceLight/50 transition"
-        onWheel={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const delta = e.deltaY < 0 ? 15 : -15;
-          setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
-        }}
-        title="サムネイルサイズ (スライダー、ホイール、またはグリッド上でCtrl+ホイールで変更)"
-      >
-        <button
-          onClick={() => setCellSize(Math.max(80, cellSize - 20))}
-          className="p-1 hover:text-textPrimary text-textSecondary transition"
-          title="サムネイル縮小"
-        >
-          <ZoomOut className="w-3.5 h-3.5" />
-        </button>
-        <input
-          type="range"
-          min="80"
-          max="320"
-          step="10"
-          value={cellSize}
-          onChange={(e) => setCellSize(Number(e.target.value))}
-          className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
-        />
-        <button
-          onClick={() => setCellSize(Math.min(320, cellSize + 20))}
-          className="p-1 hover:text-textPrimary text-textSecondary transition"
-          title="サムネイル拡大"
-        >
-          <ZoomIn className="w-3.5 h-3.5" />
-        </button>
-        <span className="text-[11px] text-textSecondary w-10 text-right tabular-nums">
-          {cellSize}px
-        </span>
-      </div>
+      {/* 右側: 通信状態インジケータおよび再接続コントローラー */}
+      <ConnectionStatusIndicator />
     </div>
   );
 };

@@ -1,7 +1,6 @@
 import React from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { StatusBar } from "./components/StatusBar/StatusBar";
-import { FloatingZoomBar } from "./components/TimelineGrid/FloatingZoomBar";
 import { TimelineToolbar } from "./components/TimelineGrid/TimelineToolbar";
 import { VirtualTimeline } from "./components/TimelineGrid/VirtualTimeline";
 import { ImageViewerModal } from "./components/Viewer/ImageViewerModal";
@@ -29,7 +28,6 @@ export const App: React.FC = () => {
           <div className={`flex flex-col flex-1 overflow-hidden relative ${currentView === "timeline" ? "" : "hidden"}`}>
             <TimelineToolbar />
             <VirtualTimeline />
-            <FloatingZoomBar />
           </div>
 
           {/* ムードボードキャンバス */}

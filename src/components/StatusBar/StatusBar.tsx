@@ -1,5 +1,5 @@
 import React from "react";
-import { Loader2, PanelLeftClose, PanelLeftOpen, ZoomIn } from "lucide-react";
+import { Loader2, PanelLeftClose, PanelLeftOpen, ZoomIn, ZoomOut } from "lucide-react";
 import { useAppStore } from "../../store";
 
 export const StatusBar: React.FC = () => {
@@ -57,20 +57,41 @@ export const StatusBar: React.FC = () => {
         ) : null}
       </div>
 
-      {/* グリッドサイズスライダ (F-13) */}
-      <div className="flex items-center gap-2">
-        <ZoomIn className="w-3.5 h-3.5 text-textSecondary" />
+      {/* サムネイルサイズスライダー（唯一の拡大縮小バーとして集約） */}
+      <div
+        className="flex items-center gap-1.5 py-0.5 px-2 rounded hover:bg-surfaceLight/50 transition cursor-pointer"
+        onWheel={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const delta = e.deltaY < 0 ? 10 : -10;
+          setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
+        }}
+        title="サムネイルサイズ (スライダー、ホイール、またはグリッド上でCtrl+ホイールで変更)"
+      >
+        <button
+          onClick={() => setCellSize(Math.max(80, cellSize - 20))}
+          className="p-1 hover:text-textPrimary text-textSecondary transition"
+          title="サムネイル縮小"
+        >
+          <ZoomOut className="w-3.5 h-3.5" />
+        </button>
         <input
           type="range"
-          min="100"
+          min="80"
           max="320"
-          step="20"
+          step="10"
           value={cellSize}
           onChange={(e) => setCellSize(Number(e.target.value))}
-          className="w-24 h-1 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
-          title={`セルサイズ: ${cellSize}px`}
+          className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
         />
-        <span className="w-10 text-right">{cellSize}px</span>
+        <button
+          onClick={() => setCellSize(Math.min(320, cellSize + 20))}
+          className="p-1 hover:text-textPrimary text-textSecondary transition"
+          title="サムネイル拡大"
+        >
+          <ZoomIn className="w-3.5 h-3.5" />
+        </button>
+        <span className="w-10 text-right tabular-nums font-mono text-[11px]">{cellSize}px</span>
       </div>
     </footer>
   );

@@ -84,6 +84,13 @@ interface AppStoreState {
   timelineRefreshTick: number;
   refreshTimeline: () => void;
 
+  // 通信状態スライス
+  connectionStatus: "connected" | "connecting" | "disconnected";
+  lastConnectedAt: number | null;
+  setConnectionStatus: (status: "connected" | "connecting" | "disconnected") => void;
+  markConnected: () => void;
+  markDisconnected: () => void;
+
   // しおり（ブックマーク）スライス
   bookmarks: Bookmark[];
   addBookmark: (bookmark: Omit<Bookmark, "id" | "createdAt">) => void;
@@ -232,6 +239,13 @@ export const useAppStore = create<AppStoreState>((set) => ({
   timelineRefreshTick: 0,
   refreshTimeline: () =>
     set((state) => ({ timelineRefreshTick: state.timelineRefreshTick + 1 })),
+
+  // 通信状態初期値
+  connectionStatus: "connected",
+  lastConnectedAt: Date.now(),
+  setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
+  markConnected: () => set({ connectionStatus: "connected", lastConnectedAt: Date.now() }),
+  markDisconnected: () => set({ connectionStatus: "disconnected" }),
 
   // しおり初期状態
   bookmarks: (() => {

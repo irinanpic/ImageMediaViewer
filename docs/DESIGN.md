@@ -280,5 +280,50 @@ CREATE TABLE thumbnails (
 | `POST` | `/api/clear_queue` | サムネイルキュー即時パージ | 古い待機リクエストを一掃解放 |
 | `POST` | `/api/thumbnails/rescan_missing` | 未生成・失敗サムネ一括再作成 | 失敗ステータスリセット ＆ バックグラウンド生成開始 |
 | `GET` | `/api/thumb_progress` | サムネイル全体進捗取得 | `{ done: number, total: number, isGenerating: boolean }` |
-| `GET` | `/api/heartbeat` | フロントエンド生存通知 | バックエンド自己終了タイマーを延長 |
+| `GET` / `POST` | `/api/heartbeat` | フロントエンド・サーバー死活確認 | `{ alive: true, status: "ok", version: "0.1.0" }` |
+| `GET` | `/api/health` | サーバーヘルスチェック | `{ alive: true, status: "ok", version: "0.1.0" }` |
 | `POST` | `/api/shutdown` | バックエンド終了要求 | バックエンドプロセスを安全に終了 |
+
+---
+
+## 6. プロセス・ライフサイクルとシステムトレイ設計
+
+```mermaid
+flowchart LR
+    subgraph OS ["OS ネイティブ環境 (Windows / macOS / Linux)"]
+        Tray["システムトレイ (Taskbar / MenuBar / AppIndicator)"]
+        Protocol["カスタムURIプロトコル (imagemediaviewer://)"]
+    end
+
+    subgraph Backend ["バックエンドサーバー (Rust / Port 14201)"]
+        ServerCore["常駐HTTPサーバー"]
+        TrayHandler["トレイイベントハンドラ (TrayIcon)"]
+        ScannerCore["バックグラウンド走査 / サムネ生成"]
+    end
+
+    subgraph Client ["クライアント (Chrome/Edge App Mode / ブラウザ)"]
+        UIHeader["上部ヘッダー (通信ステータス監視)"]
+        UIRetry["ワンクリック再接続 / 起動"]
+        TimelineUI["タイムライン / ビューア"]
+    end
+
+    Tray -->|左クリック / 右クリックメニュー| Backend
+    TrayHandler -->|クライアントを開く| Client
+    UIHeader -->|2.5秒定期ヘルスチェック| ServerCore
+    UIRetry -->|切断時の再起動トリガー| Protocol
+    Protocol -->|run.bat / exe起動| ServerCore
+```
+
+### 6.1 システムトレイ常駐 (System Tray Resident)
+* **独立常駐**: サーバープロセスはクライアントウィンドウの開閉に左右されずバックグラウンドで安定常駐。
+* **ネイティブトレイアイコン**: Windows通知領域、macOSメニューバー、Linuxシステムトレイ（AppIndicator）に対応。
+* **トレイ右クリックメニュー**:
+  * **クライアントを開く**: Chrome/Edge App Mode（または既定ブラウザ）でクライアントを即時起動。
+  * **フォルダを再走査**: 登録済みフォルダの差分スキャンをバックグラウンド実行。
+  * **データフォルダを開く**: カタログDBおよびサムネイルキャッシュのディレクトリをOSファイルマネージャで開く。
+  * **終了**: サーバープロセスを安全に終了。
+
+### 6.2 通信状態監視と再接続 (Heartbeat & Auto Reconnect)
+* **常時監視**: クライアント上部右側の `ConnectionStatusIndicator` により、定期ハートビート（`/api/heartbeat`）で通信状態を可視化。
+* **自動復帰**: 切断状態からサーバーが再起動・復帰した場合、自動的にタイムラインや画像サマリを再同期。
+* **ワンクリック起動**: カスタムプロトコル `imagemediaviewer://launch` と連携し、ブラウザ上からOSランチャーを直接呼び出してサーバーを起動可能。

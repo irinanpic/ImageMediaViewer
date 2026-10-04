@@ -7,6 +7,7 @@ pub mod protocol;
 pub mod scanner;
 pub mod server;
 pub mod state;
+pub mod tray;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -31,9 +32,6 @@ pub fn run() {
         .init();
 
     info!("ImageMediaViewer バックエンド初期化開始");
-
-    let args: Vec<String> = std::env::args().collect();
-    let use_tauri_gui = args.iter().any(|a| a == "--tauri-gui");
 
     let app_data_dir = std::env::var("APPDATA")
         .map(std::path::PathBuf::from)
@@ -72,21 +70,44 @@ pub fn run() {
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), app_cache_dir.clone());
     let app_state = Arc::new(AppState::new(db, thumb_store, app_cache_dir, thumb_pipeline));
 
+    let args: Vec<String> = std::env::args().collect();
+    let use_tauri_gui = args.iter().any(|a| a == "--tauri-gui");
+    let no_tray = args.iter().any(|a| a == "--no-tray");
+    let auto_exit = args.iter().any(|a| a == "--auto-exit");
+
     // 独立ウィンドウ(Electron/Edge App Mode)およびWebブラウザ対応用ローカルHTTPサーバーをポート14201で起動
-    crate::server::start_http_server(app_state.clone(), 14201);
+    crate::server::start_http_server(app_state.clone(), 14201, auto_exit);
     // 処理がないときに登録フォルダ内の更新を低優先度で自動チェックするアイドルウォッチャーを起動
     crate::scanner::start_idle_watcher(app_state.clone());
     info!("ImageMediaViewer バックエンドサーバー稼働開始: db_path={:?}, port=14201", db_path);
 
-    if use_tauri_gui {
-        info!("Tauri GUI モードを起動します");
+    if no_tray {
+        // ヘッドレススタンドアロンサーバーモード（トレイアイコン無効）
+        info!("ヘッドレスサーバーモードで常駐待機中... (--no-tray)");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    } else {
+        // システムトレイ常駐モード（デフォルト: Windows, macOS, Linux すべてで動作）
+        info!("システムトレイ常駐モードを初期化します (タスクトレイにアイコン表示)");
+        let state_for_tray = Arc::clone(&app_state);
+
         let builder = tauri::Builder::default()
             .plugin(tauri_plugin_dialog::init())
-            .plugin(tauri_plugin_opener::init());
-
-        builder
+            .plugin(tauri_plugin_opener::init())
             .setup(move |app| {
                 app.manage(app_state);
+                // システムトレイアイコンおよび右クリックメニューの登録
+                if let Err(e) = crate::tray::setup_system_tray(&app.handle(), state_for_tray) {
+                    tracing::warn!("システムトレイアイコンの登録に失敗しました: {:?}", e);
+                }
+
+                // もし --tauri-gui が明示された場合はWebView2ウィンドウを表示
+                if use_tauri_gui {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                    }
+                }
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
@@ -100,14 +121,10 @@ pub fn run() {
                 commands::prefetch_thumbnails,
                 commands::set_viewport,
                 commands::reveal_in_file_manager,
-            ])
+            ]);
+
+        builder
             .run(tauri::generate_context!())
             .expect("Tauri アプリケーション実行中にエラーが発生しました");
-    } else {
-        // スタンドアロンサーバーモード: メインスレッドを安全に維持
-        info!("スタンドアロンサーバーモードで待機中...");
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
     }
 }
