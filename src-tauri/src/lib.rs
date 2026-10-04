@@ -26,18 +26,59 @@ use crate::state::AppState;
 pub fn run() {
     let app_data_dir = std::env::var("APPDATA")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("com.imagemediaviewer.app");
+        .unwrap_or_else(|_| dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+        .join("com.imagemediaviewer.desktop");
     let app_cache_dir = std::env::var("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .join("com.imagemediaviewer.app");
+        .unwrap_or_else(|_| dirs::cache_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+        .join("com.imagemediaviewer.desktop");
 
     std::fs::create_dir_all(&app_data_dir).ok();
     std::fs::create_dir_all(&app_cache_dir).ok();
 
+    // 旧データディレクトリ（com.imagemediaviewer.app）からの自動移行
+    // 変更理由: バンドル識別子変更（com.imagemediaviewer.app -> com.imagemediaviewer.desktop）時にも
+    // 既存のカタログDB、サムネイルDB、設定ファイルをシームレスに引き継ぐため
+    if !app_data_dir.join("catalog.db").exists() {
+        if let Some(parent) = app_data_dir.parent() {
+            let old_dir = parent.join("com.imagemediaviewer.app");
+            if old_dir.join("catalog.db").exists() {
+                for file_name in &["catalog.db", "catalog.db-wal", "catalog.db-shm", "window_state.json"] {
+                    let src = old_dir.join(file_name);
+                    let dst = app_data_dir.join(file_name);
+                    if src.exists() && !dst.exists() {
+                        let _ = std::fs::copy(&src, &dst);
+                    }
+                }
+            }
+        }
+    }
+    if !app_cache_dir.join("thumbnails.db").exists() {
+        if let Some(parent) = app_cache_dir.parent() {
+            let old_dir = parent.join("com.imagemediaviewer.app");
+            if old_dir.join("thumbnails.db").exists() {
+                for file_name in &["thumbnails.db", "thumbnails.db-wal", "thumbnails.db-shm"] {
+                    let src = old_dir.join(file_name);
+                    let dst = app_cache_dir.join(file_name);
+                    if src.exists() && !dst.exists() {
+                        let _ = std::fs::copy(&src, &dst);
+                    }
+                }
+            }
+        }
+    }
+
     // ファイルおよびメモリロガーの初期化
     let _ = crate::logger::init_logger(&app_data_dir);
+
+    // 既存インスタンス稼働チェック（二重起動防止）
+    // ポート 14201 で既にサーバーが応答する場合は、DB初期化やサーバー二重起動を行わず
+    // フロントエンドクライアントのみを起動して即座に終了する
+    if std::net::TcpStream::connect("127.0.0.1:14201").is_ok() {
+        info!("既に ImageMediaViewer サーバーが稼働中です。フロントエンド画面のみ起動して終了します。");
+        crate::tray::launch_client();
+        return;
+    }
 
     info!("ImageMediaViewer バックエンド初期化開始 (ログ出力先: {:?})", app_data_dir.join("logs"));
 
@@ -76,6 +117,12 @@ pub fn run() {
     // 処理がないときに登録フォルダ内の更新を低優先度で自動チェックするアイドルウォッチャーを起動
     crate::scanner::start_idle_watcher(app_state.clone());
     info!("ImageMediaViewer バックエンドサーバー稼働開始: db_path={:?}, port=14201", db_path);
+
+    // 初回起動時: サーバー稼働開始と同時にフロントエンドクライアントを自動表示
+    if !use_tauri_gui {
+        info!("フロントエンドクライアントを自動起動します");
+        crate::tray::launch_client();
+    }
 
     if no_tray {
         // ヘッドレススタンドアロンサーバーモード（トレイアイコン無効）

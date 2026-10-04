@@ -22,7 +22,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
-import { getThumbnailUrl, getOriginalImageUrl } from "../../lib/thumbUrl";
+import { getOriginalImageUrl } from "../../lib/thumbUrl";
 import { useAppStore } from "../../store";
 import type { Board, BoardItem, BoardNote } from "../../types/board";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
@@ -100,6 +100,7 @@ export const MoodboardCanvas: React.FC = () => {
   const isDraggingNoteRef = useRef(false);
   const isResizingNoteRef = useRef(false);
   const draggingItemIdRef = useRef<number | null>(null);
+  const rotatingItemIdRef = useRef<number | null>(null);
   const currentItemPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const draggingNoteIdRef = useRef<number | null>(null);
   const resizingNoteIdRef = useRef<number | null>(null);
@@ -419,6 +420,8 @@ export const MoodboardCanvas: React.FC = () => {
       e.stopPropagation();
 
       isRotatingItemRef.current = true;
+      rotatingItemIdRef.current = item.id;
+      setSelectedItemId(item.id);
 
       // アイテムの中心座標（キャンバス上のローカル座標）
       const itemCenterX = item.x + (item.width * item.scale) / 2;
@@ -493,7 +496,9 @@ export const MoodboardCanvas: React.FC = () => {
       }
 
       // 2. アイテムの任意角度回転ドラッグ
-      if (isRotatingItemRef.current && selectedItemId !== null) {
+      // 変更理由: stale closureを排除し、ドラッグ開始時に指定された対象IDのみを確実に回転させる
+      if (isRotatingItemRef.current && rotatingItemIdRef.current !== null) {
+        const targetId = rotatingItemIdRef.current;
         const { screenCenterX, screenCenterY, startAngle, initialRotation } = rotateStartRef.current;
         const currentAngleRad = Math.atan2(e.clientY - screenCenterY, e.clientX - screenCenterX);
         const currentAngleDeg = (currentAngleRad * 180) / Math.PI;
@@ -510,7 +515,7 @@ export const MoodboardCanvas: React.FC = () => {
 
         const normalizedRot = Math.round(nextRot * 10) / 10;
         setItems((prev) =>
-          prev.map((it) => (it.id === selectedItemId ? { ...it, rotation: normalizedRot } : it))
+          prev.map((it) => (it.id === targetId ? { ...it, rotation: normalizedRot } : it))
         );
         setRotatingDegree(Math.round(normalizedRot));
         return;
@@ -590,14 +595,18 @@ export const MoodboardCanvas: React.FC = () => {
       isDraggingCanvasRef.current = false;
     }
 
-    if (isRotatingItemRef.current && selectedItemId !== null) {
+    if (isRotatingItemRef.current) {
       isRotatingItemRef.current = false;
       setRotatingDegree(null);
-      const current = itemsRef.current.find((it) => it.id === selectedItemId);
-      if (current) {
-        backendApi.updateBoardItem(current.id, {
-          rotation: current.rotation,
-        }).catch((err) => console.error("アイテム回転の保存に失敗:", err));
+      const targetId = rotatingItemIdRef.current;
+      rotatingItemIdRef.current = null;
+      if (targetId !== null) {
+        const current = itemsRef.current.find((it) => it.id === targetId);
+        if (current) {
+          backendApi.updateBoardItem(current.id, {
+            rotation: current.rotation,
+          }).catch((err) => console.error("アイテム回転の保存に失敗:", err));
+        }
       }
     }
 
@@ -1627,10 +1636,10 @@ export const MoodboardCanvas: React.FC = () => {
           const clipRight = ((1.0 - (item.cropX + item.cropW)) * 100).toFixed(2);
           const clipBottom = ((1.0 - (item.cropY + item.cropH)) * 100).toFixed(2);
 
-          const thumbSrc = getThumbnailUrl(item.imageId, item.rev);
+          // 変更理由: ムードボードは資料・デザイン参照用途のため、サムネイルではなく
+          // 常時実ファイル（rawSrc）ベースで表示し、imageRendering: high-quality を適用して高品位に拡縮する
           const rawSrc = getOriginalImageUrl(item.imageId);
-          // ズームインしている時は高解像度画像を使用
-          const imgSrc = zoom > 1.2 ? rawSrc : thumbSrc;
+          const imgSrc = rawSrc;
 
           return (
             <div
@@ -1676,6 +1685,7 @@ export const MoodboardCanvas: React.FC = () => {
                   style={{
                     transform: `scale(${item.flipH ? -1 : 1}, ${item.flipV ? -1 : 1})`,
                     opacity: isCropping && isSelected ? 0.45 : 1,
+                    imageRendering: "auto",
                   }}
                   className="w-full h-full object-cover pointer-events-none transition-opacity"
                 />

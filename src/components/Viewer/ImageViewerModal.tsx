@@ -41,7 +41,30 @@ export const ImageViewerModal: React.FC = () => {
   const [originalError, setOriginalError] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  useViewerGestures(containerRef);
+  const imgRef = useRef<HTMLImageElement>(null);
+  useViewerGestures(containerRef, imgRef);
+
+  // 回転後の元画像解像度とコンテナ寸法から真の100%原寸ピクセル等倍（1:1）ズーム率を算出
+  // 変更理由: フィット表示（縮小）から元画像の本来のピクセル解像度で細部をクリアに確認できるようにするため
+  const get100PercentZoom = (): number => {
+    const el = containerRef.current;
+    const img = imgRef.current;
+    if (!el) return 2.0;
+
+    const naturalW = img?.naturalWidth || detail?.width || 0;
+    const naturalH = img?.naturalHeight || detail?.height || 0;
+    if (naturalW === 0 || naturalH === 0) return 2.0;
+
+    const isRotated = transform.rotation % 180 !== 0;
+    const effW = isRotated ? naturalH : naturalW;
+    const effH = isRotated ? naturalW : naturalH;
+
+    const fitScale = Math.min(el.clientWidth / effW, el.clientHeight / effH);
+    if (fitScale <= 0) return 2.0;
+
+    // 元画像の1ピクセル = 画面の1ピクセルとなるスケール
+    return Math.max(1.2, Math.min(16, 1.0 / fitScale));
+  };
 
   // 現在の画像レコード取得
   const currentRecord = activeImageIndex !== null ? getImageByIndex(activeImageIndex) : null;
@@ -140,7 +163,11 @@ export const ImageViewerModal: React.FC = () => {
           break;
         case "1":
           e.preventDefault();
-          setZoom(1);
+          if (transform.zoom > 1.05) {
+            resetTransform();
+          } else {
+            setZoom(get100PercentZoom());
+          }
           break;
         case "+":
         case "=":
@@ -177,14 +204,20 @@ export const ImageViewerModal: React.FC = () => {
 
   if (!isViewerOpen || !activeImageId) return null;
 
-  // CSS Transform の合成 (GPU高速描画)
+  // CSS Transform の合成 (GPU高速描画 & 高品位バイキュービック拡縮)
+  // 変更理由: しっかり見る用途での高画質拡縮要求に対応するため、
+  // imageRendering: auto、3D加速、バックフェイス不可視化を適用してジャギーやボケのない鮮明な拡大縮小を実現
   const transformStyle: React.CSSProperties = {
-    transform: `translate(${transform.panX}px, ${transform.panY}px) scale(${
+    transform: `translate3d(${transform.panX}px, ${transform.panY}px, 0) scale(${
       transform.zoom
     }) rotate(${transform.rotation}deg) scaleX(${transform.flipH ? -1 : 1}) scaleY(${
       transform.flipV ? -1 : 1
     })`,
+    transformOrigin: "center center",
     transition: transform.zoom === 1 && transform.panX === 0 ? "transform 0.15s ease-out" : "none",
+    imageRendering: "auto",
+    WebkitBackfaceVisibility: "hidden",
+    backfaceVisibility: "hidden",
   };
 
   const thumbUrl = activeImageId
@@ -224,11 +257,11 @@ export const ImageViewerModal: React.FC = () => {
             ↕
           </button>
           <button
-            onClick={() => (transform.zoom === 1 ? resetTransform() : setZoom(1))}
-            title="等倍 / フィット切替 (1 / 0)"
+            onClick={() => (transform.zoom > 1.05 ? resetTransform() : setZoom(get100PercentZoom()))}
+            title={transform.zoom > 1.05 ? "画面にフィット (0)" : "原寸ピクセル等倍 (1)"}
             className="p-2 hover:bg-white/10 rounded-full transition"
           >
-            {transform.zoom === 1 ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
+            {transform.zoom > 1.05 ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
           </button>
           <button
             onClick={() => setShowInfo(!showInfo)}
@@ -260,7 +293,6 @@ export const ImageViewerModal: React.FC = () => {
       <div
         ref={containerRef}
         className="flex-1 relative overflow-hidden flex items-center justify-center cursor-grab"
-        onDoubleClick={() => (transform.zoom === 1 ? setZoom(2) : resetTransform())}
       >
         {/* サムネイル（即時表示プレビュー：原寸ロード完了まで、または原寸取得失敗時に表示） */}
         {thumbUrl && (!originalLoaded || originalError) && (
@@ -274,15 +306,17 @@ export const ImageViewerModal: React.FC = () => {
           />
         )}
 
-        {/* 原寸画像（ロード完了後にクリア表示） */}
+        {/* 原寸画像（ロード完了後にクリア表示・高品質バイキュービック拡縮） */}
         {originalUrl && !originalError && (
           <img
+            ref={imgRef}
             src={originalUrl}
             alt=""
+            decoding="sync"
             style={transformStyle}
             onLoad={() => setOriginalLoaded(true)}
             onError={() => setOriginalError(true)}
-            className={`max-h-full max-w-full object-contain transition-opacity duration-200 pointer-events-none ${
+            className={`max-h-full max-w-full object-contain transition-opacity duration-200 pointer-events-none select-none ${
               originalLoaded ? "opacity-100" : "opacity-0 absolute"
             }`}
           />

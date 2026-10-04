@@ -105,7 +105,13 @@ interface AppStoreState {
   fetchBookmarks: () => Promise<void>;
   addBookmark: (bookmark: Omit<Bookmark, "id" | "createdAt">) => void;
   removeBookmark: (id: string) => void;
-  targetScroll: { scrollTop: number; rowIndex?: number; timestamp: number } | null;
+  targetScroll: {
+    scrollTop: number;
+    rowIndex?: number;
+    imageIndex?: number | null;
+    dayLabel?: string;
+    timestamp: number;
+  } | null;
   jumpToBookmark: (bookmark: Bookmark) => void;
   currentVisibleInfo: { scrollTop: number; rowIndex: number; imageIndex: number | null; dayLabel: string } | null;
   setCurrentVisibleInfo: (info: { scrollTop: number; rowIndex: number; imageIndex: number | null; dayLabel: string }) => void;
@@ -380,6 +386,8 @@ export const useAppStore = create<AppStoreState>((set) => ({
         targetScroll: {
           scrollTop: bookmark.scrollTop,
           rowIndex: bookmark.rowIndex,
+          imageIndex: bookmark.imageIndex,
+          dayLabel: bookmark.dayLabel,
           timestamp: Date.now(),
         },
       };

@@ -34,8 +34,8 @@ flowchart TD
     end
 
     subgraph Storage ["データ・ストレージ"]
-        DB[("カタログDB (SQLite WALモード)\n%APPDATA%/com.imagemediaviewer.app/catalog.db")]
-        ThumbDB[("サムネイル専用DB (SQLite WALモード WITHOUT ROWID)\n%LOCALAPPDATA%/com.imagemediaviewer.app/cache/thumbnails.db")]
+        DB[("カタログDB (SQLite WALモード)\n%APPDATA%/com.imagemediaviewer.desktop/catalog.db")]
+        ThumbDB[("サムネイル専用DB (SQLite WALモード WITHOUT ROWID)\n%LOCALAPPDATA%/com.imagemediaviewer.desktop/cache/thumbnails.db")]
         OriginalFiles[("元画像ファイル (読み取り専用・完全保護)\nユーザー指定ディレクトリ")]
     end
 
@@ -115,7 +115,17 @@ src/
 * インメモリキャッシュ（`cacheRef`）により、一度取得したページは再マウント時でも 0ms で描画。
 * スクロールにより世代番号が進んだ場合でも、受信したページデータは安全にキャッシュに格納され、無条件で `setVersionTick` を発行してスケルトン固まりを防止。
 
-### 2.4 タイムライン複数選択とラバーバンドドラッグ選択設計 (`VirtualTimeline.tsx`, `GridCell.tsx`)
+### 2.4 しおり（ブックマーク）位置高精度復元アルゴリズム (`VirtualTimeline.tsx`, `BookmarkPopover.tsx`)
+* **ビューポート左上画像アンカー (`firstVisibleItem` / `imageIndex`)**:
+  * 仮想スクロール（`overscan`）が存在する場合、仮想要素リストの先頭アイテムは画面外（上部バッファ）に位置するため、そのまま保存すると復元時に画面が下にずれる課題を解消。
+  * `containerRef.current.scrollTop` と各仮想アイテムの `start` / `end` 座標を交差判定し、**ビューポート最上端に現実に表示されている行**（`firstVisibleItem`）を特定。
+  * ヘッダー行であれば日付（`day`）、画像セル行であればその行の先頭画像通し番号（`imageIndex = item.startIndex`）をしおりデータに永続化。
+* **動的行逆引きスクロール (`scrollToIndex`)**:
+  * ウィンドウリサイズやズーム倍率の変更によりグリッド列数（4, 6, 8, 12列）が変わると、同一行番号に同じ画像が存在しなくなる問題に対応。
+  * スクロール復元時、現在の `rows` 配列から記録された `targetScroll.imageIndex` を含む行（`r.kind === "cells" && targetImgIdx >= r.startIndex && targetImgIdx < r.startIndex + r.count`）を動的に逆引き検索。
+  * 特定された現在行インデックスに対し `virtualizer.scrollToIndex(foundRowIdx, { align: "start" })` を実行することで、列数やズームが異なっていても常に目的の画像行が画面最上端へ高精度に復元。
+
+### 2.5 タイムライン複数選択とラバーバンドドラッグ選択設計 (`VirtualTimeline.tsx`, `GridCell.tsx`)
 * **グローバル選択状態管理 (`store/index.ts`)**:
   * `selectedImageIds: number[]` を Zustand ストアで一元管理。
   * `toggleSelectImageId(id)`: 個別選択のトグル。
@@ -134,13 +144,15 @@ src/
   * 1枚以上選択されている場合、タイムライン最上部に「○枚選択中」「➕ ムードボードに登録」「✕ 選択解除」の固定バーを表示。
   * ツールバー右側の「ボードに追加」ボタンも「ボードに追加 (○枚)」へと動的に切り替わり、既存の `AddToBoardModal` へ選択配列をシームレスに引き渡し。
 
-### 2.5 ムードボードと共通メタデータ設計 (`MoodboardCanvas.tsx`, `ImageDetailPanel.tsx`, `imageMetadata.ts`)
-* **画像アイテムとテキストメモ矩形のハイブリッド描画**:
+### 2.6 ムードボードと共通メタデータ設計 (`MoodboardCanvas.tsx`, `ImageDetailPanel.tsx`, `imageMetadata.ts`)
+* **画像アイテムとテキストメモ矩形のハイブリッド描画＆原寸高画質レンダリング**:
   * ムードボード上には、写真画像アイテム（`BoardItem`）とテキスト付箋メモ（`BoardNote`）が混在配置可能。
+  * **原寸ファイルベース高精細描画**: タイムラインのようなサムネイル画像ではなく、常に実画像ファイル（`/raw/:id`）から読み込み、拡大縮小時も `image-rendering: auto`（バイキュービック/バイリニア補間）を適用してジャギーやボケのない最高画質表示を担保。
   * 共通の `z_index` を用いて、画像の上にメモを置いたり、メモの下に画像を潜り込ませる自然なコラージュ制御を実現。
   * 各アイテムはマウスドラッグによる自由な移動、右下ハンドルによる直感的なリサイズに対応。
   * 付箋メモはダブルクリックまたはアクションバーから即座にテキスト編集可能（`Ctrl+Enter` で確定）。カラーパレット（イエロー、ブルー、グリーン、ピンク、パープル、ダーク）の切替もワンクリックで反映。
-* **高精度ドラッグ＆永続化安全ガード**:
+* **高精度変形操作（回転バグ解消）＆永続化安全ガード**:
+  * **回転ハンドル操作とアクティブRef同期**: 回転操作開始時、`rotatingItemIdRef.current = item.id` を設定し、`useCallback` の古いステート（stale closure）に依存せず常に操作対象の最新IDを参照。未選択の他画像が誤って回転する不具合を根絶。
   * React の非同期ステートやクロージャ依存による移動先座標・対象IDの取りこぼしを防ぐため、ドラッグ中・リサイズ中の最新座標（`currentNotePosRef`）および対象ID（`draggingNoteIdRef`）を `useRef` でリアルタイム同期。
   * ウィンドウ外や他UI要素上でマウスボタンを離した場合のドラッグ残留（マウス追従）を根絶するため、グローバルな `window.addEventListener("mouseup")` 安全ガードリスナーを装備。
   * テキスト入力中の誤ドラッグ防止（`stopPropagation`）およびブラウザ標準テキスト選択との競合防止制御を実装。
@@ -175,6 +187,18 @@ src/
     * 生データ比: $\text{RawPercent} = \frac{\text{file\_size}}{\text{RawSize}} \times 100\%$
     * 1ピクセルあたり実効ビット数: $\text{bpp} = \frac{\text{file\_size} \times 8}{\text{width} \times \text{height}}$
     * 寸法不明時やBMP等の非圧縮ファイル時も適切なフォールバック表示を実施。
+
+### 2.7 詳細画像ビューアの高品質レンダリング＆ピクセル等倍ズーム設計 (`ImageViewerModal.tsx`, `useViewerGestures.ts`)
+* **速度優先（タイムライン）と品質優先（ビューア）の完全分離**:
+  * タイムライン一覧では、スクロール性能（60fps）と省メモリを最優先し、軽量な WebP サムネイルのみを仮想スクロールで描画。
+  * 詳細画像ビューアでは、しっかり鑑賞・確認する用途に特化し、原寸画像ファイル（`/raw/:id`）から同期デコード（`decoding="sync"`）で読み込み、最高品質のバイキュービック補間（`imageRendering: "auto"`）を適用。
+* **真の 100% 原寸ピクセル等倍（1:1 Pixel Scale）アルゴリズム**:
+  * 回転後の実画像寸法（$W, H$）とコンテナ表示寸法（$W_c, H_c$）から、画面フィット時の縮小率 $S_{\text{fit}} = \min(W_c / W, H_c / H)$ を算出。
+  * 原寸 1 ピクセルがディスプレイの 1 ピクセルに完全一致するスケール倍率 $Z_{100\%} = 1.0 / S_{\text{fit}}$ を動的に計算。
+  * `1` キー押下、上部ツールバーの等倍ボタン、またはダブルクリックにより、瞬時に $Z_{100\%}$（原寸等倍）とフィット表示（$Z=1.0$）をトグル切替。
+* **ハードウェアアクセラレーションと高品質スケーリング**:
+  * `translate3d` による 3D GPU 加速レイヤーを適用しつつ、`backfaceVisibility: "hidden"` によりズーム操作時のモアレ・ジャギーやチラつきを抑制。
+  * 最大 16 倍までの高倍率ズームに対応し、高解像度写真の細部（ピント、微細な文字、テクスチャ）まで鮮明に確認可能。
 
 ---
 
@@ -432,7 +456,12 @@ flowchart LR
 ```
 
 ### 6.1 システムトレイ常駐とプロセス常駐保護 (Process Lifecycle & Tray)
-* **独立常駐**: サーバープロセスはクライアントウィンドウの開閉に左右されずバックグラウンドで安定常駐。
+* **独立常駐＆フロントエンド自動起動**:
+  * サーバープロセスはクライアントウィンドウの開閉に左右されずバックグラウンドで安定常駐。
+  * **初回起動時の自動フロントエンド展開**: インストール後の EXE 実行（またはショートカット実行）時、バックグラウンドサーバー（ポート 14201）を起動すると同時に `tray::launch_client()` を非同期実行。Edge / Chrome App Mode またはシステム既定のブラウザでクライアント画面を即座に自動起動し、ユーザーが手動でURLを開く手間を排除。
+* **二重起動ガード（ポート競合防止設計）**:
+  * `lib.rs` のエントリポイント（`run()`）において、サーバー起動前に `TcpStream::connect("127.0.0.1:14201")` によるポート導通チェックを実施。
+  * **サーバー稼働中の再実行時**: 既にバックグラウンドサーバーが稼働している場合は、サーバープロセスの多重起動・ポート競合エラーを回避し、`tray::launch_client()` のみを呼び出してフロントエンド画面を表示させた上で、当プロセスは正常終了（`std::process::exit(0)`）。
 * **スリープ・省電力タスクキル防止（常駐保護設計）**:
   * ブラウザの「メモリセーバー」やタブサスペンド、PCスリープ復帰時にブラウザが勝手に発火する `pagehide` / `beforeunload` イベントでのシャットダウン要求（`navigator.sendBeacon("/api/shutdown")`）を完全撤廃。
   * サーバー側で `AUTO_EXIT_ON_IDLE: AtomicBool` による常駐ガードを導入。`--auto-exit` フラグが明示されていない常駐稼働時は、万一 `/api/shutdown` リクエストが届いてもプロセスを終了させず常駐を死守。
@@ -505,7 +534,7 @@ flowchart TD
 * **多層出力パイプライン**:
   * `tracing-subscriber` のカスタム `Layer` 実装により、標準出力へのリアルタイム出力と同時に、ファイル永続出力および最新500件のインメモリリングバッファへ逐次記録。
 * **ファイル永続化**:
-  * `%APPDATA%\com.imagemediaviewer.app\logs\app.log` へ常時アペンド保存。Windows GUI / 非表示バックグラウンド稼働時でもログが消失しない。
+  * `%APPDATA%\com.imagemediaviewer.desktop\logs\app.log` へ常時アペンド保存。Windows GUI / 非表示バックグラウンド稼働時でもログが消失しない。
 * **低レイテンシAPI取得**:
   * クライアントは `/api/logs` により、ディスク読み取り負荷なしにインメモリバッファから瞬時に直近ログを取得可能。
 

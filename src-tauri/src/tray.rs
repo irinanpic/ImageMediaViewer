@@ -33,9 +33,22 @@ pub fn launch_client() {
         }
 
         // ウィンドウ状態（サイズ・位置）の復元
-        let state_path = PathBuf::from("window_state.json");
-        if state_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&state_path) {
+        let state_path = {
+            let local = PathBuf::from("window_state.json");
+            if local.exists() {
+                Some(local)
+            } else if let Ok(appdata) = std::env::var("APPDATA") {
+                let p = PathBuf::from(appdata).join("com.imagemediaviewer.desktop").join("window_state.json");
+                if p.exists() { Some(p) } else { None }
+            } else if let Some(data_dir) = dirs::data_dir() {
+                let p = data_dir.join("com.imagemediaviewer.desktop").join("window_state.json");
+                if p.exists() { Some(p) } else { None }
+            } else {
+                None
+            }
+        };
+        if let Some(sp) = state_path {
+            if let Ok(content) = std::fs::read_to_string(&sp) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                     if json["isMaximized"].as_bool().unwrap_or(false) {
                         cmd.arg("--start-maximized");

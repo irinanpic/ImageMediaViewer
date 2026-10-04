@@ -47,6 +47,7 @@ src-tauri/target/
 # Local App State & Database (アプリ実行データ・キャッシュを完全除外)
 window_state.json
 com.imagemediaviewer.app/
+com.imagemediaviewer.desktop/
 *.db
 *.db-shm
 *.db-wal

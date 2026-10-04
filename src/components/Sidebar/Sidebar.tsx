@@ -38,11 +38,6 @@ export const Sidebar: React.FC = () => {
     backendApi.getBoards().then(setBoards).catch(console.error);
   }, [setBoards]);
 
-  // ドラッグ＆ドロップ並び替え用の状態
-  const [draggedFolderIndex, setDraggedFolderIndex] = useState<number | null>(null);
-  const [dragOverFolderIndex, setDragOverFolderIndex] = useState<number | null>(null);
-  const [isExternalDragOver, setIsExternalDragOver] = useState(false);
-
   // フォルダパスを追加する共通処理
   const addFolderByPath = async (folderPath: string) => {
     const trimmed = folderPath.trim();
@@ -55,6 +50,43 @@ export const Sidebar: React.FC = () => {
       alert(`フォルダの追加に失敗しました:\n${err.message || err}`);
     }
   };
+
+  // Tauri ネイティブのドラッグ＆ドロップイベント監視
+  // 変更理由: OSエクスプローラーからフォルダがドロップされた際、
+  // セキュリティ制限による空パスを回避し、Tauri API経由で完全な絶対パスをダイレクトに自動登録する
+  React.useEffect(() => {
+    if (!isTauriEnvironment()) return;
+
+    let unlistenFn: (() => void) | null = null;
+    import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) => {
+        getCurrentWebview()
+          .onDragDropEvent((event) => {
+            if (event.payload.type === "drop") {
+              const paths = event.payload.paths;
+              if (paths && paths.length > 0) {
+                for (const p of paths) {
+                  addFolderByPath(p);
+                }
+              }
+            }
+          })
+          .then((unlisten) => {
+            unlistenFn = unlisten;
+          })
+          .catch(console.error);
+      })
+      .catch(console.error);
+
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, []);
+
+  // ドラッグ＆ドロップ並び替え用の状態
+  const [draggedFolderIndex, setDraggedFolderIndex] = useState<number | null>(null);
+  const [dragOverFolderIndex, setDragOverFolderIndex] = useState<number | null>(null);
+  const [isExternalDragOver, setIsExternalDragOver] = useState(false);
 
   // フォルダ追加ダイアログオープン
   const handleAddFolder = async () => {
@@ -130,6 +162,17 @@ export const Sidebar: React.FC = () => {
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
 
+    // 既存フォルダから親パスを推測して初期候補を生成
+    let parentHint = "";
+    if (folders.length > 0) {
+      const lastPath = folders[0].path;
+      const parts = lastPath.split(/[\\/]/).filter(Boolean);
+      if (parts.length > 1) {
+        parts.pop();
+        parentHint = parts.join("\\");
+      }
+    }
+
     for (const file of files) {
       const filePath = (file as any).path as string | undefined;
       if (filePath) {
@@ -138,9 +181,10 @@ export const Sidebar: React.FC = () => {
       } else {
         // 通常のブラウザ環境ではセキュリティ制限でフルパスが取得できないためプロンプトで確認
         const guessedName = file.name;
+        const suggestedPath = parentHint ? `${parentHint}\\${guessedName}` : `C:\\Pictures\\${guessedName}`;
         const inputPath = prompt(
           `ドロップされた項目「${guessedName}」を監視フォルダに追加します。\nフォルダの絶対パスを入力または確認してください:`,
-          ""
+          suggestedPath
         );
         if (inputPath) {
           await addFolderByPath(inputPath);

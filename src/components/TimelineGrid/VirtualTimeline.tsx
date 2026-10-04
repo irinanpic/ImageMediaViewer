@@ -120,21 +120,63 @@ export const VirtualTimeline: React.FC = () => {
   );
 
   // しおりジャンプ等による指定スクロール位置への移動
+  // 変更理由: 列数（ウィンドウ幅・ズーム）が変わっても、保存時に画面左上にあった画像が
+  // 確実に画面最上端へスクロールされるよう、imageIndexから現在の行を動的に特定してジャンプする
   useEffect(() => {
     if (!targetScroll || !containerRef.current) return;
+
+    // 1. 保存された画像通し番号 (imageIndex) から現在のレイアウト上の行を動的に特定
+    if (typeof targetScroll.imageIndex === "number" && rows.length > 0) {
+      const targetImgIdx = targetScroll.imageIndex;
+      const foundRowIdx = rows.findIndex((r) => {
+        if (r.kind === "cells") {
+          return targetImgIdx >= r.startIndex && targetImgIdx < r.startIndex + r.count;
+        }
+        return false;
+      });
+
+      if (foundRowIdx >= 0) {
+        virtualizer.scrollToIndex(foundRowIdx, { align: "start" });
+        return;
+      }
+    }
+
+    // 2. 日付ヘッダーによるフォールバック探索
+    if (targetScroll.dayLabel && targetScroll.dayLabel !== "タイムライン" && rows.length > 0) {
+      const headerRowIdx = rows.findIndex(
+        (r) => r.kind === "header" && (r as { day: string }).day === targetScroll.dayLabel
+      );
+      if (headerRowIdx >= 0) {
+        virtualizer.scrollToIndex(headerRowIdx, { align: "start" });
+        return;
+      }
+    }
+
+    // 3. 行番号によるフォールバック
     if (typeof targetScroll.rowIndex === "number" && targetScroll.rowIndex >= 0) {
       virtualizer.scrollToIndex(targetScroll.rowIndex, { align: "start" });
-    } else if (typeof targetScroll.scrollTop === "number") {
+      return;
+    }
+
+    // 4. ピクセル位置による最終フォールバック
+    if (typeof targetScroll.scrollTop === "number") {
       containerRef.current.scrollTo({ top: targetScroll.scrollTop, behavior: "smooth" });
     }
-  }, [targetScroll, virtualizer]);
+  }, [targetScroll, virtualizer, rows]);
 
   // 現在の可視位置のメタ情報をストアへ同期（しおり保存用）
+  // 変更理由: 仮想スクロールの事前レンダリングバッファ（画面外の上の行）を除外し、
+  // ユーザーが実際に画面左上に見ている最上端の表示行・画像を正確に特定して記録する
   useEffect(() => {
     if (virtualItems.length === 0 || !containerRef.current) return;
-    const topItem = virtualItems[0];
-    if (!topItem) return;
-    const row = rows[topItem.index];
+    const scrollTop = containerRef.current.scrollTop;
+
+    // ビューポート上端 (scrollTop) に交差している最初の可視行を特定
+    const firstVisibleItem =
+      virtualItems.find((it) => it.start + it.size > scrollTop) || virtualItems[0];
+    if (!firstVisibleItem) return;
+
+    const row = rows[firstVisibleItem.index];
     if (!row) return;
 
     let dayLabel = "";
@@ -144,7 +186,7 @@ export const VirtualTimeline: React.FC = () => {
     } else {
       imageIndex = row.startIndex;
       // 上位の直近ヘッダー行の日付を探す
-      for (let i = topItem.index; i >= 0; i--) {
+      for (let i = firstVisibleItem.index; i >= 0; i--) {
         if (rows[i]?.kind === "header") {
           dayLabel = (rows[i] as { day: string }).day;
           break;
@@ -153,8 +195,8 @@ export const VirtualTimeline: React.FC = () => {
     }
 
     setCurrentVisibleInfo({
-      scrollTop: containerRef.current.scrollTop,
-      rowIndex: topItem.index,
+      scrollTop,
+      rowIndex: firstVisibleItem.index,
       imageIndex,
       dayLabel: dayLabel || "タイムライン",
     });

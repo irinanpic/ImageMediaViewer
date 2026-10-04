@@ -103,7 +103,12 @@ fn get_window_state_path() -> PathBuf {
     // 変更理由: Program Files 配下などカレントディレクトリが書き込み不可でも状態を保存できるようにする
     if let Ok(appdata) = std::env::var("APPDATA") {
         return PathBuf::from(appdata)
-            .join("com.imagemediaviewer.app")
+            .join("com.imagemediaviewer.desktop")
+            .join("window_state.json");
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("com.imagemediaviewer.desktop")
             .join("window_state.json");
     }
     PathBuf::from("window_state.json")

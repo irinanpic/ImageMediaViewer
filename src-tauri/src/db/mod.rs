@@ -164,8 +164,8 @@ mod tests {
         let fk: i32 = conn.pragma_query_value(None, "foreign_keys", |r| r.get(0)).unwrap();
         assert_eq!(fk, 1);
 
-        // user_versionが5（マイグレーションv5適用済み）になっているか確認
+        // user_versionが6（マイグレーションv6適用済み）になっているか確認
         let uv: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(uv, 5);
+        assert_eq!(uv, 6);
     }
 }

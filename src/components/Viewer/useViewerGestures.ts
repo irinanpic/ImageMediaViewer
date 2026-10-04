@@ -5,10 +5,15 @@ import { useAppStore } from "../../store";
  * 画像ビューアのズームおよびパンドラッグ操作を処理するフック
  *
  * 変更理由: 仕様書§8.4「ズーム: ホイール、パン: ドラッグ、CSS transformでGPU合成」
+ * しっかり見る用途での高画質拡縮要求に対応するため、元画像の解像度に基づいた真の100%等倍ズームおよび最大16倍拡大をサポート
  *
  * @param containerRef 画像表示領域コンテナのRef
+ * @param imgRef 表示中の画像要素Ref（原寸ピクセル等倍計算用）
  */
-export function useViewerGestures(containerRef: React.RefObject<HTMLDivElement | null>) {
+export function useViewerGestures(
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  imgRef?: React.RefObject<HTMLImageElement | null>
+) {
   const transform = useAppStore((state) => state.transform);
   const isViewerOpen = useAppStore((state) => state.isViewerOpen);
   const setZoomAndPan = useAppStore((state) => state.setZoomAndPan);
@@ -34,7 +39,7 @@ export function useViewerGestures(containerRef: React.RefObject<HTMLDivElement |
 
       const current = transformRef.current;
       const zoomFactor = e.deltaY < 0 ? 1.18 : 0.85;
-      let newZoom = Math.max(0.5, Math.min(10, current.zoom * zoomFactor));
+      let newZoom = Math.max(0.5, Math.min(16, current.zoom * zoomFactor));
 
       const el = containerRef.current;
       let newPanX = 0;
@@ -65,7 +70,7 @@ export function useViewerGestures(containerRef: React.RefObject<HTMLDivElement |
       setZoomAndPan(newZoom, newPanX, newPanY);
     };
 
-    // ダブルクリックで等倍と拡大（2.0倍）をトグル
+    // ダブルクリックで画面フィットと真の等倍（100%ピクセル）をトグル
     const handleDoubleClick = (e: MouseEvent) => {
       if ((e.target as HTMLElement)?.closest("button, input, select")) return;
 
@@ -78,10 +83,23 @@ export function useViewerGestures(containerRef: React.RefObject<HTMLDivElement |
         const rect = el.getBoundingClientRect();
         const cursorX = e.clientX - (rect.left + rect.width / 2);
         const cursorY = e.clientY - (rect.top + rect.height / 2);
-        const newZoom = 2.0;
-        const newPanX = cursorX - cursorX * newZoom;
-        const newPanY = cursorY - cursorY * newZoom;
-        setZoomAndPan(newZoom, newPanX, newPanY);
+
+        // 元画像のピクセル解像度に応じた最適な等倍ズーム率（1:1 ピクセル表示）を算出
+        let targetZoom = 2.0;
+        const img = imgRef?.current;
+        if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+          const isRotated = current.rotation % 180 !== 0;
+          const effW = isRotated ? img.naturalHeight : img.naturalWidth;
+          const effH = isRotated ? img.naturalWidth : img.naturalHeight;
+          const fitScale = Math.min(rect.width / effW, rect.height / effH);
+          if (fitScale > 0) {
+            targetZoom = Math.max(1.5, Math.min(16, 1.0 / fitScale));
+          }
+        }
+
+        const newPanX = cursorX - cursorX * targetZoom;
+        const newPanY = cursorY - cursorY * targetZoom;
+        setZoomAndPan(targetZoom, newPanX, newPanY);
       }
     };
 
