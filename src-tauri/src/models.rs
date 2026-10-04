@@ -370,6 +370,71 @@ pub struct UpdateBoardItemPayload {
     pub flip_v: Option<bool>,
 }
 
+/// ムードボード上のテキストメモ（付箋）情報
+///
+/// 変更理由: ムードボード上で画像だけでなくテキストによるメモ・注釈を自由配置できるようにするため
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct BoardNote {
+    #[ts(type = "number")]
+    pub id: i64,
+    #[ts(type = "number")]
+    pub board_id: i64,
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub scale: f64,
+    pub rotation: f64,
+    pub z_index: i32,
+    pub color: String,
+    pub font_size: i32,
+    pub is_locked: bool,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+/// メモ新規作成ペイロード
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct CreateBoardNotePayload {
+    #[ts(type = "number")]
+    pub board_id: i64,
+    pub text: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub color: Option<String>,
+    pub font_size: Option<i32>,
+}
+
+/// メモ更新ペイロード
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct UpdateBoardNotePayload {
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub id: i64,
+    pub text: Option<String>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub scale: Option<f64>,
+    pub rotation: Option<f64>,
+    pub z_index: Option<i32>,
+    pub color: Option<String>,
+    pub font_size: Option<i32>,
+    pub is_locked: Option<bool>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,6 +447,13 @@ mod tests {
     #[test]
     fn export_bindings_log_entry() {
         LogEntry::export().expect("Failed to export LogEntry bindings");
+    }
+
+    #[test]
+    fn export_bindings_board_note() {
+        BoardNote::export().expect("Failed to export BoardNote bindings");
+        CreateBoardNotePayload::export().expect("Failed to export CreateBoardNotePayload bindings");
+        UpdateBoardNotePayload::export().expect("Failed to export UpdateBoardNotePayload bindings");
     }
 }
 

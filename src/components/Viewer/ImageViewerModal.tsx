@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
-  FolderOpen,
   Info,
   LayoutGrid,
   Maximize2,
@@ -15,6 +14,7 @@ import { backendApi } from "../../lib/ipc";
 import { getOriginalImageUrl, getThumbnailUrl } from "../../lib/thumbUrl";
 import { useAppStore } from "../../store";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
+import { ImageDetailPanel } from "../Common/ImageDetailPanel";
 import { useViewerGestures } from "./useViewerGestures";
 
 export const ImageViewerModal: React.FC = () => {
@@ -308,44 +308,13 @@ export const ImageViewerModal: React.FC = () => {
         )}
       </div>
 
-      {/* 情報パネル (F-12) */}
+      {/* 詳細情報パネル (フォーマット・可逆/非可逆・圧縮率対応) */}
       {showInfo && detail && (
-        <div className="absolute right-4 bottom-4 w-80 bg-surface/95 border border-border p-4 rounded-lg shadow-xl backdrop-blur z-20 text-xs text-textSecondary space-y-2">
-          <div className="flex items-center justify-between pb-2 border-b border-border text-textPrimary font-semibold">
-            <span>ファイル情報</span>
-            <button
-              onClick={() => backendApi.revealInFileManager(detail.id)}
-              className="flex items-center gap-1 text-accent hover:underline"
-            >
-              <FolderOpen className="w-3.5 h-3.5" />
-              <span>エクスプローラ</span>
-            </button>
-          </div>
-          <div>
-            <span className="font-medium text-textPrimary">パス: </span>
-            <span className="break-all">{detail.filePath}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>解像度:</span>
-            <span className="text-textPrimary">
-              {detail.width && detail.height ? `${detail.width} × ${detail.height}` : "不明"}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span>サイズ:</span>
-            <span className="text-textPrimary">{(detail.fileSize / 1024 / 1024).toFixed(2)} MB</span>
-          </div>
-          <div className="flex justify-between">
-            <span>撮影日時:</span>
-            <span className="text-textPrimary">
-              {new Date(detail.takenAt * 1000).toISOString().replace("T", " ").substring(0, 19)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span>日時ソース:</span>
-            <span className="text-textPrimary uppercase">{detail.takenAtSource}</span>
-          </div>
-        </div>
+        <ImageDetailPanel
+          detail={detail}
+          onClose={() => setShowInfo(false)}
+          className="absolute right-4 bottom-4 w-84 z-20 max-h-[85vh] overflow-y-auto"
+        />
       )}
     </div>
   );

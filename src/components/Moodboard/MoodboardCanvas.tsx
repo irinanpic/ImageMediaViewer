@@ -6,12 +6,15 @@ import {
   ChevronsUp,
   ChevronUp,
   Crop,
+  Edit3,
   FlipHorizontal,
   FlipVertical,
+  Info,
   Layers,
   Lock,
   RotateCcw,
   RotateCw,
+  StickyNote,
   Trash2,
   Unlock,
   ZoomIn,
@@ -20,13 +23,26 @@ import {
 import { backendApi } from "../../lib/ipc";
 import { getThumbnailUrl, getOriginalImageUrl } from "../../lib/thumbUrl";
 import { useAppStore } from "../../store";
-import type { Board, BoardItem } from "../../types/board";
+import type { Board, BoardItem, BoardNote } from "../../types/board";
+import type { ImageDetail } from "../../types/generated/ImageDetail";
+import { ImageDetailPanel } from "../Common/ImageDetailPanel";
+
+/** 付箋メモのカラーパレット定義 */
+const NOTE_COLORS = [
+  { label: "イエロー", bg: "#fef08a", text: "#1c1917", border: "#fde047" },
+  { label: "スカイブルー", bg: "#bae6fd", text: "#0c4a6e", border: "#7dd3fc" },
+  { label: "ミントグリーン", bg: "#bbf7d0", text: "#064e3b", border: "#86efac" },
+  { label: "ピンク", bg: "#fbcfe8", text: "#831843", border: "#f472b6" },
+  { label: "パープル", bg: "#e9d5ff", text: "#581c87", border: "#c084fc" },
+  { label: "ダーク", bg: "#27272a", text: "#f4f4f5", border: "#3f3f46" },
+];
 
 /**
  * 資料参照用ムードボード／キャンバス画面コンポーネント (PureRefライク)
  *
  * 変更理由: イラストやデザインの参考資料として、選択した画像を自由な位置に配置し、
  * 非破壊で拡大・縮小・回転・クリッピング（トリミング）して閲覧できるようにするため。
+ * また、画像詳細情報の確認やテキストメモ（付箋）の自由配置・編集機能を提供する。
  */
 export const MoodboardCanvas: React.FC = () => {
   const activeBoardId = useAppStore((state) => state.activeBoardId);
@@ -38,8 +54,16 @@ export const MoodboardCanvas: React.FC = () => {
 
   const [board, setBoard] = useState<Board | null>(null);
   const [items, setItems] = useState<BoardItem[]>([]);
+  const [notes, setNotes] = useState<BoardNote[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
+  const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState<string>("");
   const [isCropping, setIsCropping] = useState<boolean>(false);
+
+  // 詳細情報パネル用ステート
+  const [showImageDetail, setShowImageDetail] = useState<boolean>(false);
+  const [selectedImageDetail, setSelectedImageDetail] = useState<ImageDetail | null>(null);
 
   // キャンバスのカメラ状態（パン・ズーム）
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -49,6 +73,7 @@ export const MoodboardCanvas: React.FC = () => {
   const panRef = useRef(pan);
   const zoomRef = useRef(zoom);
   const itemsRef = useRef(items);
+  const notesRef = useRef(notes);
 
   // マウス操作用のRef
   const isDraggingCanvasRef = useRef(false);
@@ -70,6 +95,22 @@ export const MoodboardCanvas: React.FC = () => {
     initialRotation: number;
   }>({ screenCenterX: 0, screenCenterY: 0, startAngle: 0, initialRotation: 0 });
 
+  // メモ用ドラッグ・リサイズRef
+  const isDraggingNoteRef = useRef(false);
+  const isResizingNoteRef = useRef(false);
+  const draggingItemIdRef = useRef<number | null>(null);
+  const currentItemPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const draggingNoteIdRef = useRef<number | null>(null);
+  const resizingNoteIdRef = useRef<number | null>(null);
+  const currentNotePosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const currentNoteSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+  const noteStartPosRef = useRef<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>({ x: 0, y: 0, width: 0, height: 0 });
+
   // ドラッグ矩形クリッピング用ステートとRef
   const [cropBoxDrag, setCropBoxDrag] = useState<{
     startX: number;
@@ -89,6 +130,10 @@ export const MoodboardCanvas: React.FC = () => {
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
 
   // ボードおよびアイテムデータのロード
   const loadBoardData = useCallback(async () => {
@@ -104,9 +149,14 @@ export const MoodboardCanvas: React.FC = () => {
         panRef.current = { x: current.panX, y: current.panY };
         zoomRef.current = current.zoom || 1;
       }
-      const boardItems = await backendApi.getBoardItems(activeBoardId);
+      const [boardItems, boardNotes] = await Promise.all([
+        backendApi.getBoardItems(activeBoardId),
+        backendApi.getBoardNotes(activeBoardId),
+      ]);
       setItems(boardItems);
       itemsRef.current = boardItems;
+      setNotes(boardNotes);
+      notesRef.current = boardNotes;
     } catch (err) {
       console.error("ボードデータの取得に失敗しました:", err);
     }
@@ -115,6 +165,24 @@ export const MoodboardCanvas: React.FC = () => {
   useEffect(() => {
     loadBoardData();
   }, [loadBoardData]);
+
+  // 選択画像アイテムの詳細情報を自動取得
+  useEffect(() => {
+    if (selectedItemId !== null) {
+      const item = items.find((it) => it.id === selectedItemId);
+      if (item) {
+        backendApi
+          .getImageDetail(item.imageId)
+          .then((d) => setSelectedImageDetail(d))
+          .catch((err) => console.error("画像詳細取得失敗:", err));
+      } else {
+        setSelectedImageDetail(null);
+      }
+    } else {
+      setSelectedImageDetail(null);
+      setShowImageDetail(false);
+    }
+  }, [selectedItemId, items]);
 
   // カメラ状態の自動保存（デバウンス500msおよびアンマウント時即時フラッシュ）
   const saveCameraTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -185,7 +253,10 @@ export const MoodboardCanvas: React.FC = () => {
           isDraggingCanvasRef.current = true;
           dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
           setSelectedItemId(null);
+          setSelectedNoteId(null);
+          setEditingNoteId(null);
           setIsCropping(false);
+          setShowImageDetail(false);
         }
       }
     },
@@ -199,9 +270,12 @@ export const MoodboardCanvas: React.FC = () => {
       e.stopPropagation();
 
       setSelectedItemId(item.id);
+      setSelectedNoteId(null);
+      setEditingNoteId(null);
       if (item.isLocked) return;
 
       isDraggingItemRef.current = true;
+      draggingItemIdRef.current = item.id;
       dragStartRef.current = { x: e.clientX, y: e.clientY };
       itemStartPosRef.current = {
         x: item.x,
@@ -210,18 +284,20 @@ export const MoodboardCanvas: React.FC = () => {
         height: item.height,
         scale: item.scale,
       };
+      currentItemPosRef.current = { x: item.x, y: item.y };
     },
     [isCropping]
   );
 
   // アイテムのリサイズ（角ハンドル）開始
-  // アイテムのリサイズ（角ハンドル）開始
   const handleResizeHandleMouseDown = useCallback(
     (e: React.MouseEvent, item: BoardItem) => {
       if (e.button !== 0) return;
       e.stopPropagation();
+      e.preventDefault();
 
       isResizingItemRef.current = true;
+      draggingItemIdRef.current = item.id;
       dragStartRef.current = { x: e.clientX, y: e.clientY };
       itemStartPosRef.current = {
         x: item.x,
@@ -233,6 +309,99 @@ export const MoodboardCanvas: React.FC = () => {
     },
     []
   );
+
+  /**
+   * メモのドラッグ移動開始
+   */
+  const handleNoteMouseDown = useCallback(
+    (e: React.MouseEvent, note: BoardNote) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();
+
+      setSelectedNoteId(note.id);
+      setSelectedItemId(null);
+      setShowImageDetail(false);
+      if (note.isLocked) return;
+
+      // 編集中の場合はテキストエリアの入力を優先し、ドラッグを開始しない
+      if (editingNoteId === note.id) {
+        return;
+      }
+
+      // ブラウザ標準の要素ドラッグ・テキスト選択の競合を抑止
+      e.preventDefault();
+
+      isDraggingNoteRef.current = true;
+      draggingNoteIdRef.current = note.id;
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+      noteStartPosRef.current = {
+        x: note.x,
+        y: note.y,
+        width: note.width,
+        height: note.height,
+      };
+      currentNotePosRef.current = { x: note.x, y: note.y };
+    },
+    [editingNoteId]
+  );
+
+  /**
+   * メモのリサイズ開始
+   */
+  const handleNoteResizeMouseDown = useCallback(
+    (e: React.MouseEvent, note: BoardNote) => {
+      if (e.button !== 0 || note.isLocked) return;
+      e.stopPropagation();
+      e.preventDefault();
+
+      isResizingNoteRef.current = true;
+      resizingNoteIdRef.current = note.id;
+      dragStartRef.current = { x: e.clientX, y: e.clientY };
+      noteStartPosRef.current = {
+        x: note.x,
+        y: note.y,
+        width: note.width,
+        height: note.height,
+      };
+      currentNoteSizeRef.current = { width: note.width, height: note.height };
+    },
+    []
+  );
+
+  /**
+   * 新規メモ作成（キャンバス中央に配置）
+   */
+  const handleCreateNote = useCallback(async () => {
+    if (!activeBoardId) return;
+    const container = containerRef.current;
+    const containerWidth = container ? container.clientWidth : 800;
+    const containerHeight = container ? container.clientHeight : 600;
+
+    // 現在のカメラ中央に配置
+    const centerX = -pan.x / zoom + (containerWidth / 2) / zoom - 120;
+    const centerY = -pan.y / zoom + (containerHeight / 2) / zoom - 80;
+
+    try {
+      const newNote = await backendApi.createBoardNote({
+        boardId: activeBoardId,
+        text: "新規メモ",
+        x: Math.round(centerX),
+        y: Math.round(centerY),
+        width: 240,
+        height: 160,
+        color: "#fef08a",
+        fontSize: 14,
+      });
+      setNotes((prev) => [...prev, newNote]);
+      setSelectedItemId(null);
+      setSelectedNoteId(newNote.id);
+      setEditingNoteId(newNote.id);
+      setEditingText("新規メモ");
+    } catch (err) {
+      console.error("メモ作成失敗:", err);
+    }
+  }, [activeBoardId, pan, zoom]);
+
 
   /**
    * アイテムのドラッグ回転開始
@@ -347,31 +516,71 @@ export const MoodboardCanvas: React.FC = () => {
       }
 
       // 3. アイテムの移動
-      if (isDraggingItemRef.current && selectedItemId !== null) {
+      if (isDraggingItemRef.current && draggingItemIdRef.current !== null) {
+        const itemId = draggingItemIdRef.current;
         const dx = (e.clientX - dragStartRef.current.x) / zoom;
         const dy = (e.clientY - dragStartRef.current.y) / zoom;
         const newX = Math.round(itemStartPosRef.current.x + dx);
         const newY = Math.round(itemStartPosRef.current.y + dy);
 
-        setItems((prev) =>
-          prev.map((it) => (it.id === selectedItemId ? { ...it, x: newX, y: newY } : it))
-        );
+        currentItemPosRef.current = { x: newX, y: newY };
+        setItems((prev) => {
+          const next = prev.map((it) => (it.id === itemId ? { ...it, x: newX, y: newY } : it));
+          itemsRef.current = next;
+          return next;
+        });
         return;
       }
 
       // 4. アイテムの拡縮（リサイズ）
-      if (isResizingItemRef.current && selectedItemId !== null) {
+      if (isResizingItemRef.current && draggingItemIdRef.current !== null) {
+        const itemId = draggingItemIdRef.current;
         const dx = (e.clientX - dragStartRef.current.x) / zoom;
         const baseW = itemStartPosRef.current.width * itemStartPosRef.current.scale;
         const nextW = Math.max(60, baseW + dx);
         const nextScale = nextW / itemStartPosRef.current.width;
 
-        setItems((prev) =>
-          prev.map((it) => (it.id === selectedItemId ? { ...it, scale: nextScale } : it))
-        );
+        setItems((prev) => {
+          const next = prev.map((it) => (it.id === itemId ? { ...it, scale: nextScale } : it));
+          itemsRef.current = next;
+          return next;
+        });
+      }
+
+      // 5. メモの移動
+      if (isDraggingNoteRef.current && draggingNoteIdRef.current !== null) {
+        const noteId = draggingNoteIdRef.current;
+        const dx = (e.clientX - dragStartRef.current.x) / zoom;
+        const dy = (e.clientY - dragStartRef.current.y) / zoom;
+        const newX = Math.round(noteStartPosRef.current.x + dx);
+        const newY = Math.round(noteStartPosRef.current.y + dy);
+
+        currentNotePosRef.current = { x: newX, y: newY };
+        setNotes((prev) => {
+          const next = prev.map((n) => (n.id === noteId ? { ...n, x: newX, y: newY } : n));
+          notesRef.current = next;
+          return next;
+        });
+        return;
+      }
+
+      // 6. メモの拡縮（リサイズ）
+      if (isResizingNoteRef.current && resizingNoteIdRef.current !== null) {
+        const noteId = resizingNoteIdRef.current;
+        const dx = (e.clientX - dragStartRef.current.x) / zoom;
+        const dy = (e.clientY - dragStartRef.current.y) / zoom;
+        const nextW = Math.max(120, Math.round(noteStartPosRef.current.width + dx));
+        const nextH = Math.max(80, Math.round(noteStartPosRef.current.height + dy));
+
+        currentNoteSizeRef.current = { width: nextW, height: nextH };
+        setNotes((prev) => {
+          const next = prev.map((n) => (n.id === noteId ? { ...n, width: nextW, height: nextH } : n));
+          notesRef.current = next;
+          return next;
+        });
       }
     },
-    [zoom, selectedItemId, scheduleSaveCamera]
+    [zoom, scheduleSaveCamera]
   );
 
   // マウスアップ（変更確定）
@@ -391,24 +600,55 @@ export const MoodboardCanvas: React.FC = () => {
       }
     }
 
-    if (isDraggingItemRef.current && selectedItemId !== null) {
+    if (isDraggingItemRef.current) {
       isDraggingItemRef.current = false;
-      const current = itemsRef.current.find((it) => it.id === selectedItemId);
-      if (current) {
-        backendApi.updateBoardItem(current.id, {
-          x: current.x,
-          y: current.y,
-        }).catch((err) => console.error("アイテム移動の保存に失敗:", err));
+      const itemId = draggingItemIdRef.current;
+      draggingItemIdRef.current = null;
+      if (itemId !== null) {
+        const { x, y } = currentItemPosRef.current;
+        backendApi.updateBoardItem(itemId, { x, y }).catch((err) =>
+          console.error("アイテム移動の保存に失敗:", err)
+        );
       }
     }
 
-    if (isResizingItemRef.current && selectedItemId !== null) {
+    if (isResizingItemRef.current) {
       isResizingItemRef.current = false;
-      const current = itemsRef.current.find((it) => it.id === selectedItemId);
-      if (current) {
-        backendApi.updateBoardItem(current.id, {
-          scale: current.scale,
-        }).catch((err) => console.error("アイテム拡縮の保存に失敗:", err));
+      const itemId = draggingItemIdRef.current;
+      draggingItemIdRef.current = null;
+      if (itemId !== null) {
+        const current = itemsRef.current.find((it) => it.id === itemId);
+        if (current) {
+          backendApi.updateBoardItem(current.id, {
+            scale: current.scale,
+          }).catch((err) => console.error("アイテム拡縮の保存に失敗:", err));
+        }
+      }
+    }
+
+    // メモ移動の確定保存（RefのIDと最新座標を使って確実に保存）
+    if (isDraggingNoteRef.current) {
+      isDraggingNoteRef.current = false;
+      const noteId = draggingNoteIdRef.current;
+      draggingNoteIdRef.current = null;
+      if (noteId !== null) {
+        const { x, y } = currentNotePosRef.current;
+        backendApi.updateBoardNote(noteId, { x, y }).catch((err) =>
+          console.error("メモ移動の保存に失敗:", err)
+        );
+      }
+    }
+
+    // メモリサイズの確定保存
+    if (isResizingNoteRef.current) {
+      isResizingNoteRef.current = false;
+      const noteId = resizingNoteIdRef.current;
+      resizingNoteIdRef.current = null;
+      if (noteId !== null) {
+        const { width, height } = currentNoteSizeRef.current;
+        backendApi.updateBoardNote(noteId, { width, height }).catch((err) =>
+          console.error("メモ拡縮の保存に失敗:", err)
+        );
       }
     }
 
@@ -615,6 +855,108 @@ export const MoodboardCanvas: React.FC = () => {
     }).catch(console.error);
   }, [selectedItemId]);
 
+  // -------------------------------------------------------------
+  // メモ（付箋）操作ハンドラ群
+  // -------------------------------------------------------------
+  /**
+   * メモのテキスト保存
+   */
+  const handleSaveNoteText = useCallback((noteId: number, text: string) => {
+    setNotes((prev) =>
+      prev.map((n) => (n.id === noteId ? { ...n, text } : n))
+    );
+    setEditingNoteId(null);
+    backendApi.updateBoardNote(noteId, { text }).catch((err) =>
+      console.error("メモテキストの保存に失敗:", err)
+    );
+  }, []);
+
+  /**
+   * メモのカラー変更
+   */
+  const handleChangeNoteColor = useCallback((noteId: number, color: string) => {
+    setNotes((prev) =>
+      prev.map((n) => (n.id === noteId ? { ...n, color } : n))
+    );
+    backendApi.updateBoardNote(noteId, { color }).catch((err) =>
+      console.error("メモカラーの保存に失敗:", err)
+    );
+  }, []);
+
+  /**
+   * メモのロック状態切替
+   */
+  const handleToggleNoteLock = useCallback((noteId: number) => {
+    const target = notesRef.current.find((n) => n.id === noteId);
+    if (!target) return;
+    const nextLocked = !target.isLocked;
+    setNotes((prev) =>
+      prev.map((n) => (n.id === noteId ? { ...n, isLocked: nextLocked } : n))
+    );
+    backendApi.updateBoardNote(noteId, { isLocked: nextLocked }).catch((err) =>
+      console.error("メモロックの保存に失敗:", err)
+    );
+  }, []);
+
+  /**
+   * メモの削除
+   */
+  const handleDeleteNote = useCallback((noteId: number) => {
+    const target = notesRef.current.find((n) => n.id === noteId);
+    if (!target || target.isLocked) return;
+    backendApi.deleteBoardNote(noteId).then(() => {
+      setNotes((prev) => prev.filter((n) => n.id !== noteId));
+      if (selectedNoteId === noteId) {
+        setSelectedNoteId(null);
+        setEditingNoteId(null);
+      }
+    }).catch((err) => console.error("メモ削除に失敗:", err));
+  }, [selectedNoteId]);
+
+  /**
+   * メモを最前面へ移動
+   */
+  const handleBringNoteToFront = useCallback(() => {
+    if (selectedNoteId === null) return;
+    const target = notesRef.current.find((n) => n.id === selectedNoteId);
+    if (!target) return;
+
+    const maxItemZ = itemsRef.current.reduce((max, it) => Math.max(max, it.zIndex), 0);
+    const maxNoteZ = notesRef.current.reduce((max, n) => Math.max(max, n.zIndex), 0);
+    const nextZ = Math.max(maxItemZ, maxNoteZ) + 1;
+
+    setNotes((prev) =>
+      prev.map((n) => (n.id === target.id ? { ...n, zIndex: nextZ } : n))
+    );
+    backendApi.updateBoardNote(target.id, { zIndex: nextZ }).catch(console.error);
+  }, [selectedNoteId]);
+
+  /**
+   * メモを最背面へ移動
+   */
+  const handleSendNoteToBack = useCallback(() => {
+    if (selectedNoteId === null) return;
+    const target = notesRef.current.find((n) => n.id === selectedNoteId);
+    if (!target) return;
+
+    const minItemZ = itemsRef.current.reduce((min, it) => Math.min(min, it.zIndex), 0);
+    const minNoteZ = notesRef.current.reduce((min, n) => Math.min(min, n.zIndex), 0);
+    const nextZ = Math.min(0, Math.min(minItemZ, minNoteZ) - 1);
+
+    setNotes((prev) =>
+      prev.map((n) => (n.id === target.id ? { ...n, zIndex: nextZ } : n))
+    );
+    backendApi.updateBoardNote(target.id, { zIndex: nextZ }).catch(console.error);
+  }, [selectedNoteId]);
+
+  /**
+   * 画像詳細情報パネルの表示切替
+   */
+  const handleToggleImageDetail = useCallback(() => {
+    if (selectedItemId === null) return;
+    setShowImageDetail((prev) => !prev);
+  }, [selectedItemId]);
+
   // キーボードショートカット（PureRef互換）
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -631,6 +973,17 @@ export const MoodboardCanvas: React.FC = () => {
               setSelectedItemId(null);
             });
           }
+        } else if (selectedNoteId !== null && editingNoteId === null) {
+          e.preventDefault();
+          handleDeleteNote(selectedNoteId);
+        }
+      }
+
+      // 詳細情報トグル (Iキー)
+      if (e.key === "i" || e.key === "I") {
+        if (selectedItemId !== null) {
+          e.preventDefault();
+          handleToggleImageDetail();
         }
       }
 
@@ -718,7 +1071,35 @@ export const MoodboardCanvas: React.FC = () => {
     handleResetCrop,
   ]);
 
+  /**
+   * グローバルなマウスアップ・安全ガードリスナー
+   *
+   * 変更理由: マウスをコンテナ外で離したり、他UI要素上で離した場合でも
+   * 確実にドラッグ状態を終了し位置を保存するため。
+   */
+  useEffect(() => {
+    const handleGlobalMouseUp = () => {
+      if (
+        isDraggingCanvasRef.current ||
+        isDraggingItemRef.current ||
+        isResizingItemRef.current ||
+        isRotatingItemRef.current ||
+        isDraggingNoteRef.current ||
+        isResizingNoteRef.current ||
+        isDraggingCropRef.current
+      ) {
+        handleMouseUp();
+      }
+    };
+
+    window.addEventListener("mouseup", handleGlobalMouseUp);
+    return () => {
+      window.removeEventListener("mouseup", handleGlobalMouseUp);
+    };
+  }, [handleMouseUp]);
+
   const selectedItem = items.find((it) => it.id === selectedItemId);
+  const selectedNote = notes.find((n) => n.id === selectedNoteId);
 
   return (
     <div
@@ -751,9 +1132,21 @@ export const MoodboardCanvas: React.FC = () => {
             {board?.name || "ムードボード"}
           </span>
           <span className="text-xs text-textSecondary">
-            ({items.length} 点の資料)
+            ({items.length} 点の資料{notes.length > 0 ? `, ${notes.length} 件のメモ` : ""})
           </span>
         </div>
+
+        <div className="h-4 w-px bg-border/40" />
+
+        {/* メモ追加ボタン */}
+        <button
+          onClick={handleCreateNote}
+          className="flex items-center gap-1.5 text-xs text-white bg-accent hover:bg-accent/90 px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
+          title="キャンバス中央にテキストメモ（付箋）を配置"
+        >
+          <StickyNote className="w-3.5 h-3.5" />
+          メモを追加
+        </button>
       </div>
 
       {/* 2. ズーム & ツールバー（右上） */}
@@ -796,7 +1189,7 @@ export const MoodboardCanvas: React.FC = () => {
         </button>
       </div>
 
-      {/* 3. 選択アイテム用アクションバー（画面下中央） */}
+      {/* 3-A. 選択画像アイテム用アクションバー（画面下中央） */}
       {selectedItem && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border/60 shadow-2xl">
           <button
@@ -872,6 +1265,20 @@ export const MoodboardCanvas: React.FC = () => {
               <FlipVertical className="w-3.5 h-3.5" />
             </button>
           </div>
+
+          {/* 詳細情報表示ボタン (I) */}
+          <button
+            onClick={handleToggleImageDetail}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs transition cursor-pointer ${
+              showImageDetail
+                ? "bg-accent text-white shadow-xs"
+                : "bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary"
+            }`}
+            title="画像の詳細情報を表示 (I)"
+          >
+            <Info className="w-3.5 h-3.5" />
+            <span>詳細情報</span>
+          </button>
 
           {/* クリッピング中専用: リセットボタン */}
           {isCropping && (
@@ -955,6 +1362,99 @@ export const MoodboardCanvas: React.FC = () => {
             }}
             title="ボードから削除 (Delete)"
             className="p-1.5 hover:bg-red-500/20 text-textSecondary hover:text-red-400 rounded transition"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* 3-B. 選択メモ用アクションバー（画面下中央） */}
+      {selectedNote && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border/60 shadow-2xl">
+          {/* テキスト編集トグル */}
+          <button
+            onClick={() => {
+              if (editingNoteId === selectedNote.id) {
+                handleSaveNoteText(selectedNote.id, editingText);
+              } else {
+                setEditingNoteId(selectedNote.id);
+                setEditingText(selectedNote.text);
+              }
+            }}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer ${
+              editingNoteId === selectedNote.id
+                ? "bg-accent text-white shadow-xs"
+                : "bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textPrimary"
+            }`}
+            title="テキストを編集"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            <span>{editingNoteId === selectedNote.id ? "完了" : "テキスト編集"}</span>
+          </button>
+
+          {/* カラーパレット */}
+          <div className="flex items-center gap-1.5 bg-surfaceLight/30 px-2 py-1 rounded border border-border/40" title="メモの色を変更">
+            {NOTE_COLORS.map((c) => (
+              <button
+                key={c.bg}
+                onClick={() => handleChangeNoteColor(selectedNote.id, c.bg)}
+                style={{ backgroundColor: c.bg }}
+                className={`w-4 h-4 rounded-full border transition hover:scale-125 cursor-pointer ${
+                  selectedNote.color.toLowerCase() === c.bg.toLowerCase()
+                    ? "ring-2 ring-accent ring-offset-1 ring-offset-surface scale-115 border-white/60"
+                    : "border-black/20"
+                }`}
+                title={c.label}
+              />
+            ))}
+          </div>
+
+          {/* ロック切替 */}
+          <button
+            onClick={() => handleToggleNoteLock(selectedNote.id)}
+            title={selectedNote.isLocked ? "ロック解除" : "位置固定ロック"}
+            className="p-1.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
+          >
+            {selectedNote.isLocked ? <Lock className="w-4 h-4 text-accent" /> : <Unlock className="w-4 h-4" />}
+          </button>
+
+          <div className="h-4 w-px bg-border/40" />
+
+          {/* 重なり順変更 */}
+          <div
+            className="flex items-center gap-0.5 bg-surfaceLight/30 px-1 py-0.5 rounded border border-border/40"
+            title="メモの重なり順を変更"
+          >
+            <button
+              onClick={handleSendNoteToBack}
+              className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
+              title="最背面へ移動"
+            >
+              <ChevronsDown className="w-3.5 h-3.5" />
+            </button>
+            <div
+              className="text-[10px] text-textSecondary font-mono px-1.5 select-none flex items-center gap-1"
+              title={`重なり順: レイヤー ${selectedNote.zIndex}`}
+            >
+              <Layers className="w-3 h-3 text-accent" />
+              <span>{selectedNote.zIndex}</span>
+            </div>
+            <button
+              onClick={handleBringNoteToFront}
+              className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
+              title="最前面へ移動"
+            >
+              <ChevronsUp className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="h-4 w-px bg-border/40" />
+
+          {/* 削除ボタン */}
+          <button
+            onClick={() => handleDeleteNote(selectedNote.id)}
+            title="メモを削除 (Delete)"
+            className="p-1.5 hover:bg-red-500/20 text-textSecondary hover:text-red-400 rounded transition cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -1121,7 +1621,112 @@ export const MoodboardCanvas: React.FC = () => {
             </div>
           );
         })}
+
+        {/* メモ（付箋）一覧の描画 */}
+        {notes.map((note) => {
+          const isSelected = selectedNoteId === note.id;
+          const isEditing = editingNoteId === note.id;
+          const displayWidth = note.width * note.scale;
+          const displayHeight = note.height * note.scale;
+
+          const colorDef = NOTE_COLORS.find(
+            (c) => c.bg.toLowerCase() === note.color.toLowerCase()
+          ) || { bg: note.color, text: "#1c1917", border: "#e4e4e7" };
+
+          return (
+            <div
+              key={`note-${note.id}`}
+              onMouseDown={(e) => handleNoteMouseDown(e, note)}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setSelectedNoteId(note.id);
+                setSelectedItemId(null);
+                setEditingNoteId(note.id);
+                setEditingText(note.text);
+              }}
+              style={{
+                position: "absolute",
+                left: note.x,
+                top: note.y,
+                width: displayWidth,
+                height: displayHeight,
+                zIndex: note.zIndex,
+                transform: `rotate(${note.rotation}deg)`,
+                backgroundColor: note.color,
+                color: colorDef.text,
+                cursor: note.isLocked
+                  ? "default"
+                  : isEditing
+                  ? "default"
+                  : isDraggingNoteRef.current && draggingNoteIdRef.current === note.id
+                  ? "grabbing"
+                  : "grab",
+              }}
+              className={`pointer-events-auto select-none rounded-xl p-3 shadow-lg transition-shadow flex flex-col justify-between border ${
+                isSelected
+                  ? "ring-2 ring-accent shadow-2xl shadow-accent/25 border-transparent"
+                  : "hover:ring-1 hover:ring-border/80 border-black/10"
+              }`}
+            >
+              {/* ヘッダー・ピン風アクセント */}
+              <div className="flex items-center justify-between pb-1 border-b border-black/10 text-[10px] opacity-75 cursor-grab active:cursor-grabbing">
+                <span className="font-semibold flex items-center gap-1">
+                  <StickyNote className="w-3 h-3" />
+                  メモ
+                </span>
+                {note.isLocked && <Lock className="w-3 h-3 text-accent" />}
+              </div>
+
+              {/* メモ本文または編集textarea */}
+              <div className="flex-1 w-full overflow-hidden mt-1 text-xs">
+                {isEditing ? (
+                  <textarea
+                    autoFocus
+                    value={editingText}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onChange={(e) => setEditingText(e.target.value)}
+                    onBlur={() => handleSaveNoteText(note.id, editingText)}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                        e.preventDefault();
+                        handleSaveNoteText(note.id, editingText);
+                      }
+                      e.stopPropagation();
+                    }}
+                    style={{ color: colorDef.text }}
+                    className="w-full h-full bg-transparent resize-none outline-none leading-relaxed text-xs font-sans cursor-text"
+                    placeholder="メモを入力..."
+                  />
+                ) : (
+                  <div className="w-full h-full whitespace-pre-wrap break-words leading-relaxed select-none overflow-y-auto">
+                    {note.text || <span className="opacity-40 italic">（ダブルクリックで編集）</span>}
+                  </div>
+                )}
+              </div>
+
+              {/* リサイズハンドル（右下） */}
+              {isSelected && !note.isLocked && (
+                <div
+                  onMouseDown={(e) => handleNoteResizeMouseDown(e, note)}
+                  className="absolute -bottom-2 -right-2 w-4 h-4 bg-accent border-2 border-white rounded-full cursor-se-resize shadow-md hover:scale-125 transition-transform"
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
+
+      {/* 5. 画像詳細情報パネル (タイムラインと共通) */}
+      {showImageDetail && selectedImageDetail && (
+        <div className="absolute right-4 bottom-24 z-50">
+          <ImageDetailPanel
+            detail={selectedImageDetail}
+            onClose={() => setShowImageDetail(false)}
+            className="w-84 max-h-[80vh] overflow-y-auto"
+          />
+        </div>
+      )}
     </div>
   );
 };
+

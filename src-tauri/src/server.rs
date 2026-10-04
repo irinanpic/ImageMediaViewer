@@ -985,6 +985,82 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         }
                     }
 
+                    // ---------------------------------------------------------
+                    // ムードボード テキストメモ（付箋）API
+                    // ---------------------------------------------------------
+                    (Method::Get, p) if p.starts_with("/api/boards/") && p.ends_with("/notes") => {
+                        let id_str = p.trim_start_matches("/api/boards/").trim_end_matches("/notes");
+                        if let Ok(id) = id_str.parse::<i64>() {
+                            match state.db.reader() {
+                                Ok(conn) => match crate::db::repo::get_board_notes(&conn, id) {
+                                    Ok(notes) => json_response(&notes, 200),
+                                    Err(e) => error_response(AppError::from(e), 500),
+                                },
+                                Err(e) => error_response(AppError::from(e), 500),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Post, p) if p.starts_with("/api/boards/") && p.ends_with("/notes") => {
+                        let id_str = p.trim_start_matches("/api/boards/").trim_end_matches("/notes");
+                        if let Ok(board_id) = id_str.parse::<i64>() {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            match serde_json::from_str::<crate::models::CreateBoardNotePayload>(&body_str) {
+                                Ok(mut payload) => {
+                                    payload.board_id = board_id;
+                                    let writer = state.db.writer();
+                                    let now = chrono::Utc::now().timestamp();
+                                    match crate::db::repo::create_board_note(&writer, &payload, now) {
+                                        Ok(note) => json_response(&note, 200),
+                                        Err(e) => error_response(AppError::from(e), 500),
+                                    }
+                                }
+                                Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Put, p) if p.starts_with("/api/board_notes/") => {
+                        let id_str = p.trim_start_matches("/api/board_notes/");
+                        if let Ok(id) = id_str.parse::<i64>() {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            match serde_json::from_str::<crate::models::UpdateBoardNotePayload>(&body_str) {
+                                Ok(mut payload) => {
+                                    payload.id = id;
+                                    let writer = state.db.writer();
+                                    let now = chrono::Utc::now().timestamp();
+                                    match crate::db::repo::update_board_note(&writer, &payload, now) {
+                                        Ok(_) => json_response(&serde_json::json!({ "success": true }), 200),
+                                        Err(e) => error_response(AppError::from(e), 500),
+                                    }
+                                }
+                                Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Delete, p) if p.starts_with("/api/board_notes/") => {
+                        let id_str = p.trim_start_matches("/api/board_notes/");
+                        if let Ok(id) = id_str.parse::<i64>() {
+                            let writer = state.db.writer();
+                            match crate::db::repo::delete_board_note(&writer, id) {
+                                Ok(_) => json_response(&serde_json::json!({ "success": true }), 200),
+                                Err(e) => error_response(AppError::from(e), 500),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+
                     _ => {
                         if let Some(resp) = static_response(path) {
                             resp

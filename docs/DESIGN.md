@@ -83,17 +83,21 @@ src/
 │   ├── Viewer/
 │   │   ├── ImageViewerModal.tsx# 原寸画像表示モーダル、回転・反転・パン・ズーム
 │   │   └── useViewerGestures.ts# マウス・タッチジェスチャー制御
-│   │   ├── MoodboardCanvas.tsx # 無限キャンバス、アイテム自由配置、矩形クリッピング
+│   ├── Moodboard/
+│   │   ├── MoodboardCanvas.tsx # 無限キャンバス、アイテム/メモ自由配置、クリッピング
 │   │   └── AddToBoardModal.tsx # タイムライン画像追加モーダル
 │   └── Common/
+│       ├── ImageDetailPanel.tsx# 共通画像詳細パネル（タイムライン/ムードボード共用）
 │       └── LogViewerModal.tsx  # システムログ & サムネイル失敗診断モーダル
-└── hooks/
-    ├── usePagedImages.ts       # ページ単位の画像取得・キャッシュ・世代同期
-    ├── useTimelineLayout.ts    # ウィンドウ幅連動の動的列数追従 (4, 6, 8, 12列)
-    ├── useScrollVelocity.ts    # スクロール速度検知 (800px/s 閾値パージ)
-    ├── useViewportPrioritizer.ts# 現画面の画像IDをバックエンドへ優先通知
-    ├── useBackendEvents.ts     # 進捗・カタログ変更イベントのポーリング・購読
-    └── useWindowState.ts       # ハートビート送信、終了検知、ウィンドウ状態復元
+├── hooks/
+│   ├── usePagedImages.ts       # ページ単位の画像取得・キャッシュ・世代同期
+│   ├── useTimelineLayout.ts    # ウィンドウ幅連動の動的列数追従 (4, 6, 8, 12列)
+│   ├── useScrollVelocity.ts    # スクロール速度検知 (800px/s 閾値パージ)
+│   ├── useViewportPrioritizer.ts# 現画面の画像IDをバックエンドへ優先通知
+│   ├── useBackendEvents.ts     # 進捗・カタログ変更イベントのポーリング・購読
+│   └── useWindowState.ts       # ハートビート送信、終了検知、ウィンドウ状態復元
+└── utils/
+    └── imageMetadata.ts        # フォーマット解析、可逆/非可逆判定、生データ比・圧縮率計算
 ```
 
 ### 2.2 仮想スクロールと動的列レイアウト設計
@@ -110,6 +114,32 @@ src/
 * 画面に表示される行のインデックスから、必要なページ（1ページ=50件）を動的に要求。
 * インメモリキャッシュ（`cacheRef`）により、一度取得したページは再マウント時でも 0ms で描画。
 * スクロールにより世代番号が進んだ場合でも、受信したページデータは安全にキャッシュに格納され、無条件で `setVersionTick` を発行してスケルトン固まりを防止。
+
+### 2.4 ムードボードと共通メタデータ設計 (`MoodboardCanvas.tsx`, `ImageDetailPanel.tsx`, `imageMetadata.ts`)
+* **画像アイテムとテキストメモ矩形のハイブリッド描画**:
+  * ムードボード上には、写真画像アイテム（`BoardItem`）とテキスト付箋メモ（`BoardNote`）が混在配置可能。
+  * 共通の `z_index` を用いて、画像の上にメモを置いたり、メモの下に画像を潜り込ませる自然なコラージュ制御を実現。
+  * 各アイテムはマウスドラッグによる自由な移動、右下ハンドルによる直感的なリサイズに対応。
+  * 付箋メモはダブルクリックまたはアクションバーから即座にテキスト編集可能（`Ctrl+Enter` で確定）。カラーパレット（イエロー、ブルー、グリーン、ピンク、パープル、ダーク）の切替もワンクリックで反映。
+* **高精度ドラッグ＆永続化安全ガード**:
+  * React の非同期ステートやクロージャ依存による移動先座標・対象IDの取りこぼしを防ぐため、ドラッグ中・リサイズ中の最新座標（`currentNotePosRef`）および対象ID（`draggingNoteIdRef`）を `useRef` でリアルタイム同期。
+  * ウィンドウ外や他UI要素上でマウスボタンを離した場合のドラッグ残留（マウス追従）を根絶するため、グローバルな `window.addEventListener("mouseup")` 安全ガードリスナーを装備。
+  * テキスト入力中の誤ドラッグ防止（`stopPropagation`）およびブラウザ標準テキスト選択との競合防止制御を実装。
+* **共通詳細情報パネル連携 (`ImageDetailPanel`)**:
+  * タイムラインのビューアモーダルとムードボードのキャンバス右下で全く同一のコンポーネントを利用し、UI/UX の一貫性を担保。
+  * 選択中画像の詳細をキーボードショートカット `I` またはアクションバーの「詳細情報」ボタンで即座に展開・格納。
+* **画像メタデータ・圧縮率解析アルゴリズム (`imageMetadata.ts`)**:
+  * **フォーマット正規化**: 拡張子および MIME タイプに基づき、大文字フォーマット名（JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF, HEIC等）を統一。
+  * **可逆 / 非可逆判定**:
+    * PNG, BMP, GIF, TIFF: 可逆圧縮（Lossless）
+    * JPEG: 非可逆圧縮（Lossy）
+    * WebP: 拡張子・mime・メタデータから判定（デフォルトは WebP Lossy）
+  * **生RGB比と圧縮率計算**:
+    * 画像の非圧縮24bit RGB生データサイズを算出: $\text{RawSize} = \text{width} \times \text{height} \times 3 \text{ bytes}$
+    * 削減率（Compression Ratio）: $\text{Reduction} = \frac{\text{RawSize} - \text{file\_size}}{\text{RawSize}} \times 100\%$
+    * 生データ比: $\text{RawPercent} = \frac{\text{file\_size}}{\text{RawSize}} \times 100\%$
+    * 1ピクセルあたり実効ビット数: $\text{bpp} = \frac{\text{file\_size} \times 8}{\text{width} \times \text{height}}$
+    * 寸法不明時やBMP等の非圧縮ファイル時も適切なフォールバック表示を実施。
 
 ---
 
@@ -250,7 +280,27 @@ CREATE TABLE board_items (
 );
 ```
 
-#### ⑤ `thumbnails` (サムネイル専用BLOBストア: `%LOCALAPPDATA%/.../cache/thumbnails.db`)
+#### ⑤ `board_notes` (ボード配置テキストメモ: マイグレーション v5)
+```sql
+CREATE TABLE board_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    text TEXT NOT NULL DEFAULT '',
+    x REAL NOT NULL DEFAULT 0.0,
+    y REAL NOT NULL DEFAULT 0.0,
+    width REAL NOT NULL DEFAULT 200.0,
+    height REAL NOT NULL DEFAULT 150.0,
+    color TEXT NOT NULL DEFAULT '#fef08a', -- 付箋背景カラーコード
+    z_index INTEGER NOT NULL DEFAULT 0,
+    is_locked INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_board_notes_board_id ON board_notes(board_id);
+```
+
+#### ⑥ `thumbnails` (サムネイル専用BLOBストア: `%LOCALAPPDATA%/.../cache/thumbnails.db`)
 ```sql
 CREATE TABLE thumbnails (
     quick_hash  TEXT PRIMARY KEY,       -- BLAKE3 サンプリングハッシュ
@@ -277,6 +327,16 @@ CREATE TABLE thumbnails (
 | `GET` | `/api/timeline/summary` | タイムライン日別サマリ | `{ total: number, buckets: DayBucket[], version: number }` |
 | `GET` | `/api/timeline/images` | タイムライン画像一覧取得 | `GetImagesPayload` に応じた `ImageRecord[]` |
 | `GET` | `/api/images/:id` | 画像メタデータ詳細取得 | `ImageDetail` (EXIF情報含む) |
+| `GET` | `/api/boards` | ボード一覧取得 | `Board[]` |
+| `POST` | `/api/boards` | 新規ボード作成 | `{ name: string }` → `Board` |
+| `GET` | `/api/boards/:id/items` | ボード内アイテム一覧取得 | `BoardItem[]` |
+| `POST` | `/api/boards/:id/items` | ボード内画像追加 | `AddBoardItemsPayload` → `BoardItem[]` |
+| `PUT` | `/api/board_items/:id` | ボードアイテム更新 | `UpdateBoardItemPayload` → `BoardItem` |
+| `DELETE` | `/api/board_items/:id` | ボードアイテム削除 | 200 OK |
+| `GET` | `/api/boards/:id/notes` | ボード内メモ一覧取得 | `BoardNote[]` |
+| `POST` | `/api/boards/:id/notes` | 新規メモ作成 | `CreateBoardNotePayload` → `BoardNote` |
+| `PUT` | `/api/board_notes/:id` | メモ更新 (位置/サイズ/テキスト/色/Z/ロック) | `UpdateBoardNotePayload` → `BoardNote` |
+| `DELETE` | `/api/board_notes/:id` | メモ削除 | 200 OK |
 | `POST` | `/api/viewport` | 現画面表示範囲の通知 | `{ visibleIds: number[], nearbyIds: number[] }` |
 | `POST` | `/api/clear_queue` | サムネイルキュー即時パージ | 古い待機リクエストを一掃解放 |
 | `POST` | `/api/thumbnails/rescan_missing` | 未生成・失敗サムネ一括再作成 | 失敗ステータスリセット ＆ バックグラウンド生成開始 |

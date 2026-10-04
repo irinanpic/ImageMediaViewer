@@ -78,3 +78,57 @@ export interface UpdateBoardItemPayload {
   flipH?: boolean;
   flipV?: boolean;
 }
+
+/**
+ * ムードボード上のテキストメモ（付箋）情報
+ */
+export interface BoardNote {
+  id: number;
+  boardId: number;
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+  rotation: number;
+  zIndex: number;
+  color: string;
+  fontSize: number;
+  isLocked: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * メモ新規作成ペイロード
+ */
+export interface CreateBoardNotePayload {
+  boardId: number;
+  text?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  color?: string;
+  fontSize?: number;
+}
+
+/**
+ * メモ更新ペイロード
+ */
+export interface UpdateBoardNotePayload {
+  id?: number;
+  text?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  scale?: number;
+  rotation?: number;
+  zIndex?: number;
+  color?: string;
+  fontSize?: number;
+  isLocked?: boolean;
+}
+

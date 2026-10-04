@@ -192,5 +192,40 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("マイグレーション v4 の適用完了 (user_version = 4)");
     }
 
+    if current_version < 5 {
+        info!("マイグレーション v5 (ムードボード用テキストメモテーブル board_notes) を適用中...");
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS board_notes (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                board_id   INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+                text       TEXT NOT NULL DEFAULT '',
+                x          REAL NOT NULL DEFAULT 0.0,
+                y          REAL NOT NULL DEFAULT 0.0,
+                width      REAL NOT NULL DEFAULT 240.0,
+                height     REAL NOT NULL DEFAULT 160.0,
+                scale      REAL NOT NULL DEFAULT 1.0,
+                rotation   REAL NOT NULL DEFAULT 0.0,
+                z_index    INTEGER NOT NULL DEFAULT 0,
+                color      TEXT NOT NULL DEFAULT '#fef08a',
+                font_size  INTEGER NOT NULL DEFAULT 14,
+                is_locked  INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_board_notes_board_id ON board_notes (board_id);",
+            [],
+        )?;
+
+        tx.pragma_update(None, "user_version", 5)?;
+        tx.commit()?;
+        info!("マイグレーション v5 の適用完了 (user_version = 5)");
+    }
+
     Ok(())
 }

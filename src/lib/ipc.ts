@@ -12,9 +12,12 @@ import type { LogEntry } from "../types/generated/LogEntry";
 import type {
   Board,
   BoardItem,
+  BoardNote,
+  CreateBoardNotePayload,
   CreateBoardPayload,
-  UpdateBoardPayload,
   UpdateBoardItemPayload,
+  UpdateBoardNotePayload,
+  UpdateBoardPayload,
 } from "../types/board";
 import { isTauriEnvironment } from "./thumbUrl";
 
@@ -192,6 +195,28 @@ async function callIpc<T>(command: string, args?: Record<string, unknown>): Prom
 
       case "delete_board_item":
         url += `/board_items/${args?.id}`;
+        options.method = "DELETE";
+        break;
+
+      case "get_board_notes":
+        url += `/boards/${args?.boardId}/notes`;
+        options.method = "GET";
+        break;
+
+      case "create_board_note":
+        url += `/boards/${args?.boardId}/notes`;
+        options.method = "POST";
+        options.body = JSON.stringify(args?.payload || {});
+        break;
+
+      case "update_board_note":
+        url += `/board_notes/${args?.id}`;
+        options.method = "PUT";
+        options.body = JSON.stringify({ id: args?.id, ...(args?.payload || {}) });
+        break;
+
+      case "delete_board_note":
+        url += `/board_notes/${args?.id}`;
         options.method = "DELETE";
         break;
 
@@ -410,6 +435,36 @@ export const backendApi = {
    */
   deleteBoardItem: (id: number): Promise<{ success: boolean }> =>
     callIpc<{ success: boolean }>("delete_board_item", { id }),
+
+  /**
+   * 指定ボードのメモ（付箋）一覧を取得
+   * @param boardId ボードID
+   */
+  getBoardNotes: (boardId: number): Promise<BoardNote[]> =>
+    callIpc<BoardNote[]>("get_board_notes", { boardId }),
+
+  /**
+   * ボードに新規メモを作成
+   * @param payload メモ作成ペイロード
+   */
+  createBoardNote: (payload: CreateBoardNotePayload): Promise<BoardNote> =>
+    callIpc<BoardNote>("create_board_note", { boardId: payload.boardId, payload }),
+
+  /**
+   * ボードメモの更新（テキスト、位置、サイズ、カラー、ロック等）
+   * @param id メモID
+   * @param payload 更新ペイロード
+   */
+  updateBoardNote: (id: number, payload: UpdateBoardNotePayload): Promise<{ success: boolean }> =>
+    callIpc<{ success: boolean }>("update_board_note", { id, payload }),
+
+  /**
+   * ボードメモを削除
+   * @param id メモID
+   */
+  deleteBoardNote: (id: number): Promise<{ success: boolean }> =>
+    callIpc<{ success: boolean }>("delete_board_note", { id }),
+
 
   /**
    * サーバー生存確認（ハートビート）

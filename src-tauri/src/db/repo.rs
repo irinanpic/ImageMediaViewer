@@ -945,6 +945,218 @@ pub fn delete_board_item(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 指定ボード上のメモ一覧を取得
+///
+/// 変更理由: ムードボード上に配置されたテキストメモ（付箋）を読み出すため
+///
+/// @param conn DB接続
+/// @param board_id ボードID
+/// @return メモ一覧 (z_index 順)
+pub fn get_board_notes(conn: &Connection, board_id: i64) -> Result<Vec<crate::models::BoardNote>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, board_id, text, x, y, width, height, scale, rotation, z_index,
+                color, font_size, is_locked, created_at, updated_at
+         FROM board_notes
+         WHERE board_id = ?1
+         ORDER BY z_index ASC, id ASC;"
+    )?;
+
+    let rows = stmt.query_map(params![board_id], |r| {
+        Ok(crate::models::BoardNote {
+            id: r.get(0)?,
+            board_id: r.get(1)?,
+            text: r.get(2)?,
+            x: r.get(3)?,
+            y: r.get(4)?,
+            width: r.get(5)?,
+            height: r.get(6)?,
+            scale: r.get(7)?,
+            rotation: r.get(8)?,
+            z_index: r.get(9)?,
+            color: r.get(10)?,
+            font_size: r.get(11)?,
+            is_locked: r.get::<_, i32>(12)? != 0,
+            created_at: r.get(13)?,
+            updated_at: r.get(14)?,
+        })
+    })?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row?);
+    }
+    Ok(result)
+}
+
+/// ボードに新規メモを作成
+///
+/// 変更理由: ムードボード上に新しい付箋・テキストメモを配置するため
+///
+/// @param conn DB接続
+/// @param payload メモ作成データ
+/// @param now 作成日時エポック秒
+/// @return 作成された BoardNote
+pub fn create_board_note(
+    conn: &Connection,
+    payload: &crate::models::CreateBoardNotePayload,
+    now: i64,
+) -> Result<crate::models::BoardNote> {
+    let max_z: i32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(z_index), 0) FROM (
+                SELECT z_index FROM board_items WHERE board_id = ?1
+                UNION ALL
+                SELECT z_index FROM board_notes WHERE board_id = ?1
+            );",
+            params![payload.board_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    let z_index = max_z + 1;
+    let text = payload.text.clone().unwrap_or_default();
+    let x = payload.x.unwrap_or(40.0);
+    let y = payload.y.unwrap_or(40.0);
+    let width = payload.width.unwrap_or(240.0);
+    let height = payload.height.unwrap_or(160.0);
+    let color = payload.color.clone().unwrap_or_else(|| "#fef08a".to_string());
+    let font_size = payload.font_size.unwrap_or(14);
+
+    conn.execute(
+        "INSERT INTO board_notes (
+            board_id, text, x, y, width, height, scale, rotation, z_index,
+            color, font_size, is_locked, created_at, updated_at
+        ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0.0, ?7,
+            ?8, ?9, 0, ?10, ?11
+        );",
+        params![
+            payload.board_id,
+            text,
+            x,
+            y,
+            width,
+            height,
+            z_index,
+            color,
+            font_size,
+            now,
+            now
+        ],
+    )?;
+
+    let id = conn.last_insert_rowid();
+    conn.execute("UPDATE boards SET updated_at = ?1 WHERE id = ?2;", params![now, payload.board_id])?;
+
+    Ok(crate::models::BoardNote {
+        id,
+        board_id: payload.board_id,
+        text,
+        x,
+        y,
+        width,
+        height,
+        scale: 1.0,
+        rotation: 0.0,
+        z_index,
+        color,
+        font_size,
+        is_locked: false,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+/// ボードメモの更新
+///
+/// 変更理由: メモのテキスト内容、位置、サイズ、カラー、ロック状態等の変更を保存するため
+///
+/// @param conn DB接続
+/// @param payload 更新内容
+/// @param now 更新日時エポック秒
+pub fn update_board_note(
+    conn: &Connection,
+    payload: &crate::models::UpdateBoardNotePayload,
+    now: i64,
+) -> Result<()> {
+    let mut updates = Vec::new();
+    let mut vals: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(ref text) = payload.text {
+        updates.push("text = ?");
+        vals.push(rusqlite::types::Value::Text(text.clone()));
+    }
+    if let Some(x) = payload.x {
+        updates.push("x = ?");
+        vals.push(rusqlite::types::Value::Real(x));
+    }
+    if let Some(y) = payload.y {
+        updates.push("y = ?");
+        vals.push(rusqlite::types::Value::Real(y));
+    }
+    if let Some(w) = payload.width {
+        updates.push("width = ?");
+        vals.push(rusqlite::types::Value::Real(w));
+    }
+    if let Some(h) = payload.height {
+        updates.push("height = ?");
+        vals.push(rusqlite::types::Value::Real(h));
+    }
+    if let Some(s) = payload.scale {
+        updates.push("scale = ?");
+        vals.push(rusqlite::types::Value::Real(s));
+    }
+    if let Some(r) = payload.rotation {
+        updates.push("rotation = ?");
+        vals.push(rusqlite::types::Value::Real(r));
+    }
+    if let Some(z) = payload.z_index {
+        updates.push("z_index = ?");
+        vals.push(rusqlite::types::Value::Integer(z as i64));
+    }
+    if let Some(ref c) = payload.color {
+        updates.push("color = ?");
+        vals.push(rusqlite::types::Value::Text(c.clone()));
+    }
+    if let Some(fs) = payload.font_size {
+        updates.push("font_size = ?");
+        vals.push(rusqlite::types::Value::Integer(fs as i64));
+    }
+    if let Some(l) = payload.is_locked {
+        updates.push("is_locked = ?");
+        vals.push(rusqlite::types::Value::Integer(if l { 1 } else { 0 }));
+    }
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    updates.push("updated_at = ?");
+    vals.push(rusqlite::types::Value::Integer(now));
+
+    let sql = format!(
+        "UPDATE board_notes SET {} WHERE id = ?;",
+        updates.join(", ")
+    );
+    vals.push(rusqlite::types::Value::Integer(payload.id));
+
+    let params_from_iter = rusqlite::params_from_iter(vals);
+    conn.execute(&sql, params_from_iter)?;
+    Ok(())
+}
+
+/// ボードメモの削除
+///
+/// 変更理由: 不要になったメモをボードから削除するため
+///
+/// @param conn DB接続
+/// @param id メモID
+pub fn delete_board_note(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM board_notes WHERE id = ?1;", params![id])?;
+    Ok(())
+}
+
+
 /// 実アクセス時に画像ファイルの更新（サイズ・更新日時）が検知された際、画像レコードをアトミックに更新する
 ///
 /// 変更理由: ユーザー要求「画像そのものが追記などで更新された場合に検知してサムネイルを更新する処理」。
@@ -1041,5 +1253,91 @@ pub fn filter_unreferenced_hashes(
 
     Ok(unreferenced)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::models::{CreateBoardNotePayload, CreateBoardPayload, UpdateBoardNotePayload};
+
+    #[test]
+    fn test_board_notes_crud() {
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let conn = db.writer();
+
+        // 1. ボード作成
+        let board = create_board(
+            &conn,
+            &CreateBoardPayload {
+                name: "テストボード".to_string(),
+                background_color: None,
+            },
+            1000,
+        )
+        .expect("ボード作成失敗");
+
+        // 2. メモ作成
+        let note = create_board_note(
+            &conn,
+            &CreateBoardNotePayload {
+                board_id: board.id,
+                text: Some("アイデアマッピングメモ".to_string()),
+                x: Some(100.0),
+                y: Some(150.0),
+                width: Some(250.0),
+                height: Some(180.0),
+                color: Some("#fef08a".to_string()),
+                font_size: Some(16),
+            },
+            1001,
+        )
+        .expect("メモ作成失敗");
+
+        assert_eq!(note.text, "アイデアマッピングメモ");
+        assert_eq!(note.x, 100.0);
+        assert_eq!(note.y, 150.0);
+        assert_eq!(note.color, "#fef08a");
+        assert_eq!(note.font_size, 16);
+        assert!(!note.is_locked);
+
+        // 3. メモ一覧取得
+        let notes = get_board_notes(&conn, board.id).expect("メモ一覧取得失敗");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].id, note.id);
+
+        // 4. メモ更新
+        update_board_note(
+            &conn,
+            &UpdateBoardNotePayload {
+                id: note.id,
+                text: Some("更新されたメモ内容".to_string()),
+                x: Some(200.0),
+                y: None,
+                width: None,
+                height: None,
+                scale: None,
+                rotation: None,
+                z_index: None,
+                color: Some("#bae6fd".to_string()),
+                font_size: None,
+                is_locked: Some(true),
+            },
+            1002,
+        )
+        .expect("メモ更新失敗");
+
+        let updated_notes = get_board_notes(&conn, board.id).expect("更新後メモ一覧取得失敗");
+        assert_eq!(updated_notes[0].text, "更新されたメモ内容");
+        assert_eq!(updated_notes[0].x, 200.0);
+        assert_eq!(updated_notes[0].color, "#bae6fd");
+        assert!(updated_notes[0].is_locked);
+
+        // 5. メモ削除
+        delete_board_note(&conn, note.id).expect("メモ削除失敗");
+        let after_delete = get_board_notes(&conn, board.id).expect("削除後メモ一覧取得失敗");
+        assert_eq!(after_delete.len(), 0);
+    }
+}
+
 
 
