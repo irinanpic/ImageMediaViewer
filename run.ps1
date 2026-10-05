@@ -1,9 +1,39 @@
 ﻿# ImageMediaViewer Desktop Launcher
 # Reliably starts backend and opens client with standalone window or default browser fallback
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$backendExe = Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe"
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }
+$backendExe = if (Test-Path (Join-Path $scriptDir "src-tauri\target\release\image-media-viewer.exe")) {
+    Join-Path $scriptDir "src-tauri\target\release\image-media-viewer.exe"
+} elseif (Test-Path (Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe")) {
+    Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe"
+} elseif (Test-Path (Join-Path $scriptDir "image-media-viewer.exe")) {
+    Join-Path $scriptDir "image-media-viewer.exe"
+} else {
+    Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe"
+}
 $appUrl = "http://127.0.0.1:14201/"
+
+# Auto-register Custom URI Protocol (imagemediaviewer://)
+try {
+    $regKey = "HKCU:\Software\Classes\imagemediaviewer"
+    $cmdKey = "$regKey\shell\open\command"
+    $runServerBat = Join-Path $scriptDir "run-server.bat"
+    $expectedCmd = '"{0}" "%1"' -f $runServerBat
+    $currentCmd = (Get-ItemProperty -Path $cmdKey -ErrorAction SilentlyContinue).'(default)'
+    if ($currentCmd -ne $expectedCmd) {
+        New-Item -Path $regKey -Force | Out-Null
+        Set-ItemProperty -Path $regKey -Name "(Default)" -Value "URL:ImageMediaViewer Protocol" | Out-Null
+        Set-ItemProperty -Path $regKey -Name "URL Protocol" -Value "" | Out-Null
+        $iconPath = Join-Path $scriptDir "src-tauri\icons\icon.ico"
+        if (Test-Path $iconPath) {
+            $iconKey = "$regKey\DefaultIcon"
+            New-Item -Path $iconKey -Force | Out-Null
+            Set-ItemProperty -Path $iconKey -Name "(Default)" -Value ('"{0}",0' -f $iconPath) | Out-Null
+        }
+        New-Item -Path $cmdKey -Force | Out-Null
+        Set-ItemProperty -Path $cmdKey -Name "(Default)" -Value $expectedCmd | Out-Null
+    }
+} catch {}
 
 Write-Host "====================================================" -ForegroundColor Cyan
 Write-Host "       ImageMediaViewer Desktop Launcher            " -ForegroundColor Cyan
@@ -83,11 +113,11 @@ $launched = $false
 foreach ($b in $browserCandidates) {
     if (Test-Path $b) {
         try {
-            $rand = Get-Random
-            $tempProfile = Join-Path $env:TEMP "IMV_Profile_$rand"
+            # Use fixed profile matching image-media-viewer backend to avoid duplicate windows
+            $appProfile = Join-Path $env:LOCALAPPDATA "ImageMediaViewer\BrowserProfile"
             $appArgs = @(
                 "--app=$appUrl",
-                "--user-data-dir=$tempProfile",
+                "--user-data-dir=$appProfile",
                 "--no-first-run",
                 "--no-default-browser-check"
             ) + $extraArgs

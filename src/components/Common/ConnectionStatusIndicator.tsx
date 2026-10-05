@@ -39,6 +39,7 @@ export const ConnectionStatusIndicator: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [isLaunching, setIsLaunching] = useState(false);
 
   const platform = getPlatform();
   const serverCommand = platform === "windows" ? ".\\run-server.bat" : "./run-server.sh";
@@ -52,14 +53,29 @@ export const ConnectionStatusIndicator: React.FC = () => {
 
   /**
    * カスタムURIスキーム経由でサーバー単体起動を試行（クライアント多重起動防止）
+   * 変更理由: Chromium系ブラウザではiframeからのカスタムURIスキーム呼び出しが
+   * セキュリティポリシーによりサイレントにブロックされるため、
+   * ユーザー操作コンテキストでのトップレベルナビゲーション（window.location.href）を採用。
+   * 外部プロトコルのため現在のWebページはアンロードされず、そのまま存続して再接続を監視できる。
    */
   const handleLaunchServer = () => {
-    // 登録済みカスタムプロトコルを呼び出し（サーバーのみを起動）
-    window.location.href = "imagemediaviewer://launch";
+    setIsLaunching(true);
+
+    try {
+      window.location.href = "imagemediaviewer://launch";
+    } catch {
+      window.open("imagemediaviewer://launch", "_self");
+    }
+
     // 起動後に段階的に再接続を試行
     setTimeout(() => { handleManualRetry(); }, 1200);
-    setTimeout(() => { handleManualRetry(); }, 3000);
-    setTimeout(() => { handleManualRetry(); }, 5000);
+    setTimeout(() => { handleManualRetry(); }, 2500);
+    setTimeout(() => { handleManualRetry(); }, 4000);
+    setTimeout(() => { handleManualRetry(); }, 6000);
+    setTimeout(() => {
+      handleManualRetry();
+      setIsLaunching(false);
+    }, 8000);
   };
 
   const handleCopyCommand = () => {
@@ -166,20 +182,33 @@ export const ConnectionStatusIndicator: React.FC = () => {
                 <div className="pt-1 flex flex-col gap-1.5">
                   <button
                     onClick={handleLaunchServer}
-                    className="w-full flex items-center justify-center gap-1.5 bg-accent hover:bg-accent/90 text-white font-medium py-1.5 px-2 rounded shadow-xs cursor-pointer transition active:scale-98"
+                    disabled={isLaunching || isConnecting}
+                    className="w-full flex items-center justify-center gap-1.5 bg-accent hover:bg-accent/90 disabled:opacity-50 text-white font-medium py-1.5 px-2 rounded shadow-xs cursor-pointer transition active:scale-98"
                     title="バックエンドサーバーのみを起動（クライアントは多重起動しません）"
                   >
-                    <Play className="w-3.5 h-3.5" />
-                    サーバーを起動 (URI呼び出し)
+                    {isLaunching ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        サーバー起動を試行中...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        サーバーを起動
+                      </>
+                    )}
                   </button>
                   <p className="text-[10px] text-textSecondary text-center">
-                    ※ サーバーのみ起動（クライアント画面は二重起動しません）
+                    ※ サーバーのみ常駐起動（クライアント画面は二重起動しません）
                   </p>
 
-                  <div className="flex items-center gap-1 pt-0.5">
+                  <div className="flex flex-col gap-1 pt-1 border-t border-rose-500/20">
+                    <p className="text-[10px] text-rose-300/80">
+                      自動起動しない場合は、起動スクリプトを実行してください:
+                    </p>
                     <button
                       onClick={handleCopyCommand}
-                      className="flex-1 flex items-center justify-center gap-1 bg-surfaceLight hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary border border-border py-1 px-2 rounded transition cursor-pointer text-[10px]"
+                      className="w-full flex items-center justify-center gap-1 bg-surfaceLight hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary border border-border py-1 px-2 rounded transition cursor-pointer text-[10px]"
                       title={`起動コマンド (${serverCommand}) をコピー`}
                     >
                       <Copy className="w-3 h-3" />

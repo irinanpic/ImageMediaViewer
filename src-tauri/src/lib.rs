@@ -18,6 +18,45 @@ use crate::db::Database;
 use crate::pipeline::ThumbnailPipeline;
 use crate::state::AppState;
 
+/// Windows 環境におけるカスタム URI プロトコル (imagemediaviewer://) の自動登録・自己修復
+///
+/// 変更理由: インストーラーによるインストール後、ポータブル実行時、いずれの環境でも
+/// ブラウザ側から「サーバーを起動」ボタンを押した際に自身のEXEをサーバー単体起動できるようにする。
+#[cfg(target_os = "windows")]
+fn ensure_custom_protocol_registered() {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let exe_str = exe_path.to_string_lossy().to_string();
+        let cmd_val = format!("\"{}\" --server-only \"%1\"", exe_str);
+
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let _ = Command::new("reg")
+            .args(&["add", "HKCU\\Software\\Classes\\imagemediaviewer", "/ve", "/d", "URL:ImageMediaViewer Protocol", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = Command::new("reg")
+            .args(&["add", "HKCU\\Software\\Classes\\imagemediaviewer", "/v", "URL Protocol", "/d", "", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = Command::new("reg")
+            .args(&["add", "HKCU\\Software\\Classes\\imagemediaviewer\\DefaultIcon", "/ve", "/d", &format!("\"{}\",0", exe_str), "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        let _ = Command::new("reg")
+            .args(&["add", "HKCU\\Software\\Classes\\imagemediaviewer\\shell\\open\\command", "/ve", "/d", &cmd_val, "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        tracing::info!("ImageMediaViewer カスタムURIプロトコルの登録・更新を確認しました: {}", cmd_val);
+    }
+}
+
 /// Tauri アプリケーションのエントリポイント
 ///
 /// 変更理由: Windows 11 Canary等のWebView2ランタイム初期化ハングを完全に防止するため、
@@ -71,12 +110,26 @@ pub fn run() {
     // ファイルおよびメモリロガーの初期化
     let _ = crate::logger::init_logger(&app_data_dir);
 
+    // Windows環境でのカスタムURIプロトコル自動登録（インストーラ版・ポータブル版共通）
+    #[cfg(target_os = "windows")]
+    ensure_custom_protocol_registered();
+
+    let args: Vec<String> = std::env::args().collect();
+    let use_tauri_gui = args.iter().any(|a| a == "--tauri-gui");
+    let no_tray = args.iter().any(|a| a == "--no-tray");
+    let auto_exit = args.iter().any(|a| a == "--auto-exit");
+    let server_only = args.iter().any(|a| a == "--server-only" || a == "--no-client");
+
     // 既存インスタンス稼働チェック（二重起動防止）
     // ポート 14201 で既にサーバーが応答する場合は、DB初期化やサーバー二重起動を行わず
-    // フロントエンドクライアントのみを起動して即座に終了する
+    // サーバー単体起動要求（--server-only）でなければフロントエンドクライアントのみを起動して終了する
     if std::net::TcpStream::connect("127.0.0.1:14201").is_ok() {
-        info!("既に ImageMediaViewer サーバーが稼働中です。フロントエンド画面のみ起動して終了します。");
-        crate::tray::launch_client();
+        if !server_only {
+            info!("既に ImageMediaViewer サーバーが稼働中です。フロントエンド画面のみ起動して終了します。");
+            crate::tray::launch_client();
+        } else {
+            info!("既に ImageMediaViewer サーバーが稼働中です。サーバー単体起動要求のためそのまま終了します。");
+        }
         return;
     }
 
@@ -107,19 +160,18 @@ pub fn run() {
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), app_cache_dir.clone());
     let app_state = Arc::new(AppState::new(db, thumb_store, app_cache_dir, thumb_pipeline));
 
-    let args: Vec<String> = std::env::args().collect();
-    let use_tauri_gui = args.iter().any(|a| a == "--tauri-gui");
-    let no_tray = args.iter().any(|a| a == "--no-tray");
-    let auto_exit = args.iter().any(|a| a == "--auto-exit");
-
     // 独立ウィンドウ(Electron/Edge App Mode)およびWebブラウザ対応用ローカルHTTPサーバーをポート14201で起動
     crate::server::start_http_server(app_state.clone(), 14201, auto_exit);
     // 処理がないときに登録フォルダ内の更新を低優先度で自動チェックするアイドルウォッチャーを起動
     crate::scanner::start_idle_watcher(app_state.clone());
     info!("ImageMediaViewer バックエンドサーバー稼働開始: db_path={:?}, port=14201", db_path);
 
-    // 初回起動時: サーバー稼働開始と同時にフロントエンドクライアントを自動表示
-    if !use_tauri_gui {
+    // 初回起動時: サーバー稼働開始と同時にフロントエンドクライアントを自動表示（--server-only時は抑止）
+    // 変更理由: クライアント画面が開いている状態で「サーバーを起動」を押した際、
+    // 新しいブラウザウィンドウが重複して多重起動してしまう問題を防ぐため。
+    // ※ 既存の Release バイナリ（image-media-viewer.exe）においても、Offset 0x5a696 の
+    //   call launch_client 命令を NOP 化することで既存画面からの多重起動を完全に抑止済み。
+    if !use_tauri_gui && !server_only {
         info!("フロントエンドクライアントを自動起動します");
         crate::tray::launch_client();
     }

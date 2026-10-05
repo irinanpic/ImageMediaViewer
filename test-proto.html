@@ -1,0 +1,20 @@
+﻿<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Protocol Test</title></head>
+<body>
+  <h1>URI Protocol Test</h1>
+  <button id="btn1" onclick="window.location.href='imagemediaviewer://launch'">1. window.location.href</button><br><br>
+  <button id="btn2" onclick="testIframe()">2. iframe</button><br><br>
+  <a id="link1" href="imagemediaviewer://launch">3. Direct <a> link</a><br><br>
+  <button id="btn3" onclick="window.open('imagemediaviewer://launch', '_self')">4. window.open</button>
+
+  <script>
+    function testIframe() {
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = 'imagemediaviewer://launch';
+      document.body.appendChild(iframe);
+    }
+  </script>
+</body>
+</html>

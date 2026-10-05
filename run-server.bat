@@ -1,5 +1,4 @@
 @echo off
-@chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
@@ -10,24 +9,24 @@ if "%ERRORLEVEL%"=="0" (
     exit /b 0
 )
 
-REM Check binary and launch in background without opening client window
-if exist "src-tauri\target\debug\image-media-viewer.exe" (
-    start "" /B "src-tauri\target\debug\image-media-viewer.exe"
-    echo [ImageMediaViewer] Server started (debug binary).
-    exit /b 0
+set "EXE_PATH="
+if exist "%~dp0src-tauri\target\release\image-media-viewer.exe" (
+    set "EXE_PATH=%~dp0src-tauri\target\release\image-media-viewer.exe"
+    set "BUILD_TYPE=[release]"
+) else if exist "%~dp0src-tauri\target\debug\image-media-viewer.exe" (
+    set "EXE_PATH=%~dp0src-tauri\target\debug\image-media-viewer.exe"
+    set "BUILD_TYPE=[debug]"
+) else if exist "%~dp0image-media-viewer.exe" (
+    set "EXE_PATH=%~dp0image-media-viewer.exe"
+    set "BUILD_TYPE="
 )
 
-if exist "src-tauri\target\release\image-media-viewer.exe" (
-    start "" /B "src-tauri\target\release\image-media-viewer.exe"
-    echo [ImageMediaViewer] Server started (release binary).
-    exit /b 0
+if "%EXE_PATH%"=="" (
+    echo [ERROR] image-media-viewer.exe not found. Please build the project first.
+    exit /b 1
 )
 
-if exist "image-media-viewer.exe" (
-    start "" /B "image-media-viewer.exe"
-    echo [ImageMediaViewer] Server started.
-    exit /b 0
-)
-
-echo [ERROR] image-media-viewer.exe not found. Please build the project first.
-exit /b 1
+REM Launch truly independent background process via WMI (decoupled from caller job objects)
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "([wmiclass]'Win32_Process').Create('\"%EXE_PATH%\" --server-only', '%~dp0') | Out-Null"
+echo [ImageMediaViewer] Server started %BUILD_TYPE%.
+exit /b 0

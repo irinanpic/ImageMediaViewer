@@ -34,7 +34,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../dist": "dist"
+      "../dist": "dist",
+      "../run-server.bat": "run-server.bat"
     },
     "windows": {
       "nsis": {
