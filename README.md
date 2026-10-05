@@ -87,9 +87,23 @@ bun run tauri dev
 
 ```bash
 bun run build
+# または npm を使用する場合
+npm run build
 ```
 
-### 4. ユニットテスト・統合テストの実行
+### 4. インストーラー（インストール用ビルド）の作成
+
+デスクトップアプリのインストーラー（Windows: NSIS セットアップ EXE）をビルドします：
+
+```bash
+bun run build:installer
+# または npm を使用する場合
+npm run build:installer
+```
+
+ビルドが完了すると、`src-tauri/target/release/bundle/nsis/` 配下にインストーラー実行ファイル（例: `ImageMediaViewer_0.1.0_x64-setup.exe`）が生成されます。
+
+### 5. ユニットテスト・統合テストの実行
 
 #### フロントエンド単体テスト (Vitest)
 ```bash

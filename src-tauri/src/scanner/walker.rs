@@ -1,10 +1,10 @@
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
-use rayon::prelude::*;
 use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -146,11 +146,13 @@ pub fn scan_folder_core(
     // 既存の (path -> (size, mtime)) キャッシュをDBから取得
     let existing_map: HashMap<String, (u64, i64)> = {
         let conn = state.db.reader()?;
-        let mut stmt = conn.prepare(
-            "SELECT file_path, file_size, file_mtime FROM images WHERE folder_id = ?1;",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT file_path, file_size, file_mtime FROM images WHERE folder_id = ?1;")?;
         let rows = stmt.query_map([folder_id], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)?),
+            ))
         })?;
         let mut map = HashMap::new();
         for r in rows {
@@ -222,7 +224,10 @@ pub fn scan_folder_core(
     }
 
     let total_discovered = discovered_files.len() as u64;
-    info!("フォルダ [{}] で差分対象画像 {} 件を発見", folder_path, total_discovered);
+    info!(
+        "フォルダ [{}] で差分対象画像 {} 件を発見",
+        folder_path, total_discovered
+    );
 
     // 2. Indexing フェーズ (並列ヘッダ読み + quick_hash + バッチ書き込み)
     if let Some(app) = app {
@@ -335,7 +340,10 @@ pub fn scan_folder_core(
         let conn = state.db.writer();
         for chunk in deleted_paths.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!("DELETE FROM images WHERE folder_id = ?1 AND file_path IN ({});", placeholders);
+            let sql = format!(
+                "DELETE FROM images WHERE folder_id = ?1 AND file_path IN ({});",
+                placeholders
+            );
             let mut params_vec: Vec<&dyn rusqlite::ToSql> = Vec::new();
             params_vec.push(&folder_id);
             for p in chunk {
