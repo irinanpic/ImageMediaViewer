@@ -23,26 +23,60 @@ const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif", "bm
 /// パスを正規化する（Windowsの拡張プレフィックス除去、ドライブ文字大文字化、セパレータ統一）
 ///
 /// 変更理由: 仕様書§2.2(F-01)「パスは正規化して保存（Windowsは\\?\プレフィックス除去・ドライブレター大文字化）」
+/// POSIX（macOS/Linux）環境ではバックスラッシュ変換を行わず、スラッシュ区切りで正規化する。
+///
+/// @param path_str 入力パス文字列
+/// @return 正規化済みパス文字列
 pub fn normalize_path(path_str: &str) -> String {
-    let mut p = path_str.trim().replace('/', "\\");
+    let trimmed = path_str.trim();
+    #[cfg(target_os = "windows")]
+    {
+        let mut p = trimmed.replace('/', "\\");
 
-    // \\?\ プレフィックス除去
-    if p.starts_with(r"\\?\") {
-        p = p[4..].to_string();
+        // \\?\ プレフィックス除去
+        if p.starts_with(r"\\?\") {
+            p = p[4..].to_string();
+        }
+
+        // ドライブレターの大文字化 (例: c:\ -> C:\)
+        if p.len() >= 2 && p.chars().nth(1) == Some(':') {
+            let drive = p.chars().next().unwrap().to_ascii_uppercase();
+            p = format!("{}{}", drive, &p[1..]);
+        }
+
+        // 末尾のスラッシュ・バックスラッシュ除去（ルートドライブ C:\ を除く）
+        if p.len() > 3 && p.ends_with('\\') {
+            p.pop();
+        }
+
+        p
     }
-
-    // ドライブレターの大文字化 (例: c:\ -> C:\)
-    if p.len() >= 2 && p.chars().nth(1) == Some(':') {
-        let drive = p.chars().next().unwrap().to_ascii_uppercase();
-        p = format!("{}{}", drive, &p[1..]);
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut p = trimmed.to_string();
+        while p.len() > 1 && p.ends_with('/') {
+            p.pop();
+        }
+        p
     }
+}
 
-    // 末尾のスラッシュ・バックスラッシュ除去（ルートドライブ C:\ を除く）
-    if p.len() > 3 && p.ends_with('\\') {
-        p.pop();
+/// 2つのパスの親子関係判定（共通ユーティリティ）
+///
+/// 変更理由: commands.rs と server.rs で重複していた実装を集約し、DRY原則を徹底する。
+///
+/// @param parent_candidate 親の候補パス
+/// @param child_candidate 子の候補パス
+/// @return child_candidate が parent_candidate の真のサブディレクトリであれば true
+pub fn is_sub_directory(parent_candidate: &str, child_candidate: &str) -> bool {
+    let parent = Path::new(parent_candidate);
+    let child = Path::new(child_candidate);
+
+    if let Ok(diff) = child.strip_prefix(parent) {
+        !diff.as_os_str().is_empty()
+    } else {
+        false
     }
-
-    p
 }
 
 /// 拡張子が対応画像フォーマットであるか判定
@@ -322,19 +356,11 @@ pub fn scan_folder_core(
         let fetch_limit = if is_background { 100 } else { 2000 };
         let pending_thumbs = {
             let conn = state.db.reader()?;
-            crate::db::repo::get_pending_thumb_images(&conn, fetch_limit)?
+            crate::db::repo::get_pending_thumb_sources(&conn, 0, fetch_limit)?
         };
 
-        for (id, file_path_str, quick_hash) in pending_thumbs {
-            state.thumb_pipeline.enqueue(
-                id,
-                PathBuf::from(file_path_str),
-                quick_hash,
-                1,
-                None,
-                None,
-                JobPriority::Low,
-            );
+        for src in pending_thumbs {
+            state.thumb_pipeline.enqueue_source(&src, JobPriority::Low);
         }
     }
 

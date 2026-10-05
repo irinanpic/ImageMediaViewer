@@ -12,7 +12,7 @@ use crate::pipeline::exif::extract_metadata;
 use crate::pipeline::hash::calculate_quick_hash;
 use crate::pipeline::thumbnail::get_thumbnail_path;
 use crate::pipeline::JobPriority;
-use crate::scanner::walker::normalize_path;
+use crate::scanner::walker::{is_sub_directory, normalize_path};
 use crate::state::AppState;
 
 // 最後にフロントエンドから通信があった時刻（UNIX秒）
@@ -22,6 +22,48 @@ static CLIENT_CONNECTED: AtomicBool = AtomicBool::new(false);
 // アイドル自動終了（--auto-exit）モードフラグ（常駐モード時はfalse）
 static AUTO_EXIT_ON_IDLE: AtomicBool = AtomicBool::new(false);
 
+/// 許可されたオリジンの一覧（ホワイトリスト）
+///
+/// 変更理由: Localhost HTTP サーバーにおける CORS 全許可 (*) による写真・メタデータ漏洩の防止
+const ALLOWED_ORIGINS: &[&str] = &[
+    "http://127.0.0.1:14201",
+    "http://localhost:14201",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+/// リクエストの Origin ヘッダーを取得
+fn get_request_origin(request: &tiny_http::Request) -> Option<String> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Origin"))
+        .map(|h| h.value.as_str().to_string())
+}
+
+/// レスポンスにCORSヘッダーを付与する（ホワイトリストに含まれるOriginのみ許可）
+fn apply_cors_headers<R: std::io::Read>(resp: &mut Response<R>, origin: Option<&str>) {
+    if let Some(orig) = origin {
+        if ALLOWED_ORIGINS.contains(&orig) {
+            if let Ok(hdr) = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], orig.as_bytes()) {
+                resp.add_header(hdr);
+            }
+            resp.add_header(Header::from_bytes(&b"Vary"[..], &b"Origin"[..]).unwrap());
+        }
+    }
+    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap());
+    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type, Range"[..]).unwrap());
+}
+
+/// CORSヘッダーを付与してリクエストに応答する
+fn respond_cors<R: std::io::Read>(request: tiny_http::Request, mut resp: Response<R>, origin: Option<&str>) {
+    apply_cors_headers(&mut resp, origin);
+    let _ = request.respond(resp);
+}
+
 /// フロントエンドのアクティビティを記録
 fn record_client_activity() {
     let now = chrono::Utc::now().timestamp();
@@ -29,25 +71,11 @@ fn record_client_activity() {
     CLIENT_CONNECTED.store(true, Ordering::Relaxed);
 }
 
-/// 2つのパスの親子関係判定
-fn is_sub_directory(parent_candidate: &str, child_candidate: &str) -> bool {
-    let parent = Path::new(parent_candidate);
-    let child = Path::new(child_candidate);
-    if let Ok(diff) = child.strip_prefix(parent) {
-        !diff.as_os_str().is_empty()
-    } else {
-        false
-    }
-}
-
 /// JSON レスポンスを生成するヘルパー関数
 fn json_response<T: serde::Serialize>(data: &T, status: u16) -> Response<std::io::Cursor<Vec<u8>>> {
     let body = serde_json::to_vec(data).unwrap_or_else(|_| b"{}".to_vec());
     let mut resp = Response::from_data(body).with_status_code(StatusCode(status));
     resp.add_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap());
     resp
 }
 
@@ -58,11 +86,7 @@ fn error_response(err: AppError, status: u16) -> Response<std::io::Cursor<Vec<u8
 
 /// OPTIONS (CORS preflight) レスポンス
 fn options_response() -> Response<std::io::Cursor<Vec<u8>>> {
-    let mut resp = Response::from_data(Vec::new()).with_status_code(StatusCode(204));
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, POST, PUT, DELETE, OPTIONS"[..]).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"Content-Type"[..]).unwrap());
-    resp
+    Response::from_data(Vec::new()).with_status_code(StatusCode(204))
 }
 
 /// 拡張子に応じたMIMEタイプを取得
@@ -135,12 +159,20 @@ fn save_window_state(state: &crate::models::WindowState) -> std::io::Result<()> 
     std::fs::write(&path, json)
 }
 
-/// 画像バイナリレスポンスを生成
+/// サムネイル画像バイナリレスポンスを生成（永続不変キャッシュ）
 fn image_response(data: Vec<u8>, mime: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let mut resp = Response::from_data(data).with_status_code(StatusCode(200));
     resp.add_header(Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap());
-    resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
     resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=31536000, immutable"[..]).unwrap());
+    resp.add_header(Header::from_bytes(&b"Connection"[..], &b"keep-alive"[..]).unwrap());
+    resp
+}
+
+/// 原寸画像バイナリレスポンスを生成（外部編集の反映のため must-revalidate を適用）
+fn raw_image_response(data: Vec<u8>, mime: &str) -> Response<std::io::Cursor<Vec<u8>>> {
+    let mut resp = Response::from_data(data).with_status_code(StatusCode(200));
+    resp.add_header(Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap());
+    resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"public, max-age=3600, must-revalidate"[..]).unwrap());
     resp.add_header(Header::from_bytes(&b"Connection"[..], &b"keep-alive"[..]).unwrap());
     resp
 }
@@ -204,7 +236,6 @@ fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
                 };
                 let mut resp = Response::from_data(bytes).with_status_code(StatusCode(200));
                 resp.add_header(Header::from_bytes(&b"Content-Type"[..], mime.as_bytes()).unwrap());
-                resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
                 return Some(resp);
             }
         }
@@ -300,11 +331,25 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
     // 通信アクティビティを記録（ハートビート同期）
     record_client_activity();
 
+    let origin = get_request_origin(&request);
+    let origin_ref = origin.as_deref();
+
+    // CSRF対策: ブラウザからのクロスオリジン通信で Origin がホワイトリストに含まれない場合は即座に拒否 (403 Forbidden)
+    // 悪意のあるWebサイトからの単純リクエスト（<form> POST や fetch）によるシャットダウン・フォルダ改変等を完全遮断
+    if let Some(ref orig) = origin {
+        if !ALLOWED_ORIGINS.contains(&orig.as_str()) {
+            warn!("CSRF防止: 許可されていない Origin からのリクエストを拒否しました: {}", orig);
+            let resp = Response::from_string("Forbidden: Invalid Origin").with_status_code(StatusCode(403));
+            let _ = request.respond(resp);
+            return;
+        }
+    }
+
     let url_str = request.url().to_string();
     let method = request.method().clone();
 
     if method == Method::Options {
-        let _ = request.respond(options_response());
+        respond_cors(request, options_response(), origin_ref);
         return;
     }
 
@@ -314,17 +359,42 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
 
     // 1. サムネイル画像配信: /thumbs/:id
     // 変更理由: 
-    // 1) 実アクセス時更新検知 (On-Access Change Detection):
-    //    実ファイルのサイズ・mtime を軽量確認し、変更があればカタログ更新＆新quick_hashでサムネイルを再生成。
-    //    CAS原則により、古いハッシュのサムネイルは他画像が共有している可能性があるため即時削除せず維持。
-    // 2) サムネイル専用DB (thumbnails.db) からの超高速 BLOB 取得 (< 0.5ms)。
-    // 3) 旧ファイルシステムキャッシュ（thumbs/v1/.../*.webp）からの自動移行 (Lazy Migration)。
-    // 4) 未生成時はパイプラインへ高優先度投入し即座に 503 (Retry-After: 1) で解放。
+    // 1) タイムライン表示は速度最優先: インメモリキャッシュおよび thumb_store (SQLite) を最優先で確認し、
+    //    同期ディスクメタデータ I/O を行わずに即時返却（0ms / <0.5ms）して 60fps 仮想スクロールを維持。
+    // 2) キャッシュ未存在時のみ実ファイル変更検知を行い、更新があれば低優先度（JobPriority::Low）でキュー投入。
+    // 3) ファイル更新時も既存キャッシュがあれば即座に返却して表示を優先し、未生成時のみ 503 で解放。
     if path.starts_with("/thumbs/") && method == Method::Get {
         let id_str = path.trim_start_matches("/thumbs/");
         if let Ok(id) = id_str.parse::<i64>() {
             if let Some(mut source) = state.get_thumb_source_cached(id) {
-                // --- 実アクセス時更新検知 ---
+                // 1. インメモリWebPバイナリキャッシュにあれば即返却 (0ms)
+                if let Some(cached_bytes) = state.get_thumbnail_bytes(&source.quick_hash) {
+                    respond_cors(request, image_response((*cached_bytes).clone(), "image/webp"), origin_ref);
+                    return;
+                }
+
+                // 2. サムネイル専用DB (thumbnails.db) から BLOB 取得 (< 0.5ms)
+                if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
+                    let arc_bytes = Arc::new(bytes);
+                    state.put_thumbnail_bytes(source.quick_hash.clone(), Arc::clone(&arc_bytes));
+                    respond_cors(request, image_response((*arc_bytes).clone(), "image/webp"), origin_ref);
+                    return;
+                }
+
+                // 3. 旧ディスクキャッシュ (thumbs/v1/{hash[0..2]}/{hash}.webp) にあれば読み込んでDB移行＆返却
+                let thumb_path = get_thumbnail_path(&state.cache_dir, &source.quick_hash);
+                if thumb_path.exists() {
+                    if let Ok(bytes) = std::fs::read(&thumb_path) {
+                        // thumbnails.db へ自動インポート（Lazy Migration）
+                        state.thumb_store.put(&source.quick_hash, &bytes).ok();
+                        let arc_bytes = Arc::new(bytes);
+                        state.put_thumbnail_bytes(source.quick_hash.clone(), Arc::clone(&arc_bytes));
+                        respond_cors(request, image_response((*arc_bytes).clone(), "image/webp"), origin_ref);
+                        return;
+                    }
+                }
+
+                // --- キャッシュ未存在時のみ実ファイル更新検知 (On-Access Change Detection) ---
                 let file_path = Path::new(&source.file_path);
                 if let Ok(meta) = std::fs::metadata(file_path) {
                     let cur_size = meta.len();
@@ -336,7 +406,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         .unwrap_or(0);
 
                     if cur_size != source.file_size || cur_mtime != source.file_mtime {
-                        // ファイルが更新されている！
+                        // ファイルが更新されている！更新有無をチェックしてDB更新
                         if let Ok(new_hash) = calculate_quick_hash(file_path, cur_size) {
                             let new_meta = extract_metadata(file_path, cur_mtime);
                             let conn = state.db.writer();
@@ -361,46 +431,28 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                             source.thumb_status = 0;
 
                             state.update_cached_thumb_source(source.clone());
-                            state.invalidate_thumbnail_cache(&old_hash);
 
-                            // 高優先度で新サムネイル生成キューに投入
-                            state.thumb_pipeline.enqueue_source(&source, JobPriority::High);
+                            // 低優先度（JobPriority::Low）で新サムネイル生成キューに投入（表示優先）
+                            state.thumb_pipeline.enqueue_source(&source, JobPriority::Low);
 
-                            // 即座に 503 を返却
+                            // 表示優先: 既存の旧サムネイルが存在する場合は即座に返却（スピナーにしない）
+                            if let Some(cached_bytes) = state.get_thumbnail_bytes(&old_hash) {
+                                respond_cors(request, image_response((*cached_bytes).clone(), "image/webp"), origin_ref);
+                                return;
+                            }
+                            if let Ok(Some(bytes)) = state.thumb_store.get(&old_hash) {
+                                let arc_bytes = Arc::new(bytes);
+                                respond_cors(request, image_response((*arc_bytes).clone(), "image/webp"), origin_ref);
+                                return;
+                            }
+
+                            // 既存キャッシュが一切ない場合のみ 503 を返却
                             let mut resp = Response::from_string("Thumbnail updating").with_status_code(StatusCode(503));
                             resp.add_header(Header::from_bytes(&b"Retry-After"[..], &b"1"[..]).unwrap());
                             resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store, no-cache, must-revalidate"[..]).unwrap());
-                            resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-                            let _ = request.respond(resp);
+                            respond_cors(request, resp, origin_ref);
                             return;
                         }
-                    }
-                }
-
-                // 1. インメモリWebPバイナリキャッシュにあれば即返却 (0ms)
-                if let Some(cached_bytes) = state.get_thumbnail_bytes(&source.quick_hash) {
-                    let _ = request.respond(image_response((*cached_bytes).clone(), "image/webp"));
-                    return;
-                }
-
-                // 2. サムネイル専用DB (thumbnails.db) から BLOB 取得 (< 0.5ms)
-                if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
-                    let arc_bytes = Arc::new(bytes);
-                    state.put_thumbnail_bytes(source.quick_hash.clone(), Arc::clone(&arc_bytes));
-                    let _ = request.respond(image_response((*arc_bytes).clone(), "image/webp"));
-                    return;
-                }
-
-                // 3. 旧ディスクキャッシュ (thumbs/v1/{hash[0..2]}/{hash}.webp) にあれば読み込んでDB移行＆返却
-                let thumb_path = get_thumbnail_path(&state.cache_dir, &source.quick_hash);
-                if thumb_path.exists() {
-                    if let Ok(bytes) = std::fs::read(&thumb_path) {
-                        // thumbnails.db へ自動インポート（Lazy Migration）
-                        state.thumb_store.put(&source.quick_hash, &bytes).ok();
-                        let arc_bytes = Arc::new(bytes);
-                        state.put_thumbnail_bytes(source.quick_hash.clone(), Arc::clone(&arc_bytes));
-                        let _ = request.respond(image_response((*arc_bytes).clone(), "image/webp"));
-                        return;
                     }
                 }
 
@@ -417,16 +469,17 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                 let mut resp = Response::from_string("Thumbnail generating").with_status_code(StatusCode(503));
                 resp.add_header(Header::from_bytes(&b"Retry-After"[..], &b"1"[..]).unwrap());
                 resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store, no-cache, must-revalidate"[..]).unwrap());
-                resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-                let _ = request.respond(resp);
+                respond_cors(request, resp, origin_ref);
                 return;
             }
         }
-        let _ = request.respond(Response::from_string("Not Found").with_status_code(StatusCode(404)));
+        let resp = Response::from_string("Not Found").with_status_code(StatusCode(404));
+        respond_cors(request, resp, origin_ref);
         return;
     }
 
     // 2. 原寸画像バイナリ配信: /raw/:id
+    // 変更理由: 原寸画像には must-revalidate を付与し、外部編集時の更新検知とブラウザキャッシュ整合性を両立
     if path.starts_with("/raw/") && method == Method::Get {
         let id_str = path.trim_start_matches("/raw/");
         if let Ok(id) = id_str.parse::<i64>() {
@@ -462,31 +515,46 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                     new_meta.height,
                                     new_meta.orientation,
                                 );
+
+                                // 旧サムネイルキャッシュを無効化し、新サムネイルを高優先度で再生成キューに投入
+                                state.invalidate_thumbnail_cache(&hash);
+                                if let Some(mut updated_src) = state.get_thumb_source_cached(id) {
+                                    updated_src.file_size = meta.len();
+                                    updated_src.file_mtime = cur_mtime;
+                                    updated_src.quick_hash = new_hash.clone();
+                                    updated_src.width = new_meta.width;
+                                    updated_src.height = new_meta.height;
+                                    updated_src.orientation = new_meta.orientation;
+                                    updated_src.thumb_status = 0;
+                                    state.update_cached_thumb_source(updated_src.clone());
+                                    state.thumb_pipeline.enqueue_source(&updated_src, JobPriority::Low);
+                                }
                             }
                         }
                     }
 
                     if let Ok(bytes) = std::fs::read(&orig_path) {
                         let mime = get_mime_type(&orig_path);
-                        let _ = request.respond(image_response(bytes, mime));
+                        respond_cors(request, raw_image_response(bytes, mime), origin_ref);
                         return;
                     }
                 }
                 // 2. 実ファイルが存在しない場合（モック等）はサムネイルをフォールバック配信
                 if let Ok(Some(bytes)) = state.thumb_store.get(&hash) {
-                    let _ = request.respond(image_response(bytes, "image/webp"));
+                    respond_cors(request, raw_image_response(bytes, "image/webp"), origin_ref);
                     return;
                 }
                 let thumb_path = get_thumbnail_path(&state.cache_dir, &hash);
                 if thumb_path.exists() {
                     if let Ok(bytes) = std::fs::read(&thumb_path) {
-                        let _ = request.respond(image_response(bytes, "image/webp"));
+                        respond_cors(request, raw_image_response(bytes, "image/webp"), origin_ref);
                         return;
                     }
                 }
             }
         }
-        let _ = request.respond(Response::from_string("Not Found").with_status_code(StatusCode(404)));
+        let resp = Response::from_string("Not Found").with_status_code(StatusCode(404));
+        respond_cors(request, resp, origin_ref);
         return;
     }
 
@@ -822,18 +890,10 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         #[derive(serde::Deserialize)]
                         struct PrefetchReq { ids: Vec<i64> }
                         if let Ok(req) = serde_json::from_str::<PrefetchReq>(&body_str) {
-                            for id in req.ids {
-                                if let Ok(conn) = state.db.reader() {
-                                    if let Ok(Some((orig_path, hash, _, _))) = crate::db::repo::get_image_file_info(&conn, id) {
-                                        state.thumb_pipeline.enqueue(
-                                            id,
-                                            PathBuf::from(orig_path),
-                                            hash,
-                                            1,
-                                            None,
-                                            None,
-                                            JobPriority::Mid,
-                                        );
+                            if let Ok(conn) = state.db.reader() {
+                                if let Ok(sources) = crate::db::repo::get_thumb_sources(&conn, &req.ids) {
+                                    for src in sources {
+                                        state.thumb_pipeline.enqueue_source(&src, JobPriority::Mid);
                                     }
                                 }
                             }
@@ -1147,13 +1207,11 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         if let Some(resp) = static_response(path) {
                             resp
                         } else {
-                            let mut resp = Response::from_string("Not Found").with_status_code(StatusCode(404));
-                            resp.add_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap());
-                            resp
+                            Response::from_string("Not Found").with_status_code(StatusCode(404))
                         }
                     }
                 };
 
-                let _ = request.respond(result);
+                respond_cors(request, result, origin_ref);
 }
 

@@ -27,12 +27,16 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     const openViewer = useAppStore((state) => state.openViewer);
     const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
     const setSelectedCellIndex = useAppStore((state) => state.setSelectedCellIndex);
-    const selectedImageIds = useAppStore((state) => state.selectedImageIds);
     const toggleSelectImageId = useAppStore((state) => state.toggleSelectImageId);
     const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
     const isFocused = selectedCellIndex === globalIndex;
-    const isMultiSelected = record ? selectedImageIds.includes(record.id) : false;
+    const isMultiSelected = useAppStore(
+      React.useCallback(
+        (state) => (record ? state.selectedImageIds.includes(record.id) : false),
+        [record?.id]
+      )
+    );
     const thumbUrl = record ? getThumbnailUrl(record.id, record.rev) : "";
     const isCached = thumbUrl ? loadedThumbUrls.has(thumbUrl) : false;
 
@@ -49,15 +53,18 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       setIsLoaded(thumbUrl ? loadedThumbUrls.has(thumbUrl) : false);
     }, [record?.id, thumbUrl]);
 
-    // ツールバー等からの全体再読込（timelineRefreshTick）に応答してエラー状態をリセット
+    // ツールバー等からの全体再読込（timelineRefreshTick）に応答してエラー状態のみリセット（表示優先）
+    // 変更理由: 表示済み画像をスピナーに戻したり、全セルが一斉に再リクエストを投げて処理が重くなるのを防止
     React.useEffect(() => {
       if (timelineRefreshTick > 0) {
-        setRetryCount(0);
-        setHasError(false);
-        setReloadTick(0);
-        setIsLoaded(thumbUrl ? loadedThumbUrls.has(thumbUrl) : false);
+        if (hasError) {
+          setRetryCount(0);
+          setHasError(false);
+          setReloadTick((t) => t + 1);
+          setIsLoaded(false);
+        }
       }
-    }, [timelineRefreshTick, thumbUrl]);
+    }, [timelineRefreshTick, hasError]);
 
     // 急激なスクロール移動が終わった後（isScrollingFast: true -> false）、
     // ユーザー要求に従い retryCount >= 4 や hasError の状態を即座にリセットして現画面での再読み込みを仕切り直す
@@ -114,7 +121,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       }
 
       // Ctrl + クリック（または Cmd + クリック）、または既に複数選択モード中の場合は選択トグル
-      if (e.ctrlKey || e.metaKey || selectedImageIds.length > 0) {
+      if (e.ctrlKey || e.metaKey || useAppStore.getState().selectedImageIds.length > 0) {
         e.preventDefault();
         e.stopPropagation();
         setSelectedCellIndex(globalIndex);
@@ -145,7 +152,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     // リフレッシュ回数やリトライ回数をクエリに付与してブラウザの画像エラーキャッシュをバイパス
     const queryParts: string[] = [];
     if (retryCount > 0) queryParts.push(`retry=${retryCount}`);
-    if (timelineRefreshTick > 0) queryParts.push(`rf=${timelineRefreshTick}`);
+    if (hasError && timelineRefreshTick > 0) queryParts.push(`rf=${timelineRefreshTick}`);
     if (reloadTick > 0) queryParts.push(`rt=${reloadTick}`);
     const effectiveSrc = thumbUrl
       ? queryParts.length > 0

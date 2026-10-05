@@ -319,6 +319,22 @@ impl ThumbnailStore {
         let mut stmt = conn.prepare_cached("SELECT COUNT(*) FROM thumbnails;")?;
         stmt.query_row([], |r| r.get(0))
     }
+
+    /// インクリメンタルバキュームを実行してフリーリストの空きページをOSへ返還する
+    ///
+    /// 変更理由: auto_vacuum = INCREMENTAL 設定下で、サムネイル一括削除後にDBファイルサイズを縮小させるため
+    ///
+    /// @param pages 解放対象の最大ページ数（0の場合は全空きページ）
+    /// @return 成功時 Ok(())
+    pub fn vacuum_incremental(&self, pages: usize) -> Result<()> {
+        let writer = self.writer.lock().expect("ThumbStore writer lock poisoned");
+        if pages > 0 {
+            writer.execute_batch(&format!("PRAGMA incremental_vacuum({});", pages))?;
+        } else {
+            writer.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

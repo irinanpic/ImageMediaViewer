@@ -60,6 +60,8 @@ export const MoodboardCanvas: React.FC = () => {
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [editingText, setEditingText] = useState<string>("");
+  const editingNoteIdRef = useRef<number | null>(null);
+  const editingTextRef = useRef<string>("");
   const [isCropping, setIsCropping] = useState<boolean>(false);
 
   // 詳細情報パネル用ステート
@@ -135,6 +137,12 @@ export const MoodboardCanvas: React.FC = () => {
   useEffect(() => {
     notesRef.current = notes;
   }, [notes]);
+  useEffect(() => {
+    editingNoteIdRef.current = editingNoteId;
+  }, [editingNoteId]);
+  useEffect(() => {
+    editingTextRef.current = editingText;
+  }, [editingText]);
 
 
   // ボードおよびアイテムデータのロード
@@ -218,8 +226,46 @@ export const MoodboardCanvas: React.FC = () => {
           zoom: zoomRef.current,
         }).catch((err) => console.error("アンマウント時カメラ位置の保存に失敗:", err));
       }
+      if (editingNoteIdRef.current !== null) {
+        backendApi
+          .updateBoardNote(editingNoteIdRef.current, { text: editingTextRef.current })
+          .catch((err) => console.error("アンマウント時メモテキストの保存に失敗:", err));
+      }
     };
   }, [activeBoardId]);
+
+  /**
+   * メモのテキスト保存（改行を含む複数行に対応）
+   *
+   * 変更理由: 改行を含む複数行テキストを確実にDB永続化し、画面ステートおよびRefを即時同期するため。
+   *
+   * @param noteId 対象メモID
+   * @param text 保存するテキスト内容（改行コード含む）
+   */
+  const handleSaveNoteText = useCallback((noteId: number, text: string) => {
+    setNotes((prev) => {
+      const next = prev.map((n) => (n.id === noteId ? { ...n, text } : n));
+      notesRef.current = next;
+      return next;
+    });
+    setEditingNoteId(null);
+    backendApi.updateBoardNote(noteId, { text }).catch((err) =>
+      console.error("メモテキストの保存に失敗:", err)
+    );
+  }, []);
+
+  /**
+   * 現在編集中のメモがあればテキストを即座に確定・保存する
+   *
+   * 変更理由: 余白クリックや他要素選択、モード切替時に編集中の複数行テキストが破棄されず
+   * 100%確実に保存されるようにするため。
+   */
+  const flushSaveEditingNote = useCallback(() => {
+    const currentId = editingNoteIdRef.current;
+    if (currentId !== null) {
+      handleSaveNoteText(currentId, editingTextRef.current);
+    }
+  }, [handleSaveNoteText]);
 
   // マウスホイールによるズーム（カーソル中心）
   const handleWheel = useCallback(
@@ -256,13 +302,13 @@ export const MoodboardCanvas: React.FC = () => {
           dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
           setSelectedItemId(null);
           setSelectedNoteId(null);
-          setEditingNoteId(null);
+          flushSaveEditingNote();
           setIsCropping(false);
           setShowImageDetail(false);
         }
       }
     },
-    [pan]
+    [pan, flushSaveEditingNote]
   );
 
   // アイテムのドラッグ移動開始
@@ -271,9 +317,9 @@ export const MoodboardCanvas: React.FC = () => {
       if (e.button !== 0 || isCropping) return;
       e.stopPropagation();
 
+      flushSaveEditingNote();
       setSelectedItemId(item.id);
       setSelectedNoteId(null);
-      setEditingNoteId(null);
       if (item.isLocked) return;
 
       isDraggingItemRef.current = true;
@@ -320,6 +366,10 @@ export const MoodboardCanvas: React.FC = () => {
       if (e.button !== 0) return;
       e.stopPropagation();
 
+      if (editingNoteId !== null && editingNoteId !== note.id) {
+        flushSaveEditingNote();
+      }
+
       setSelectedNoteId(note.id);
       setSelectedItemId(null);
       setShowImageDetail(false);
@@ -344,7 +394,7 @@ export const MoodboardCanvas: React.FC = () => {
       };
       currentNotePosRef.current = { x: note.x, y: note.y };
     },
-    [editingNoteId]
+    [editingNoteId, flushSaveEditingNote]
   );
 
   /**
@@ -375,6 +425,8 @@ export const MoodboardCanvas: React.FC = () => {
    */
   const handleCreateNote = useCallback(async () => {
     if (!activeBoardId) return;
+    flushSaveEditingNote();
+
     const container = containerRef.current;
     const containerWidth = container ? container.clientWidth : 800;
     const containerHeight = container ? container.clientHeight : 600;
@@ -394,15 +446,20 @@ export const MoodboardCanvas: React.FC = () => {
         color: "#fef08a",
         fontSize: 14,
       });
-      setNotes((prev) => [...prev, newNote]);
+      setNotes((prev) => {
+        const next = [...prev, newNote];
+        notesRef.current = next;
+        return next;
+      });
       setSelectedItemId(null);
       setSelectedNoteId(newNote.id);
       setEditingNoteId(newNote.id);
       setEditingText("新規メモ");
+      editingTextRef.current = "新規メモ";
     } catch (err) {
       console.error("メモ作成失敗:", err);
     }
-  }, [activeBoardId, pan, zoom]);
+  }, [activeBoardId, pan, zoom, flushSaveEditingNote]);
 
 
   /**
@@ -868,18 +925,6 @@ export const MoodboardCanvas: React.FC = () => {
   // -------------------------------------------------------------
   // メモ（付箋）操作ハンドラ群
   // -------------------------------------------------------------
-  /**
-   * メモのテキスト保存
-   */
-  const handleSaveNoteText = useCallback((noteId: number, text: string) => {
-    setNotes((prev) =>
-      prev.map((n) => (n.id === noteId ? { ...n, text } : n))
-    );
-    setEditingNoteId(null);
-    backendApi.updateBoardNote(noteId, { text }).catch((err) =>
-      console.error("メモテキストの保存に失敗:", err)
-    );
-  }, []);
 
   /**
    * メモのカラー変更
@@ -1527,12 +1572,17 @@ export const MoodboardCanvas: React.FC = () => {
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border/60 shadow-2xl">
           {/* テキスト編集トグル */}
           <button
+            onMouseDown={(e) => {
+              // onBlurが先行発火して編集状態がリセットされるレースコンディションを抑止
+              e.preventDefault();
+            }}
             onClick={() => {
               if (editingNoteId === selectedNote.id) {
-                handleSaveNoteText(selectedNote.id, editingText);
+                handleSaveNoteText(selectedNote.id, editingTextRef.current);
               } else {
                 setEditingNoteId(selectedNote.id);
                 setEditingText(selectedNote.text);
+                editingTextRef.current = selectedNote.text;
               }
             }}
             className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer ${
@@ -1540,7 +1590,7 @@ export const MoodboardCanvas: React.FC = () => {
                 ? "bg-accent text-white shadow-xs"
                 : "bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textPrimary"
             }`}
-            title="テキストを編集"
+            title={editingNoteId === selectedNote.id ? "メモを保存して完了 (Ctrl+Enter)" : "テキストを編集"}
           >
             <Edit3 className="w-3.5 h-3.5" />
             <span>{editingNoteId === selectedNote.id ? "完了" : "テキスト編集"}</span>
@@ -1794,10 +1844,14 @@ export const MoodboardCanvas: React.FC = () => {
               onMouseDown={(e) => handleNoteMouseDown(e, note)}
               onDoubleClick={(e) => {
                 e.stopPropagation();
+                if (editingNoteId !== null && editingNoteId !== note.id) {
+                  flushSaveEditingNote();
+                }
                 setSelectedNoteId(note.id);
                 setSelectedItemId(null);
                 setEditingNoteId(note.id);
                 setEditingText(note.text);
+                editingTextRef.current = note.text;
               }}
               style={{
                 position: "absolute",
@@ -1817,14 +1871,14 @@ export const MoodboardCanvas: React.FC = () => {
                   ? "grabbing"
                   : "grab",
               }}
-              className={`pointer-events-auto select-none rounded-xl p-3 shadow-lg transition-shadow flex flex-col justify-between border ${
+              className={`pointer-events-auto select-none rounded-xl p-3 shadow-lg transition-shadow flex flex-col border ${
                 isSelected
                   ? "ring-2 ring-accent shadow-2xl shadow-accent/25 border-transparent"
                   : "hover:ring-1 hover:ring-border/80 border-black/10"
               }`}
             >
               {/* ヘッダー・ピン風アクセント */}
-              <div className="flex items-center justify-between pb-1 border-b border-black/10 text-[10px] opacity-75 cursor-grab active:cursor-grabbing">
+              <div className="flex items-center justify-between pb-1 border-b border-black/10 text-[10px] opacity-75 cursor-grab active:cursor-grabbing shrink-0">
                 <span className="font-semibold flex items-center gap-1">
                   <StickyNote className="w-3 h-3" />
                   メモ
@@ -1833,25 +1887,41 @@ export const MoodboardCanvas: React.FC = () => {
               </div>
 
               {/* メモ本文または編集textarea */}
-              <div className="flex-1 w-full overflow-hidden mt-1 text-xs">
+              <div className="flex-1 min-h-0 w-full overflow-hidden mt-1 text-xs">
                 {isEditing ? (
-                  <textarea
-                    autoFocus
-                    value={editingText}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onChange={(e) => setEditingText(e.target.value)}
-                    onBlur={() => handleSaveNoteText(note.id, editingText)}
-                    onKeyDown={(e) => {
-                      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                        e.preventDefault();
-                        handleSaveNoteText(note.id, editingText);
-                      }
-                      e.stopPropagation();
-                    }}
-                    style={{ color: colorDef.text }}
-                    className="w-full h-full bg-transparent resize-none outline-none leading-relaxed text-xs font-sans cursor-text"
-                    placeholder="メモを入力..."
-                  />
+                  <div className="w-full h-full flex flex-col">
+                    <textarea
+                      autoFocus
+                      value={editingText}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        setEditingText(e.target.value);
+                        editingTextRef.current = e.target.value;
+                      }}
+                      onBlur={() => {
+                        if (editingNoteIdRef.current === note.id) {
+                          handleSaveNoteText(note.id, editingTextRef.current);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                          e.preventDefault();
+                          handleSaveNoteText(note.id, editingTextRef.current);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          // 変更を保存せず編集終了
+                          setEditingNoteId(null);
+                        }
+                        e.stopPropagation();
+                      }}
+                      style={{ color: colorDef.text }}
+                      className="w-full flex-1 min-h-0 bg-transparent resize-none outline-none leading-relaxed text-xs font-sans cursor-text"
+                      placeholder="メモを入力... (Enterで改行、Ctrl+Enterで確定)"
+                    />
+                    <div className="text-[9px] opacity-40 select-none pt-0.5 text-right font-mono tracking-tight shrink-0">
+                      Ctrl+Enterで確定 / Escで取消
+                    </div>
+                  </div>
                 ) : (
                   <div className="w-full h-full whitespace-pre-wrap break-words leading-relaxed select-none overflow-y-auto">
                     {note.text || <span className="opacity-40 italic">（ダブルクリックで編集）</span>}

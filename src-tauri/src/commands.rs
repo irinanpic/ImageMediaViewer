@@ -8,24 +8,8 @@ use crate::models::{
     GetImagesPayload, ImageDetail, ImageRecord, TimelineSummary, WatchedFolder,
 };
 use crate::pipeline::JobPriority;
-use crate::scanner::walker::normalize_path;
+use crate::scanner::walker::{is_sub_directory, normalize_path};
 use crate::state::AppState;
-
-/// 2つのパスの親子関係を判定する
-///
-/// @param parent_candidate 親の候補パス
-/// @param child_candidate 子の候補パス
-/// @return 子であればtrue
-fn is_sub_directory(parent_candidate: &str, child_candidate: &str) -> bool {
-    let parent = Path::new(parent_candidate);
-    let child = Path::new(child_candidate);
-
-    if let Ok(diff) = child.strip_prefix(parent) {
-        !diff.as_os_str().is_empty()
-    } else {
-        false
-    }
-}
 
 /// 監視対象フォルダを追加し走査を開始する
 ///

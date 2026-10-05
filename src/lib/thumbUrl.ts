@@ -40,20 +40,23 @@ export function getThumbnailUrl(imageId: number, rev: number): string {
 /**
  * 画像IDから原寸画像配信用URLを生成する
  *
- * 変更理由: 仕様書§5.5および独立ウィンドウ/Webブラウザ両対応
+ * 変更理由: 仕様書§5.5および独立ウィンドウ/Webブラウザ両対応。
+ * 画像更新時に古いキャッシュが表示され続けるのを防ぐため、リビジョン(rev)によるキャッシュバスティングをサポート。
  *
  * @param imageId 画像ID
+ * @param rev キャッシュバスティング用リビジョン（更新時刻等）
  * @returns 原寸配信用URL文字列
  */
-export function getOriginalImageUrl(imageId: number): string {
+export function getOriginalImageUrl(imageId: number, rev?: number): string {
+  const query = rev ? `?v=${rev}` : "";
   if (isTauriEnvironment()) {
     try {
-      return convertFileSrc(String(imageId), "original");
+      return `${convertFileSrc(String(imageId), "original")}${query}`;
     } catch {
       // フォールバック
     }
   }
-  return `${getBaseHttpUrl()}/raw/${imageId}`;
+  return `${getBaseHttpUrl()}/raw/${imageId}${query}`;
 }
 
 

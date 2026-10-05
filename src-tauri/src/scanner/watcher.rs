@@ -109,6 +109,7 @@ fn run_thumbnail_gc(state: &Arc<AppState>) {
     let mut offset = 0;
     let batch_size = 200;
 
+    let mut total_deleted = 0;
     loop {
         // パイプラインが作業を始めたら即座に中断
         if !state.thumb_pipeline.is_idle() || !state.thumb_pipeline.is_running() {
@@ -130,6 +131,7 @@ fn run_thumbnail_gc(state: &Arc<AppState>) {
         if !unreferenced.is_empty() {
             if let Ok(deleted) = state.thumb_store.delete_batch(&unreferenced) {
                 if deleted > 0 {
+                    total_deleted += deleted;
                     tracing::info!("孤立サムネイル GC: {} 件の不要なBLOBを回収しました", deleted);
                 }
             }
@@ -141,6 +143,12 @@ fn run_thumbnail_gc(state: &Arc<AppState>) {
 
         if hashes_len < batch_size {
             break;
+        }
+    }
+
+    if total_deleted > 0 {
+        if let Err(e) = state.thumb_store.vacuum_incremental(500) {
+            tracing::warn!("ThumbStore incremental_vacuum 失敗: {}", e);
         }
     }
 }

@@ -90,7 +90,7 @@ export const ImageViewerModal: React.FC = () => {
         const rec = getImageByIndex(idx);
         if (rec) {
           const img = new Image();
-          img.src = getOriginalImageUrl(rec.id);
+          img.src = getOriginalImageUrl(rec.id, rec.rev);
         }
       }
     }
@@ -223,7 +223,9 @@ export const ImageViewerModal: React.FC = () => {
   const thumbUrl = activeImageId
     ? getThumbnailUrl(activeImageId, currentRecord?.rev ?? (detail?.takenAt ?? 1))
     : "";
-  const originalUrl = activeImageId ? getOriginalImageUrl(activeImageId) : "";
+  const originalUrl = activeImageId
+    ? getOriginalImageUrl(activeImageId, currentRecord?.rev ?? (detail?.takenAt ?? 1))
+    : "";
 
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col select-none">

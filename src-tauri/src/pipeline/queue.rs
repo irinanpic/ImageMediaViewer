@@ -635,14 +635,29 @@ impl ThumbnailPipeline {
             .saturating_mul(4) as usize;
         let est_bytes = est_bytes.min(self.max_memory_budget);
 
+        let mut acquired = false;
         while self.running.load(AtomicOrdering::SeqCst) {
-            let cur = self.memory_budget_bytes.load(AtomicOrdering::SeqCst);
+            let cur = self.memory_budget_bytes.load(AtomicOrdering::Relaxed);
             if cur > 0 && cur + est_bytes > self.max_memory_budget {
                 thread::sleep(Duration::from_millis(10));
                 continue;
             }
-            self.memory_budget_bytes.fetch_add(est_bytes, AtomicOrdering::SeqCst);
-            break;
+            match self.memory_budget_bytes.compare_exchange_weak(
+                cur,
+                cur + est_bytes,
+                AtomicOrdering::SeqCst,
+                AtomicOrdering::Relaxed,
+            ) {
+                Ok(_) => {
+                    acquired = true;
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+
+        if !acquired {
+            return false;
         }
 
         let result = generate_thumbnail_bytes(
