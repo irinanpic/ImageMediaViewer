@@ -6,37 +6,41 @@
 
 ## 1. システム全体アーキテクチャ
 
-ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** の2層構造を採用し、ローカル HTTP サーバー（ポート `14201`）経由で疎結合に連携します。
+ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** が同一プロセス内で完全一体化されたデスクトップアプリケーションです。TCP/IP ポートを一切使用せず、Tauri Native IPC および内部カスタムプロトコル（`thumb://`, `original://`）によって高速・安全に連携します。また、多重起動防止（Single Instance）により常に単一プロセスでの稼働を保証します。
 
 ```mermaid
 flowchart TD
-    subgraph UI ["ユーザーインターフェース (フロントエンド)"]
-        Timeline["仮想タイムライン (VirtualTimeline)"]
-        Scrubber["高速スクロールバー (TimelineScrubber)"]
-        Viewer["詳細画像ビューア (ImageViewerModal)"]
-        Board["ムードボード (MoodboardCanvas)"]
-        Sidebar["監視フォルダ管理 (Sidebar)"]
-        Store["グローバル状態 (Zustand)"]
-    end
+    subgraph App ["完全ポートレス一体型デスクトップアプリ (image-media-viewer.exe)"]
+        subgraph UI ["ユーザーインターフェース (WebView2 / React)"]
+            Timeline["仮想タイムライン (VirtualTimeline)"]
+            Scrubber["高速スクロールバー (TimelineScrubber)"]
+            Viewer["詳細画像ビューア (ImageViewerModal)"]
+            Board["ムードボード (MoodboardCanvas)"]
+            Sidebar["監視フォルダ管理 (Sidebar)"]
+            Store["グローバル状態 (Zustand)"]
+        end
 
-    subgraph Transport ["通信層 (HTTP / IPC: Port 14201)"]
-        API["REST API (/api/...)"]
-        ThumbRoute["サムネイル配信 (/thumbs/:id)"]
-        RawRoute["原寸画像配信 (/raw/:id)"]
-    end
+        subgraph Transport ["メモリ内プロトコル & IPC (ポートレス)"]
+            IPC["Native IPC (invoke commands)"]
+            ThumbProtocol["カスタムプロトコル (thumb://)"]
+            OrigProtocol["カスタムプロトコル (original://)"]
+        end
 
-    subgraph Backend ["バックエンドエンジン (Rust)"]
-        Server["HTTPサーバー (tiny_http スレッドプール 8〜16本)"]
-        Pipeline["サムネイルパイプライン (ThumbnailPipeline)"]
-        WorkerPool["ワーカースレッド群 (CPU並列)"]
-        Watcher["アイドルウォッチャー (IdleWatcher)"]
-        Scanner["ディレクトリ走査 (Fast Walker)"]
-    end
+        subgraph Core ["ネイティブエンジン (Rust)"]
+            SingleInstance["二重起動防止 (tauri-plugin-single-instance)"]
+            Tray["タスクトレイ常駐制御 (TrayIcon / Settings)"]
+            Pipeline["サムネイルパイプライン (ThumbnailPipeline)"]
+            WorkerPool["ワーカースレッド群 (CPU並列)"]
+            Watcher["アイドルウォッチャー (IdleWatcher)"]
+            Scanner["ディレクトリ走査 (Fast Walker)"]
+        end
 
-    subgraph Storage ["データ・ストレージ"]
-        DB[("カタログDB (SQLite WALモード)\n%APPDATA%/com.imagemediaviewer.desktop/catalog.db")]
-        ThumbDB[("サムネイル専用DB (SQLite WALモード WITHOUT ROWID)\n%LOCALAPPDATA%/com.imagemediaviewer.desktop/cache/thumbnails.db")]
-        OriginalFiles[("元画像ファイル (読み取り専用・完全保護)\nユーザー指定ディレクトリ")]
+        subgraph Storage ["データ・ストレージ"]
+            DB[("カタログDB (SQLite WALモード)\n%APPDATA%/com.imagemediaviewer.desktop/catalog.db")]
+            ThumbDB[("サムネイル専用DB (SQLite WALモード WITHOUT ROWID)\n%LOCALAPPDATA%/com.imagemediaviewer.desktop/thumbnails.db")]
+            OriginalFiles[("元画像ファイル (読み取り専用・完全保護)\nユーザー指定ディレクトリ")]
+            SettingsFile[("アプリ設定 (app_settings.json)\n%APPDATA%/com.imagemediaviewer.desktop/app_settings.json")]
+        end
     end
 
     Timeline --> Store
@@ -45,19 +49,25 @@ flowchart TD
     Board --> Store
     Sidebar --> Store
 
-    Store --> Transport
-    Transport --> Server
+    Store --> IPC
+    Timeline -. "サムネイル要求" .-> ThumbProtocol
+    Viewer -. "原寸画像要求" .-> OrigProtocol
 
-    Server --> DB
-    Server --> ThumbDB
-    Server -. "未生成時のみジョブ投入" .-> Pipeline
+    IPC --> Core
+    ThumbProtocol --> Core
+    OrigProtocol --> Core
+
+    Core --> DB
+    Core --> ThumbDB
+    Core --> SettingsFile
+    ThumbProtocol --> ThumbDB
+    OrigProtocol --> OriginalFiles
     Pipeline --> WorkerPool
     WorkerPool --> OriginalFiles
     WorkerPool --> ThumbDB
     WorkerPool --> DB
     Watcher --> Scanner
     Scanner --> DB
-    RawRoute --> OriginalFiles
 ```
 
 ---
@@ -437,45 +447,43 @@ flowchart LR
     end
 
     subgraph Backend ["バックエンドサーバー (Rust / Port 14201)"]
-        ServerCore["常駐HTTPサーバー"]
+        MainWindow["Tauri メインウィンドウ (WebView2 / React UI)"]
+        NativeIPC["Tauri Native IPC (メモリ内通信)"]
+        CustomProtocol["カスタム URI プロトコル (thumb://, original://)"]
         TrayHandler["トレイイベントハンドラ (TrayIcon)"]
         ScannerCore["バックグラウンド走査 / サムネ生成"]
+        SettingsManager["設定永続化 (app_settings.json)"]
     end
 
-    subgraph Client ["クライアント (Chrome/Edge App Mode / ブラウザ)"]
-        UIHeader["上部ヘッダー (通信ステータス監視)"]
-        UIRetry["ワンクリック再接続 / 起動"]
-        TimelineUI["タイムライン / ビューア"]
-    end
-
-    Tray -->|左クリック / 右クリックメニュー| Backend
-    TrayHandler -->|クライアントを開く| Client
-    UIHeader -->|2.5秒定期ヘルスチェック| ServerCore
-    UIRetry -->|切断時の再起動トリガー| Protocol
-    Protocol -->|run-server.bat / run-server.sh| ServerCore
+    Tray -->|左クリック / 右クリックメニュー| AppProcess
+    TrayHandler -->|クライアントを開く| MainWindow
+    TrayHandler -->|常駐するトグル| SettingsManager
+    MainWindow <-->|IPC| NativeIPC
+    MainWindow <-->|サムネ・画像取得| CustomProtocol
 ```
 
-### 6.1 システムトレイ常駐とプロセス常駐保護 (Process Lifecycle & Tray)
-* **独立常駐＆フロントエンド自動起動**:
-  * サーバープロセスはクライアントウィンドウの開閉に左右されずバックグラウンドで安定常駐。
-  * **初回起動時の自動フロントエンド展開**: インストール後の EXE 実行（またはショートカット実行）時、バックグラウンドサーバー（ポート 14201）を起動すると同時に `tray::launch_client()` を非同期実行。Edge / Chrome App Mode またはシステム既定のブラウザでクライアント画面を即座に自動起動し、ユーザーが手動でURLを開く手間を排除。
-* **二重起動ガード（ポート競合防止設計）**:
-  * `lib.rs` のエントリポイント（`run()`）において、サーバー起動前に `TcpStream::connect("127.0.0.1:14201")` によるポート導通チェックを実施。
-  * **サーバー稼働中の再実行時**: 既にバックグラウンドサーバーが稼働している場合は、サーバープロセスの多重起動・ポート競合エラーを回避し、`tray::launch_client()` のみを呼び出してフロントエンド画面を表示させた上で、当プロセスは正常終了（`std::process::exit(0)`）。
-* **スリープ・省電力タスクキル防止（常駐保護設計）**:
-  * ブラウザの「メモリセーバー」やタブサスペンド、PCスリープ復帰時にブラウザが勝手に発火する `pagehide` / `beforeunload` イベントでのシャットダウン要求（`navigator.sendBeacon("/api/shutdown")`）を完全撤廃。
-  * サーバー側で `AUTO_EXIT_ON_IDLE: AtomicBool` による常駐ガードを導入。`--auto-exit` フラグが明示されていない常駐稼働時は、万一 `/api/shutdown` リクエストが届いてもプロセスを終了させず常駐を死守。
-  * プロセスの明示的終了は、タスクトレイメニューの「終了」からのみ行われる設計とし、長時間放置での勝手な停止を根絶。
-* **サーバー単体起動ランチャー (`run-server.bat` / `run-server.sh`)**:
-  * クライアントウィンドウを起動せず、サーバープロセスのみをバックグラウンド起動。
-  * スクリプト内の `cd /d "%~dp0"` により作業ディレクトリをスクリプト位置へ確実に固定し、URIプロトコル呼び出し時（CWDがSystem32等になる問題）でも確実にバイナリを実行。
-  * 多重起動防止ガード（PowerShell `Get-Process` / `pgrep`）を備え、既に起動中の場合は重複してプロセスを立ち上げない安全設計。
-* **ネイティブトレイアイコン**: Windows通知領域、macOSメニューバー、Linuxシステムトレイ（AppIndicator）に対応。
-* **トレイ右クリックメニュー**:
-  * **クライアントを開く**: Chrome/Edge App Mode（または既定ブラウザ）でクライアントを即時起動。
+### 6.1 完全ポートレス一体化とタスクトレイ常駐制御 (Portless Lifecycle & Tray)
+* **完全ポートレス一体型アーキテクチャ**:
+  * TCP/IPポート（14201 等）を一切開かない完全ポートレス構成を採用。
+  * データ通信は Tauri Native IPC（メモリ内メッセージパイプ）、画像・サムネイル配信は内部プロトコル（`thumb://`, `original://`）で直接完結。
+  * ポート競合、ファイアウォール警告、およびサーバー・クライアント間の非同期による片肺停止を根本的に解消。
+* **タスクトレイ常駐ライフサイクル**:
+  * **デフォルト常駐（ON）**: メインウィンドウの「×」ボタンを押した際、`WindowEvent::CloseRequested` を捕捉して `api.prevent_close()` を実行し、ウィンドウを非表示（Hide）にしてタスクトレイに常駐。
+  * **ウィンドウの復元**: タスクトレイアイコンの左クリック、または右クリックメニューの「クライアントを開く」から、非表示中のメインウィンドウを最前面に即座に再表示。
+  * **完全停止**: タスクトレイメニューの「終了」を実行することで、アプリケーション全体を完全停止（`app_handle.exit(0)`）。
+* **「常駐する」設定メニューと設定の永続化**:
+  * タスクトレイ右クリックメニューに「✔ 常駐する」（`CheckMenuItem`）を搭載。初期状態は **ON**。
+  * クリックにより ON / OFF を切り替え可能。設定値は `%APPDATA%\com.imagemediaviewer.desktop\app_settings.json` へ自動保存され、次回起動時にも復元。
+  * **OFF の場合**: メインウィンドウの「×」ボタンを押すと、トレイに残らずアプリケーション全体が即座に完全終了。
+* **トレイ右クリックメニュー構成**:
+  * **クライアントを開く**: メインウィンドウを表示・最前面化。
+  * **✔ 常駐する**: 常駐モードの有効/無効を切り替え（設定は自動保存）。
+  * ──────────────（セパレータ）
   * **フォルダを再走査**: 登録済みフォルダの差分スキャンをバックグラウンド実行。
   * **データフォルダを開く**: カタログDBおよびサムネイルキャッシュのディレクトリをOSファイルマネージャで開く。
-  * **終了**: サーバープロセスを安全に終了。
+  * **ログフォルダを開く**: ログ保存先ディレクトリを開く。
+  * ──────────────（セパレータ）
+  * **終了**: アプリケーション全体を完全終了。
 
 ### 6.2 通信状態監視と再接続 (Heartbeat & Multi-platform Recovery)
 * **常時監視**: クライアント上部右側の `ConnectionStatusIndicator` により、定期ハートビート（`/api/heartbeat`）で通信状態を可視化。

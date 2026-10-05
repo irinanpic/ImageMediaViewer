@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{command, AppHandle, State};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::error::AppError;
 use crate::models::{
-    GetImagesPayload, ImageDetail, ImageRecord, TimelineSummary, WatchedFolder,
+    Board, BoardItem, BoardNote, BookmarkRecord, CreateBoardNotePayload, CreateBoardPayload,
+    CreateBookmarkPayload, GetImagesPayload, ImageDetail, ImageRecord, ThumbProgress,
+    TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload, UpdateBoardPayload,
+    WatchedFolder, WindowState,
 };
 use crate::pipeline::JobPriority;
 use crate::scanner::walker::{is_sub_directory, normalize_path};
@@ -235,12 +238,16 @@ pub async fn set_viewport(
     state: State<'_, Arc<AppState>>,
     visible_ids: Vec<i64>,
     nearby_ids: Vec<i64>,
-) -> Result<u64, AppError> {
+) -> Result<serde_json::Value, AppError> {
     let conn = state.db.reader()?;
     let visible = crate::db::repo::get_thumb_sources(&conn, &visible_ids)?;
     let nearby = crate::db::repo::get_thumb_sources(&conn, &nearby_ids)?;
     let gen = state.thumb_pipeline.set_viewport(&visible, &nearby);
-    Ok(gen)
+    Ok(serde_json::json!({
+        "generation": gen,
+        "visibleCount": visible.len(),
+        "nearbyCount": nearby.len()
+    }))
 }
 
 /// サムネイル生成に失敗した画像の一覧を取得
@@ -281,5 +288,264 @@ pub async fn open_log_folder(
         Err(AppError::internal("ロガーが初期化されていません"))
     }
 }
+
+/// サムネイル生成キューをクリアする
+#[command]
+pub async fn clear_queue(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, AppError> {
+    let gen = state.thumb_pipeline.clear_queue();
+    Ok(serde_json::json!({
+        "generation": gen,
+        "status": "cleared"
+    }))
+}
+
+/// 未生成サムネイルを再走査してキューに登録する
+#[command]
+pub async fn rescan_missing_thumbnails(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    let reset_count = crate::db::repo::reset_failed_thumbnails(&writer).unwrap_or(0);
+    state.thumb_pipeline.trigger_background_refill();
+    info!("未生成・失敗サムネイルの再作成を開始しました: リセット件数={}", reset_count);
+    Ok(serde_json::json!({
+        "success": true,
+        "resetCount": reset_count
+    }))
+}
+
+/// サムネイル生成進捗状況を取得
+#[command]
+pub async fn get_thumb_progress(state: State<'_, Arc<AppState>>) -> Result<ThumbProgress, AppError> {
+    let conn = state.db.reader()?;
+    let (done, failed, total) = crate::db::repo::get_thumb_progress(&conn)?;
+    Ok(ThumbProgress {
+        done,
+        failed,
+        total,
+    })
+}
+
+/// ウィンドウ状態設定ファイルのパスを取得
+fn get_window_state_path() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("com.imagemediaviewer.desktop")
+            .join("window_state.json");
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        return data_dir
+            .join("com.imagemediaviewer.desktop")
+            .join("window_state.json");
+    }
+    PathBuf::from("window_state.json")
+}
+
+/// ウィンドウ状態を取得
+#[command]
+pub async fn get_window_state() -> Result<WindowState, AppError> {
+    let path = get_window_state_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(state) = serde_json::from_str::<WindowState>(&content) {
+            return Ok(state);
+        }
+    }
+    Ok(WindowState::default())
+}
+
+/// ウィンドウ状態を保存
+#[command]
+pub async fn save_window_state(state: WindowState) -> Result<(), AppError> {
+    let path = get_window_state_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let json = serde_json::to_string_pretty(&state)
+        .map_err(|e| AppError::internal(format!("ウィンドウ状態のシリアライズに失敗: {}", e)))?;
+    std::fs::write(&path, json)
+        .map_err(|e| AppError::internal(format!("ウィンドウ状態の保存に失敗: {}", e)))?;
+    Ok(())
+}
+
+/// ムードボード一覧を取得
+#[command]
+pub async fn get_boards(state: State<'_, Arc<AppState>>) -> Result<Vec<Board>, AppError> {
+    let conn = state.db.reader()?;
+    let boards = crate::db::repo::get_boards(&conn)?;
+    Ok(boards)
+}
+
+/// ムードボードを新規作成
+#[command]
+pub async fn create_board(
+    state: State<'_, Arc<AppState>>,
+    payload: CreateBoardPayload,
+) -> Result<Board, AppError> {
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    let board = crate::db::repo::create_board(&writer, &payload, now)?;
+    Ok(board)
+}
+
+/// ムードボードを更新
+#[command]
+pub async fn update_board(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    payload: UpdateBoardPayload,
+) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    crate::db::repo::update_board(&writer, id, &payload, now)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// ムードボードを削除
+#[command]
+pub async fn delete_board(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    crate::db::repo::delete_board(&writer, id)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// ボード内の画像アイテム一覧を取得
+#[command]
+pub async fn get_board_items(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+) -> Result<Vec<BoardItem>, AppError> {
+    let conn = state.db.reader()?;
+    let items = crate::db::repo::get_board_items(&conn, board_id)?;
+    Ok(items)
+}
+
+/// ボードに画像アイテムを追加
+#[command]
+pub async fn add_board_items(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+    image_ids: Vec<i64>,
+) -> Result<Vec<BoardItem>, AppError> {
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    let items = crate::db::repo::add_board_items(&writer, board_id, &image_ids, now)?;
+    Ok(items)
+}
+
+/// ボード内の画像アイテム（位置・サイズ等）を更新
+#[command]
+pub async fn update_board_item(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    mut payload: UpdateBoardItemPayload,
+) -> Result<serde_json::Value, AppError> {
+    payload.id = id;
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    crate::db::repo::update_board_item(&writer, &payload, now)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// ボード内の画像アイテムを削除
+#[command]
+pub async fn delete_board_item(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    crate::db::repo::delete_board_item(&writer, id)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// ボード内のテキストメモ一覧を取得
+#[command]
+pub async fn get_board_notes(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+) -> Result<Vec<BoardNote>, AppError> {
+    let conn = state.db.reader()?;
+    let notes = crate::db::repo::get_board_notes(&conn, board_id)?;
+    Ok(notes)
+}
+
+/// ボードにテキストメモを新規作成
+#[command]
+pub async fn create_board_note(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+    mut payload: CreateBoardNotePayload,
+) -> Result<BoardNote, AppError> {
+    payload.board_id = board_id;
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    let note = crate::db::repo::create_board_note(&writer, &payload, now)?;
+    Ok(note)
+}
+
+/// ボード内のテキストメモを更新
+#[command]
+pub async fn update_board_note(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    mut payload: UpdateBoardNotePayload,
+) -> Result<serde_json::Value, AppError> {
+    payload.id = id;
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    crate::db::repo::update_board_note(&writer, &payload, now)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// ボード内のテキストメモを削除
+#[command]
+pub async fn delete_board_note(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    crate::db::repo::delete_board_note(&writer, id)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 栞（ブックマーク）一覧を取得
+#[command]
+pub async fn get_bookmarks(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<BookmarkRecord>, AppError> {
+    let conn = state.db.reader()?;
+    let bookmarks = crate::db::repo::get_bookmarks(&conn)?;
+    Ok(bookmarks)
+}
+
+/// 栞を新規作成
+#[command]
+pub async fn create_bookmark(
+    state: State<'_, Arc<AppState>>,
+    payload: CreateBookmarkPayload,
+) -> Result<BookmarkRecord, AppError> {
+    let writer = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    let bm = crate::db::repo::create_bookmark(&writer, &payload, now)?;
+    Ok(bm)
+}
+
+/// 栞を削除
+#[command]
+pub async fn delete_bookmark(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<serde_json::Value, AppError> {
+    let writer = state.db.writer();
+    crate::db::repo::delete_bookmark(&writer, &id)?;
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// 生存確認用ハートビートコマンド
+#[command]
+pub async fn heartbeat() -> Result<serde_json::Value, AppError> {
+    Ok(serde_json::json!({ "alive": true }))
+}
+
 
 

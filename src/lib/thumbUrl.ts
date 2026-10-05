@@ -1,47 +1,40 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-
 /**
  * Tauri環境で実行されているかどうかを判定
+ *
+ * @returns Tauri環境内であれば true
  */
 export function isTauriEnvironment(): boolean {
   return typeof window !== "undefined" && Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 }
 
-function getBaseHttpUrl(): string {
-  if (typeof window !== "undefined" && window.location && window.location.origin && window.location.origin.startsWith("http")) {
-    return window.location.origin;
-  }
-  return "http://127.0.0.1:14201";
-}
-
 /**
  * 画像IDとリビジョンからサムネイルURLを生成する
  *
- * 変更理由: 仕様書§5.5および独立ウィンドウ/Webブラウザ両対応。
- * Tauri環境ではカスタムスキーム、それ以外では現在のオリジン（または127.0.0.1:14201）のURLを返却
+ * 変更理由: 仕様書§5.5および完全ポートレス一体型アーキテクチャ。
+ * TCP/IPポートを一切介さず、Tauriネイティブのカスタムスキーム（thumb://）により
+ * Rustのオンデマンド生成・WebP配信パイプラインから直接バイナリを取得する。
  *
  * @param imageId 画像ID
  * @param rev ファイル更新日時等のリビジョン番号（キャッシュバスター）
  * @returns サムネイル用URL文字列
  */
 export function getThumbnailUrl(imageId: number, rev: number): string {
-  if (isTauriEnvironment()) {
-    try {
-      const base = convertFileSrc(String(imageId), "thumb");
-      return `${base}?v=${rev}`;
-    } catch {
-      // フォールバック
-    }
+  try {
+    const base = convertFileSrc(String(imageId), "thumb");
+    return `${base}?v=${rev}`;
+  } catch {
+    return `http://thumb.localhost/${imageId}?v=${rev}`;
   }
-  return `${getBaseHttpUrl()}/thumbs/${imageId}?v=${rev}`;
 }
 
 /**
  * 画像IDから原寸画像配信用URLを生成する
  *
- * 変更理由: 仕様書§5.5および独立ウィンドウ/Webブラウザ両対応。
- * 画像更新時に古いキャッシュが表示され続けるのを防ぐため、リビジョン(rev)によるキャッシュバスティングをサポート。
+ * 変更理由: 仕様書§5.5および完全ポートレス一体型アーキテクチャ。
+ * TCP/IPポートを一切介さず、Tauriネイティブのカスタムスキーム（original://）により
+ * 原寸画像バイナリを直接取得する。
  *
  * @param imageId 画像ID
  * @param rev キャッシュバスティング用リビジョン（更新時刻等）
@@ -49,14 +42,9 @@ export function getThumbnailUrl(imageId: number, rev: number): string {
  */
 export function getOriginalImageUrl(imageId: number, rev?: number): string {
   const query = rev ? `?v=${rev}` : "";
-  if (isTauriEnvironment()) {
-    try {
-      return `${convertFileSrc(String(imageId), "original")}${query}`;
-    } catch {
-      // フォールバック
-    }
+  try {
+    return `${convertFileSrc(String(imageId), "original")}${query}`;
+  } catch {
+    return `http://original.localhost/${imageId}${query}`;
   }
-  return `${getBaseHttpUrl()}/raw/${imageId}${query}`;
 }
-
-

@@ -1,149 +1,74 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::AppHandle;
-use tracing::{error, info};
+use tauri::{AppHandle, Manager};
+use tracing::info;
 
 use crate::state::AppState;
 
-/// クライアント（フロントエンド）を独立ウィンドウまたは既定ブラウザで起動する
+/// メインウィンドウを表示し最前面にフォーカスする
 ///
-/// 変更理由: Windows, macOS, Linux すべてのOSにおいて、Chrome/Edge/Chromium等の
-/// アプリケーションモード（--app）で軽量・ネイティブ風にフロントエンドを起動し、
-/// 見つからない場合はOS既定のブラウザで開く
-pub fn launch_client() {
-    let app_url = "http://127.0.0.1:14201/";
-
-    // 1. 各OSにおけるChrome/Edge/Chromiumの候補パス探索
-    let candidates = get_browser_candidates();
-    let found = candidates.into_iter().find(|p| p.exists());
-
-    if let Some(browser_exe) = found {
-        let mut cmd = std::process::Command::new(&browser_exe);
-        cmd.arg(format!("--app={}", app_url));
-        cmd.arg("--no-first-run");
-        cmd.arg("--no-default-browser-check");
-        cmd.arg("--disable-background-mode");
-
-        #[cfg(target_os = "windows")]
-        if let Ok(local_app_data) = std::env::var("LocalAppData") {
-            let profile_dir = PathBuf::from(local_app_data).join("ImageMediaViewer\\BrowserProfile");
-            cmd.arg(format!("--user-data-dir={}", profile_dir.to_string_lossy()));
-        }
-
-        // ウィンドウ状態（サイズ・位置）の復元
-        let state_path = {
-            let local = PathBuf::from("window_state.json");
-            if local.exists() {
-                Some(local)
-            } else if let Ok(appdata) = std::env::var("APPDATA") {
-                let p = PathBuf::from(appdata).join("com.imagemediaviewer.desktop").join("window_state.json");
-                if p.exists() { Some(p) } else { None }
-            } else if let Some(data_dir) = dirs::data_dir() {
-                let p = data_dir.join("com.imagemediaviewer.desktop").join("window_state.json");
-                if p.exists() { Some(p) } else { None }
-            } else {
-                None
-            }
-        };
-        if let Some(sp) = state_path {
-            if let Ok(content) = std::fs::read_to_string(&sp) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if json["isMaximized"].as_bool().unwrap_or(false) {
-                        cmd.arg("--start-maximized");
-                    } else {
-                        let w = json["width"].as_u64().unwrap_or(1280).max(400);
-                        let h = json["height"].as_u64().unwrap_or(850).max(300);
-                        cmd.arg(format!("--window-size={},{}", w, h));
-                        if let (Some(x), Some(y)) = (json["x"].as_i64(), json["y"].as_i64()) {
-                            cmd.arg(format!("--window-position={},{}", x, y));
-                        }
-                    }
-                }
-            }
-        }
-
-        match cmd.spawn() {
-            Ok(_) => {
-                info!("クライアントを独立アプリモードで起動しました: {:?}", browser_exe);
-                return;
-            }
-            Err(e) => {
-                error!("独立アプリモードでの起動に失敗、既定ブラウザへフォールバック: {:?}", e);
-            }
-        }
+/// 変更理由: ポートレス一体化により外部ブラウザを起動する必要がなくなったため、
+/// 自身がホストしている Tauri ネイティブウィンドウ（main）を直接表示・アクティブ化する。
+///
+/// @param app Tauri アプリケーションハンドル
+pub fn show_main_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
     }
-
-    // 2. フォールバック: OS既定のブラウザで開く (クロスプラットフォーム)
-    if let Err(e) = opener::open(app_url) {
-        error!("既定ブラウザでの起動に失敗しました: {:?}", e);
-    } else {
-        info!("クライアントを既定ブラウザで開きました: {}", app_url);
-    }
-}
-
-/// 各OSごとのブラウザバイナリ候補一覧を取得
-fn get_browser_candidates() -> Vec<PathBuf> {
-    let mut list = Vec::new();
-
-    #[cfg(target_os = "windows")]
-    {
-        let pf = std::env::var("ProgramFiles").map(PathBuf::from).ok();
-        let pf86 = std::env::var("ProgramFiles(x86)").map(PathBuf::from).ok();
-        let local_app_data = std::env::var("LocalAppData").map(PathBuf::from).ok();
-
-        for base in [pf, pf86, local_app_data].into_iter().flatten() {
-            list.push(base.join("Google\\Chrome\\Application\\chrome.exe"));
-            list.push(base.join("Microsoft\\Edge\\Application\\msedge.exe"));
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        list.push(PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"));
-        list.push(PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"));
-        list.push(PathBuf::from("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        for path_str in &[
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/microsoft-edge",
-            "/snap/bin/chromium",
-        ] {
-            let p = PathBuf::from(path_str);
-            if p.exists() {
-                list.push(p);
-            }
-        }
-    }
-
-    list
 }
 
 /// タスクトレイ（システムトレイ）アイコンおよびメニューを初期化
 ///
+/// 変更理由: メインウィンドウ終了時の常駐切替（「常駐する」メニュー）および
+/// 設定の自動永続化、ウィンドウ直接表示に対応するため。
+///
 /// @param app Tauri アプリケーションハンドル
 /// @param state アプリケーション状態
+/// @param stay_in_tray 常駐フラグの共有アトミック参照
+/// @param app_data_dir 設定保存先ディレクトリ
 /// @return 初期化結果
-pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn setup_system_tray(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    stay_in_tray: Arc<AtomicBool>,
+    app_data_dir: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     let open_client_i = MenuItem::with_id(app, "open_client", "クライアントを開く", true, None::<&str>)?;
+    let initial_stay = stay_in_tray.load(Ordering::Relaxed);
+    let stay_in_tray_i = CheckMenuItem::with_id(app, "stay_in_tray", "常駐する", true, initial_stay, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
     let rescan_i = MenuItem::with_id(app, "rescan", "フォルダを再走査", true, None::<&str>)?;
     let open_folder_i = MenuItem::with_id(app, "open_folder", "データフォルダを開く", true, None::<&str>)?;
     let open_logs_i = MenuItem::with_id(app, "open_logs", "ログフォルダを開く", true, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
     let quit_i = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
 
-    let menu = Menu::with_items(app, &[&open_client_i, &rescan_i, &open_folder_i, &open_logs_i, &quit_i])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open_client_i,
+            &stay_in_tray_i,
+            &sep1,
+            &rescan_i,
+            &open_folder_i,
+            &open_logs_i,
+            &sep2,
+            &quit_i,
+        ],
+    )?;
 
     let state_clone = Arc::clone(&state);
+    let stay_clone = Arc::clone(&stay_in_tray);
+    let stay_menu_item = stay_in_tray_i.clone();
+    let data_dir_clone = app_data_dir.clone();
 
     let mut tray_builder = TrayIconBuilder::with_id("imv_main_tray")
-        .tooltip("ImageMediaViewer サーバー (稼働中)")
+        .tooltip("ImageMediaViewer (稼働中)")
         .menu(&menu)
         .show_menu_on_left_click(false);
 
@@ -162,7 +87,21 @@ pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Bo
         .on_menu_event(move |app_handle, event| {
             match event.id.as_ref() {
                 "open_client" => {
-                    launch_client();
+                    show_main_window(app_handle);
+                }
+                "stay_in_tray" => {
+                    let cur = stay_clone.load(Ordering::Relaxed);
+                    let new_val = !cur;
+                    stay_clone.store(new_val, Ordering::Relaxed);
+                    let _ = stay_menu_item.set_checked(new_val);
+                    let settings = crate::settings::AppSettings {
+                        stay_in_tray: new_val,
+                    };
+                    if let Err(e) = crate::settings::save_settings(&data_dir_clone, &settings) {
+                        tracing::warn!("常駐設定の保存に失敗しました: {:?}", e);
+                    } else {
+                        info!("常駐設定を変更しました: stay_in_tray = {}", new_val);
+                    }
                 }
                 "rescan" => {
                     info!("トレイメニューから再走査を要求されました");
@@ -189,28 +128,27 @@ pub fn setup_system_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), Bo
                     }
                 }
                 "quit" => {
-                    info!("トレイメニューから終了が指示されました。アプリケーションを終了します。");
+                    info!("トレイメニューから終了が指示されました。アプリケーションを完全終了します。");
                     app_handle.exit(0);
                 }
                 _ => {}
             }
         })
-        .on_tray_icon_event(|_tray, event| {
-            // 左クリックまたはダブルクリックでクライアントを起動
+        .on_tray_icon_event(|tray, event| {
+            // 左クリックでメインウィンドウを表示
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
             } = event
             {
-                launch_client();
+                show_main_window(tray.app_handle());
             }
         })
         .build(app)?;
 
-    // トレイインスタンスを保持
     let _ = tray;
 
-    info!("システムトレイアイコンを登録しました");
+    info!("システムトレイアイコンを登録しました（常駐初期状態: {}）", initial_stay);
     Ok(())
 }

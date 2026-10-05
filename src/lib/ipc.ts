@@ -20,257 +20,20 @@ import type {
   UpdateBoardPayload,
 } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
-import { isTauriEnvironment } from "./thumbUrl";
-
-function getBaseHttpUrl(): string {
-  if (typeof window !== "undefined" && window.location && window.location.origin && window.location.origin.startsWith("http")) {
-    return window.location.origin;
-  }
-  return "http://127.0.0.1:14201";
-}
-
 /**
- * Tauri IPC または ローカル HTTP API を呼び出す型安全ラッパー関数
+ * Tauri ネイティブ IPC を呼び出す型安全ラッパー関数
  *
- * 変更理由: Tauri環境ではネイティブIPCを使用し、Electron独立ウィンドウまたは
- * Webブラウザ環境では自動的にローカルHTTPサーバーへフォールバックして全機能を提供する
+ * 変更理由: TCP/IPポートを一切使用しない完全ポートレス一体型アーキテクチャ。
+ * Tauri Native IPC（メモリ内メッセージパイプ）により、ポート競合リスクゼロで
+ * 高速かつ型安全にRustバックエンドと通信する。
  *
  * @param command コマンド名
  * @param args 引数オブジェクト
  * @returns 戻り値のPromise
  */
 async function callIpc<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (isTauriEnvironment()) {
-    try {
-      return await invoke<T>(command, args);
-    } catch (err: unknown) {
-      if (err && typeof err === "object" && "code" in err && "message" in err) {
-        throw err as AppError;
-      }
-      throw {
-        code: "Internal",
-        message: String(err),
-      } as AppError;
-    }
-  }
-
-  // HTTP API フォールバック
   try {
-    let url = `${getBaseHttpUrl()}/api`;
-    const options: RequestInit = {
-      headers: { "Content-Type": "application/json" },
-    };
-
-    switch (command) {
-      case "get_watch_folders":
-        url += "/watch_folders";
-        options.method = "GET";
-        break;
-
-      case "add_watch_folder":
-        url += "/watch_folders";
-        options.method = "POST";
-        options.body = JSON.stringify({ path: args?.path });
-        break;
-
-      case "remove_watch_folder":
-        url += `/watch_folders/${args?.id}`;
-        options.method = "DELETE";
-        break;
-
-      case "rescan":
-        url += "/rescan";
-        options.method = "POST";
-        options.body = JSON.stringify({ folder_id: args?.folderId });
-        break;
-
-      case "get_timeline_summary": {
-        const folderId = args?.folderId;
-        const sort = args?.sort;
-        const params = new URLSearchParams();
-        if (folderId !== undefined && folderId !== null) params.append("folderId", String(folderId));
-        if (sort) params.append("sort", String(sort));
-        const qs = params.toString();
-        url += `/timeline/summary${qs ? `?${qs}` : ""}`;
-        options.method = "GET";
-        break;
-      }
-
-
-      case "get_timeline_images":
-        url += "/timeline/images";
-        options.method = "POST";
-        options.body = JSON.stringify(args?.payload || {});
-        break;
-
-      case "get_image_detail":
-        url += `/images/${args?.id}`;
-        options.method = "GET";
-        break;
-
-      case "prefetch_thumbnails":
-        url += "/prefetch_thumbnails";
-        options.method = "POST";
-        options.body = JSON.stringify({ ids: args?.ids || [] });
-        break;
-
-      case "set_viewport":
-        url += "/viewport";
-        options.method = "POST";
-        options.body = JSON.stringify({
-          visibleIds: args?.visible_ids ?? args?.visibleIds ?? [],
-          nearbyIds: args?.nearby_ids ?? args?.nearbyIds ?? [],
-        });
-        break;
-
-      case "clear_queue":
-        url += "/clear_queue";
-        options.method = "POST";
-        break;
-
-      case "rescan_missing_thumbnails":
-        url += "/thumbnails/rescan_missing";
-        options.method = "POST";
-        break;
-
-      case "get_thumb_progress":
-        url += "/thumb_progress";
-        options.method = "GET";
-        break;
-
-      case "reveal_in_file_manager":
-        url += "/reveal_in_file_manager";
-        options.method = "POST";
-        options.body = JSON.stringify({ id: args?.id });
-        break;
-
-      case "get_window_state":
-        url += "/window_state";
-        options.method = "GET";
-        break;
-
-      case "save_window_state":
-        url += "/window_state";
-        options.method = "POST";
-        options.body = JSON.stringify(args?.state);
-        break;
-
-      case "get_boards":
-        url += "/boards";
-        options.method = "GET";
-        break;
-
-      case "create_board":
-        url += "/boards";
-        options.method = "POST";
-        options.body = JSON.stringify(args?.payload || {});
-        break;
-
-      case "update_board":
-        url += `/boards/${args?.id}`;
-        options.method = "PUT";
-        options.body = JSON.stringify(args?.payload || {});
-        break;
-
-      case "delete_board":
-        url += `/boards/${args?.id}`;
-        options.method = "DELETE";
-        break;
-
-      case "get_board_items":
-        url += `/boards/${args?.boardId}/items`;
-        options.method = "GET";
-        break;
-
-      case "add_board_items":
-        url += `/boards/${args?.boardId}/items`;
-        options.method = "POST";
-        options.body = JSON.stringify({ imageIds: args?.imageIds || [] });
-        break;
-
-      case "update_board_item":
-        url += `/board_items/${args?.id}`;
-        options.method = "PUT";
-        options.body = JSON.stringify({ id: args?.id, ...(args?.payload || {}) });
-        break;
-
-      case "delete_board_item":
-        url += `/board_items/${args?.id}`;
-        options.method = "DELETE";
-        break;
-
-      case "get_board_notes":
-        url += `/boards/${args?.boardId}/notes`;
-        options.method = "GET";
-        break;
-
-      case "create_board_note":
-        url += `/boards/${args?.boardId}/notes`;
-        options.method = "POST";
-        options.body = JSON.stringify(args?.payload || {});
-        break;
-
-      case "update_board_note":
-        url += `/board_notes/${args?.id}`;
-        options.method = "PUT";
-        options.body = JSON.stringify({ id: args?.id, ...(args?.payload || {}) });
-        break;
-
-      case "delete_board_note":
-        url += `/board_notes/${args?.id}`;
-        options.method = "DELETE";
-        break;
-
-      case "get_bookmarks":
-        url += "/bookmarks";
-        options.method = "GET";
-        break;
-
-      case "create_bookmark":
-        url += "/bookmarks";
-        options.method = "POST";
-        options.body = JSON.stringify(args?.payload || {});
-        break;
-
-      case "delete_bookmark":
-        url += `/bookmarks/${args?.id}`;
-        options.method = "DELETE";
-        break;
-
-      case "heartbeat":
-        url += "/heartbeat";
-        options.method = "POST";
-        break;
-
-      case "get_failed_thumbnails": {
-        const limit = args?.limit ?? 100;
-        url += `/thumbnails/failed?limit=${limit}`;
-        options.method = "GET";
-        break;
-      }
-
-      case "get_logs": {
-        const limit = args?.limit ?? 200;
-        url += `/logs?limit=${limit}`;
-        options.method = "GET";
-        break;
-      }
-
-      case "open_log_folder":
-        url += "/logs/open";
-        options.method = "POST";
-        break;
-
-      default:
-        throw { code: "Internal", message: `未知のコマンド: ${command}` } as AppError;
-    }
-
-    const res = await fetch(url, options);
-    const data = await res.json();
-    if (!res.ok) {
-      throw (data as AppError);
-    }
-    return data as T;
+    return await invoke<T>(command, args);
   } catch (err: unknown) {
     if (err && typeof err === "object" && "code" in err && "message" in err) {
       throw err as AppError;
@@ -510,20 +273,13 @@ export const backendApi = {
 
   /**
    * サーバーの稼働確認（高速軽量Ping）
-   * @param timeoutMs タイムアウトミリ秒（デフォルト3000ms）
+   * @param _timeoutMs タイムアウトミリ秒（互換性のためのオプショナル引数）
    * @returns 稼働しているかどうか
    */
-  pingServer: async (timeoutMs = 3000): Promise<boolean> => {
+  pingServer: async (_timeoutMs?: number): Promise<boolean> => {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(`${getBaseHttpUrl()}/api/heartbeat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      return res.ok;
+      const res = await invoke<{ alive: boolean }>("heartbeat");
+      return Boolean(res.alive);
     } catch {
       return false;
     }
