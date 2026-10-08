@@ -12,12 +12,14 @@ import {
 import { usePagedImages } from "../../hooks/usePagedImages";
 import { backendApi } from "../../lib/ipc";
 import { getOriginalImageUrl, getThumbnailUrl } from "../../lib/thumbUrl";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { ImageDetailPanel } from "../Common/ImageDetailPanel";
 import { useViewerGestures } from "./useViewerGestures";
 
 export const ImageViewerModal: React.FC = () => {
+  const { t } = useTranslation();
   const isViewerOpen = useAppStore((state) => state.isViewerOpen);
   const activeImageId = useAppStore((state) => state.activeImageId);
   const activeImageIndex = useAppStore((state) => state.activeImageIndex);
@@ -239,35 +241,35 @@ export const ImageViewerModal: React.FC = () => {
         <div className="flex items-center gap-3">
           <button
             onClick={() => rotateClockwise()}
-            title="右に回転 (R)"
+            title={t("viewer.rotateRightTooltip")}
             className="p-2 hover:bg-white/10 rounded-full transition"
           >
             <RotateCw className="w-5 h-5" />
           </button>
           <button
             onClick={() => toggleFlipH()}
-            title="左右反転 (H)"
+            title={t("viewer.flipHTooltip")}
             className="p-2 hover:bg-white/10 rounded-full transition text-xs font-bold"
           >
             ↔
           </button>
           <button
             onClick={() => toggleFlipV()}
-            title="上下反転 (V)"
+            title={t("viewer.flipVTooltip")}
             className="p-2 hover:bg-white/10 rounded-full transition text-xs font-bold"
           >
             ↕
           </button>
           <button
             onClick={() => (transform.zoom > 1.05 ? resetTransform() : setZoom(get100PercentZoom()))}
-            title={transform.zoom > 1.05 ? "画面にフィット (0)" : "原寸ピクセル等倍 (1)"}
+            title={transform.zoom > 1.05 ? t("viewer.fitScreenTooltip") : t("viewer.originalPixelTooltip")}
             className="p-2 hover:bg-white/10 rounded-full transition"
           >
             {transform.zoom > 1.05 ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
           </button>
           <button
             onClick={() => setShowInfo(!showInfo)}
-            title="情報パネル (I)"
+            title={t("viewer.infoTooltip")}
             className={`p-2 rounded-full transition ${showInfo ? "bg-accent text-white" : "hover:bg-white/10"}`}
           >
             <Info className="w-5 h-5" />
@@ -275,7 +277,7 @@ export const ImageViewerModal: React.FC = () => {
           {activeImageId && (
             <button
               onClick={() => openAddToBoardModal([activeImageId])}
-              title="この画像をムードボードに資料として追加"
+              title={t("viewer.addToBoardTooltip")}
               className="p-2 hover:bg-white/10 rounded-full transition text-accent"
             >
               <LayoutGrid className="w-5 h-5" />
@@ -283,7 +285,7 @@ export const ImageViewerModal: React.FC = () => {
           )}
           <button
             onClick={closeViewer}
-            title="閉じる (Esc)"
+            title={t("viewer.closeTooltip")}
             className="p-2 hover:bg-white/10 rounded-full transition text-red-400"
           >
             <X className="w-5 h-5" />

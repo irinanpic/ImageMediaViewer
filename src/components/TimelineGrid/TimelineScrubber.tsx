@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { TimelineRow } from "../../lib/buildRows";
+import { useTranslation } from "../../locales";
 
 interface TimelineScrubberProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -22,6 +23,7 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
   rows,
   totalImages,
 }) => {
+  const { t } = useTranslation();
   const barRef = useRef<HTMLDivElement>(null);
   const [scrollRatio, setScrollRatio] = useState(0);
   const [thumbHeightRatio, setThumbHeightRatio] = useState(0.1);
@@ -136,7 +138,7 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => !isDragging && setIsHovered(false)}
       className="absolute top-0 right-0 bottom-0 w-6 z-20 flex justify-center cursor-pointer select-none group bg-background/20 hover:bg-surface/50 backdrop-blur-xs transition-colors"
-      title="ドラッグで高速スクロール"
+      title={t("timeline.scrubberTooltip")}
     >
       {/* スクロールレール（細い縦線） */}
       <div className="absolute top-2 bottom-2 w-1 bg-border/40 rounded-full group-hover:bg-border/80 transition-colors" />
@@ -164,9 +166,9 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
           }}
           className="absolute right-8 z-30 pointer-events-none bg-surface/95 text-textPrimary text-xs px-3 py-1.5 rounded-lg border border-border shadow-2xl flex flex-col items-end whitespace-nowrap animate-in fade-in zoom-in-95 duration-100"
         >
-          <div className="font-semibold text-accent text-[13px]">{currentInfo.label || "タイムライン"}</div>
+          <div className="font-semibold text-accent text-[13px]">{currentInfo.label || t("timeline.timelinePosition")}</div>
           <div className="text-[11px] text-textSecondary font-mono mt-0.5">
-            {currentInfo.index > 0 ? `${currentInfo.index.toLocaleString()} 枚目` : ""} / {totalImages.toLocaleString()} 枚
+            {currentInfo.index > 0 ? `${currentInfo.index.toLocaleString()} ${t("common.images")}` : ""} / {totalImages.toLocaleString()} {t("common.images")}
           </div>
         </div>
       )}

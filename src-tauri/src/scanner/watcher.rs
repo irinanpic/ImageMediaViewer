@@ -66,13 +66,13 @@ pub fn start_idle_watcher(state: Arc<AppState>) {
                     continue;
                 }
 
-                debug!("アイドル状態検知: 登録フォルダの省電力バックグラウンド更新チェックを開始します");
+                debug!("Idle detected: Starting background folder update check");
 
                 let mut any_interrupted = false;
                 for folder in folders {
                     // スキャン中またはユーザー操作でキューにジョブが入ったら即座に中断
                     if !state.thumb_pipeline.is_idle() {
-                        debug!("ユーザー操作・ジョブ発生を検知: バックグラウンドチェックを中断します");
+                        debug!("User action or jobs detected: Suspending background check");
                         any_interrupted = true;
                         break;
                     }
@@ -86,7 +86,7 @@ pub fn start_idle_watcher(state: Arc<AppState>) {
 
                 last_check = Instant::now();
                 if !any_interrupted {
-                    debug!("省電力バックグラウンドフォルダ更新チェック完了");
+                    debug!("Background folder update check finished");
                     // 孤立サムネイルGCは1日に1回のみ実行
                     if last_gc.elapsed() >= gc_interval && state.thumb_pipeline.is_idle() {
                         run_thumbnail_gc(&state);
@@ -95,7 +95,7 @@ pub fn start_idle_watcher(state: Arc<AppState>) {
                 }
             }
         })
-        .expect("アイドルウォッカースレッド起動失敗");
+        .expect("Failed to spawn idle watcher thread");
 }
 
 /// アイドル時に参照ゼロの孤立サムネイルを回収する（Garbage Collection）
@@ -132,7 +132,7 @@ fn run_thumbnail_gc(state: &Arc<AppState>) {
             if let Ok(deleted) = state.thumb_store.delete_batch(&unreferenced) {
                 if deleted > 0 {
                     total_deleted += deleted;
-                    tracing::info!("孤立サムネイル GC: {} 件の不要なBLOBを回収しました", deleted);
+                    tracing::info!("Orphaned thumbnails GC: Cleaned up {} unreferenced BLOBs", deleted);
                 }
             }
         }
@@ -148,7 +148,7 @@ fn run_thumbnail_gc(state: &Arc<AppState>) {
 
     if total_deleted > 0 {
         if let Err(e) = state.thumb_store.vacuum_incremental(500) {
-            tracing::warn!("ThumbStore incremental_vacuum 失敗: {}", e);
+            tracing::warn!("ThumbStore incremental_vacuum failed: {}", e);
         }
     }
 }

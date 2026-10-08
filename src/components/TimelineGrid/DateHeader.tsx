@@ -1,5 +1,6 @@
 import React from "react";
 import { Calendar, Folder } from "lucide-react";
+import { useTranslation } from "../../locales";
 
 interface DateHeaderProps {
   day: string;
@@ -12,6 +13,7 @@ interface DateHeaderProps {
  * 変更理由: フォルダ順表示の際、フォルダアイコンとフォルダ名（およびフルパス）を明瞭に表示するため。
  */
 export const DateHeader: React.FC<DateHeaderProps> = React.memo(({ day, count }) => {
+  const { t } = useTranslation();
   // パス形式（\ や / を含む）か判定
   const isFolderPath = day.includes("\\") || day.includes("/");
   const folderName = isFolderPath ? day.split(/[\\/]/).filter(Boolean).pop() || day : day;
@@ -32,7 +34,7 @@ export const DateHeader: React.FC<DateHeaderProps> = React.memo(({ day, count })
         )}
       </div>
       <span className="text-xs text-textSecondary bg-surfaceLight px-2 py-0.5 rounded-full shrink-0">
-        {count.toLocaleString()} 枚
+        {t("timeline.imageCount", { count: count.toLocaleString() })}
       </span>
     </div>
   );

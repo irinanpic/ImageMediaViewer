@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
+import { useTranslation, translateLogMessage } from "../../locales";
 import { useAppStore } from "../../store";
 import type { FailedImageRecord } from "../../types/generated/FailedImageRecord";
 import type { LogEntry } from "../../types/generated/LogEntry";
@@ -54,6 +55,7 @@ function getLevelBadgeClass(level: string): string {
  * システムログおよびサムネイル生成失敗画像の確認・診断モーダル
  */
 export const LogViewerModal: React.FC = () => {
+  const { t } = useTranslation();
   const isLogModalOpen = useAppStore((state) => state.isLogModalOpen);
   const closeLogModal = useAppStore((state) => state.closeLogModal);
 
@@ -112,7 +114,7 @@ export const LogViewerModal: React.FC = () => {
   // ログコピー処理
   const handleCopyLogs = async () => {
     const text = filteredLogs
-      .map((l) => `${l.timestamp} [${l.level}] ${l.target} - ${l.message}`)
+      .map((l) => `${l.timestamp} [${l.level}] ${l.target} - ${translateLogMessage(l.message, t)}`)
       .join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -128,12 +130,12 @@ export const LogViewerModal: React.FC = () => {
     try {
       const res = await backendApi.openLogFolder();
       if (res.path) {
-        setActionMessage(`ログフォルダを開きました: ${res.path}`);
+        setActionMessage(t("logModal.openedFolderMsg", { path: res.path }));
         setTimeout(() => setActionMessage(null), 4000);
       }
     } catch (e: unknown) {
       const err = e as { message?: string };
-      setActionMessage(`開けませんでした: ${err?.message || String(e)}`);
+      setActionMessage(t("logModal.openFolderFailedMsg", { err: err?.message || String(e) }));
       setTimeout(() => setActionMessage(null), 4000);
     }
   };
@@ -143,12 +145,12 @@ export const LogViewerModal: React.FC = () => {
     try {
       setIsLoading(true);
       const res = await backendApi.rescanMissingThumbnails();
-      setActionMessage(`再生成を開始しました (対象: ${res.resetCount}件)`);
+      setActionMessage(t("logModal.retryStartedMsg", { count: res.resetCount }));
       setTimeout(() => setActionMessage(null), 4000);
       await fetchData();
     } catch (e: unknown) {
       const err = e as { message?: string };
-      setActionMessage(`エラー: ${err?.message || String(e)}`);
+      setActionMessage(t("logModal.retryErrorMsg", { err: err?.message || String(e) }));
       setTimeout(() => setActionMessage(null), 4000);
     } finally {
       setIsLoading(false);
@@ -168,12 +170,12 @@ export const LogViewerModal: React.FC = () => {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border bg-surfaceLight/30">
           <div className="flex items-center gap-2.5">
             <AlertCircle className="w-5 h-5 text-accent" />
-            <h2 className="text-base font-semibold text-textPrimary">システムログ & エラー診断</h2>
+            <h2 className="text-base font-semibold text-textPrimary">{t("logModal.title")}</h2>
           </div>
           <button
             onClick={closeLogModal}
             className="p-1.5 rounded-lg text-textSecondary hover:text-textPrimary hover:bg-surfaceLight transition"
-            title="閉じる (Esc)"
+            title={t("logModal.closeTooltip")}
           >
             <X className="w-5 h-5" />
           </button>
@@ -191,7 +193,7 @@ export const LogViewerModal: React.FC = () => {
               }`}
             >
               <AlertTriangle className="w-3.5 h-3.5" />
-              <span>失敗画像一覧</span>
+              <span>{t("logModal.tabFailedImages")}</span>
               <span
                 className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
                   failedImages.length > 0
@@ -212,7 +214,7 @@ export const LogViewerModal: React.FC = () => {
               }`}
             >
               <Info className="w-3.5 h-3.5" />
-              <span>システムログ</span>
+              <span>{t("logModal.tabSystemLogs")}</span>
               <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-surfaceLight text-textSecondary">
                 {logs.length}
               </span>
@@ -229,7 +231,7 @@ export const LogViewerModal: React.FC = () => {
                     logFilter === "all" ? "bg-accent text-white font-medium" : "text-textSecondary hover:text-textPrimary"
                   }`}
                 >
-                  すべて
+                  {t("logModal.filterAll")}
                 </button>
                 <button
                   onClick={() => setLogFilter("warn_error")}
@@ -237,7 +239,7 @@ export const LogViewerModal: React.FC = () => {
                     logFilter === "warn_error" ? "bg-accent text-white font-medium" : "text-textSecondary hover:text-textPrimary"
                   }`}
                 >
-                  警告・エラー
+                  {t("logModal.filterWarnError")}
                 </button>
                 <button
                   onClick={() => setLogFilter("errors")}
@@ -245,7 +247,7 @@ export const LogViewerModal: React.FC = () => {
                     logFilter === "errors" ? "bg-accent text-white font-medium" : "text-textSecondary hover:text-textPrimary"
                   }`}
                 >
-                  エラーのみ
+                  {t("logModal.filterErrors")}
                 </button>
               </div>
             )}
@@ -254,7 +256,7 @@ export const LogViewerModal: React.FC = () => {
               onClick={fetchData}
               disabled={isLoading}
               className="p-1.5 rounded hover:bg-surfaceLight text-textSecondary hover:text-textPrimary transition"
-              title="最新に更新"
+              title={t("logModal.refreshTooltip")}
             >
               <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
             </button>
@@ -263,20 +265,20 @@ export const LogViewerModal: React.FC = () => {
               <button
                 onClick={handleCopyLogs}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-surfaceLight hover:bg-surfaceLight/80 text-textPrimary border border-border transition"
-                title="ログをクリップボードにコピー"
+                title={t("logModal.copyLogsTooltip")}
               >
                 {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{isCopied ? "コピー完了" : "コピー"}</span>
+                <span>{isCopied ? t("logModal.copiedBtn") : t("logModal.copyLogsBtn")}</span>
               </button>
             )}
 
             <button
               onClick={handleOpenLogFolder}
               className="flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-surfaceLight hover:bg-surfaceLight/80 text-textPrimary border border-border transition"
-              title="ログファイルが保存されているフォルダをエクスプローラで開く"
+              title={t("logModal.openFolderTooltip")}
             >
               <FolderOpen className="w-3.5 h-3.5" />
-              <span>ログフォルダを開く</span>
+              <span>{t("logModal.openFolderBtn")}</span>
             </button>
           </div>
         </div>
@@ -297,8 +299,7 @@ export const LogViewerModal: React.FC = () => {
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <p className="text-xs text-textSecondary leading-relaxed">
-                  画像ファイルの破損、0バイトの空ファイル、または非対応の動画/アニメーション形式等の理由で、
-                  サムネイルを正常に生成できなかったファイルです。
+                  {t("logModal.failedReasonDesc")}
                 </p>
                 {failedImages.length > 0 && (
                   <button
@@ -307,7 +308,7 @@ export const LogViewerModal: React.FC = () => {
                     className="shrink-0 flex items-center gap-1.5 px-3 py-1 text-xs rounded bg-accent/20 hover:bg-accent/30 text-accent font-medium border border-accent/40 transition"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-                    <span>失敗画像の再生成を試みる</span>
+                    <span>{t("logModal.retryFailedBtn")}</span>
                   </button>
                 )}
               </div>
@@ -315,16 +316,16 @@ export const LogViewerModal: React.FC = () => {
               {failedImages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center text-textSecondary">
                   <Check className="w-10 h-10 text-emerald-400 mb-2" />
-                  <p className="text-sm font-medium text-textPrimary">サムネイル生成の失敗はありません</p>
-                  <p className="text-xs mt-1">すべての画像が正常に処理されました。</p>
+                  <p className="text-sm font-medium text-textPrimary">{t("logModal.noFailedImagesTitle")}</p>
+                  <p className="text-xs mt-1">{t("logModal.noFailedImagesDesc")}</p>
                 </div>
               ) : (
                 <div className="border border-border rounded-lg overflow-hidden bg-surface">
                   <div className="grid grid-cols-[1fr_80px_100px_90px] px-4 py-2 bg-surfaceLight/50 border-b border-border text-[11px] font-semibold text-textSecondary uppercase tracking-wider">
-                    <div>ファイルパス</div>
-                    <div className="text-right">サイズ</div>
-                    <div className="text-center">形式</div>
-                    <div className="text-right">操作</div>
+                    <div>{t("logModal.colPath")}</div>
+                    <div className="text-right">{t("logModal.colSize")}</div>
+                    <div className="text-center">{t("logModal.colFormat")}</div>
+                    <div className="text-right">{t("logModal.colActions")}</div>
                   </div>
                   <div className="divide-y divide-border/60">
                     {failedImages.map((item) => (
@@ -336,7 +337,7 @@ export const LogViewerModal: React.FC = () => {
                           <span className="text-textPrimary">{item.filePath}</span>
                           {item.fileSize === 0 && (
                             <span className="ml-2 text-[10px] text-rose-400 font-sans font-medium bg-rose-500/10 px-1.5 py-0.2 rounded border border-rose-500/20">
-                              0バイト空ファイル
+                              {t("logModal.zeroByteBadge")}
                             </span>
                           )}
                         </div>
@@ -344,15 +345,15 @@ export const LogViewerModal: React.FC = () => {
                           {formatBytes(item.fileSize)}
                         </div>
                         <div className="text-center text-textSecondary uppercase">
-                          {item.format || "不明"}
+                          {item.format || t("logModal.formatUnknown")}
                         </div>
                         <div className="text-right">
                           <button
                             onClick={() => backendApi.revealInFileManager(item.id)}
                             className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline"
-                            title="エクスプローラでファイルを表示"
+                            title={t("logModal.revealTooltip")}
                           >
-                            <span>表示</span>
+                            <span>{t("logModal.actionReveal")}</span>
                             <ExternalLink className="w-3 h-3" />
                           </button>
                         </div>
@@ -365,28 +366,34 @@ export const LogViewerModal: React.FC = () => {
           ) : (
             <div className="h-full flex flex-col space-y-2">
               <div className="flex items-center justify-between text-xs text-textSecondary">
-                <span>直近 {filteredLogs.length} 件のログ（最新順）</span>
-                <span className="text-[11px]">ログ保存先: %APPDATA%\com.imagemediaviewer.app\logs\app.log</span>
+                <span>{t("logModal.recentLogsCount", { count: filteredLogs.length })}</span>
+                <span className="text-[11px]">{t("logModal.logStoragePath")}</span>
               </div>
 
               <div className="flex-1 bg-surface border border-border rounded-lg p-3 overflow-auto font-mono text-[11px] leading-relaxed select-text space-y-1">
                 {filteredLogs.length === 0 ? (
-                  <p className="text-textSecondary text-center py-10">該当するログはありません</p>
+                  <p className="text-textSecondary text-center py-10">{t("logModal.noLogsMatch")}</p>
                 ) : (
-                  [...filteredLogs].reverse().map((log, idx) => (
-                    <div key={idx} className="flex items-start gap-2 hover:bg-surfaceLight/30 px-1 py-0.5 rounded">
-                      <span className="text-textSecondary/70 shrink-0 text-[10px] pt-0.5">{log.timestamp}</span>
-                      <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${getLevelBadgeClass(log.level)}`}>
-                        {log.level}
-                      </span>
-                      <span className="text-accent/80 shrink-0 max-w-[140px] truncate" title={log.target}>
-                        [{log.target}]
-                      </span>
-                      <span className={`break-all ${log.level === "ERROR" ? "text-rose-300 font-semibold" : log.level === "WARN" ? "text-amber-300" : "text-textPrimary"}`}>
-                        {log.message}
-                      </span>
-                    </div>
-                  ))
+                  [...filteredLogs].reverse().map((log, idx) => {
+                    const translatedMessage = translateLogMessage(log.message, t);
+                    return (
+                      <div key={idx} className="flex items-start gap-2 hover:bg-surfaceLight/30 px-1 py-0.5 rounded">
+                        <span className="text-textSecondary/70 shrink-0 text-[10px] pt-0.5">{log.timestamp}</span>
+                        <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold shrink-0 ${getLevelBadgeClass(log.level)}`}>
+                          {log.level}
+                        </span>
+                        <span className="text-accent/80 shrink-0 max-w-[140px] truncate" title={log.target}>
+                          [{log.target}]
+                        </span>
+                        <span
+                          className={`break-all ${log.level === "ERROR" ? "text-rose-300 font-semibold" : log.level === "WARN" ? "text-amber-300" : "text-textPrimary"}`}
+                          title={translatedMessage !== log.message ? log.message : undefined}
+                        >
+                          {translatedMessage}
+                        </span>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -395,12 +402,12 @@ export const LogViewerModal: React.FC = () => {
 
         {/* フッター */}
         <div className="px-5 py-2.5 border-t border-border bg-surfaceLight/20 flex items-center justify-between text-xs text-textSecondary">
-          <span>Escキーまたは背景クリックで閉じることができます</span>
+          <span>{t("logModal.closeHint")}</span>
           <button
             onClick={closeLogModal}
             className="px-4 py-1.5 rounded-lg bg-surfaceLight hover:bg-surfaceLight/80 text-textPrimary border border-border transition text-xs font-medium"
           >
-            閉じる
+            {t("logModal.closeBtn")}
           </button>
         </div>
       </div>

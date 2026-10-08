@@ -259,11 +259,11 @@ pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: boo
     thread::spawn(move || {
         let server = match Server::http(&addr) {
             Ok(s) => {
-                info!("ImageMediaViewer ローカル HTTP サーバーを起動しました: http://{}", addr);
+                info!("Started ImageMediaViewer local HTTP server: http://{}", addr);
                 Arc::new(s)
             }
             Err(e) => {
-                error!("ローカル HTTP サーバーの起動に失敗しました ({}): {:?}", addr, e);
+                error!("Failed to start local HTTP server ({}): {:?}", addr, e);
                 return;
             }
         };
@@ -273,7 +273,7 @@ pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: boo
             .map(|n| n.get())
             .unwrap_or(4);
         let worker_count = (num_cpus * 2).clamp(8, 16);
-        info!("HTTPサーバーワーカースレッドプール起動: {} スレッド", worker_count);
+        info!("HTTP server worker thread pool started: {} threads", worker_count);
 
         let (tx, rx) = std::sync::mpsc::sync_channel::<tiny_http::Request>(512);
         let rx = Arc::new(Mutex::new(rx));
@@ -291,13 +291,13 @@ pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: boo
                         handle_http_request(request, &state);
                     }
                 })
-                .expect("HTTPワーカースレッド起動失敗");
+                .expect("Failed to spawn HTTP worker thread");
         }
 
         // フロントエンド監視スレッド（auto_exit_on_idle が有効な場合のみ稼働）:
         // 常駐モード時は自動終了せず、タスクトレイまたはAPI経由の明示的終了指示まで常駐し続ける。
         if auto_exit_on_idle {
-            info!("アイドル自動終了機能が有効化されています（10秒無通信で終了）");
+            info!("Idle auto-exit is enabled (terminates after 10s of inactivity)");
             thread::Builder::new()
                 .name("frontend-heartbeat-watcher".to_string())
                 .spawn(|| {
@@ -307,20 +307,20 @@ pub fn start_http_server(state: Arc<AppState>, port: u16, auto_exit_on_idle: boo
                             let last = LAST_CLIENT_SEEN.load(Ordering::Relaxed);
                             let now = chrono::Utc::now().timestamp();
                             if now - last > 10 {
-                                info!("フロントエンドの終了（10秒間無通信）を検知しました。バックエンドを正常終了します。");
+                                info!("Detected frontend termination (10s inactivity). Terminating backend.");
                                 std::process::exit(0);
                             }
                         }
                     }
                 })
-                .expect("ハートビート監視スレッド起動失敗");
+                .expect("Failed to spawn heartbeat watcher thread");
         } else {
-            info!("サーバ常駐モードで稼働中（フロントエンド終了後もタスクトレイに常駐維持）");
+            info!("Running in resident server mode (remains in system tray after frontend exits)");
         }
 
         for request in server.incoming_requests() {
             if let Err(e) = tx.send(request) {
-                warn!("HTTPリクエストキュー送信エラー: {:?}", e);
+                warn!("HTTP request queue send error: {:?}", e);
             }
         }
     });
@@ -338,7 +338,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
     // 悪意のあるWebサイトからの単純リクエスト（<form> POST や fetch）によるシャットダウン・フォルダ改変等を完全遮断
     if let Some(ref orig) = origin {
         if !ALLOWED_ORIGINS.contains(&orig.as_str()) {
-            warn!("CSRF防止: 許可されていない Origin からのリクエストを拒否しました: {}", orig);
+            warn!("CSRF Protection: Rejected request from unauthorized Origin: {}", orig);
             let resp = Response::from_string("Forbidden: Invalid Origin").with_status_code(StatusCode(403));
             let _ = request.respond(resp);
             return;
@@ -671,7 +671,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         let writer = state.db.writer();
                         let reset_count = crate::db::repo::reset_failed_thumbnails(&writer).unwrap_or(0);
                         state.thumb_pipeline.trigger_background_refill();
-                        info!("未生成・失敗サムネイルの再作成を開始しました: リセット件数={}", reset_count);
+                        info!("Reset thumbnail failure flags (Targets: {})", reset_count);
                         json_response(&serde_json::json!({
                             "success": true,
                             "resetCount": reset_count
@@ -872,14 +872,14 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
 
                     (Method::Post, "/api/shutdown") => {
                         if AUTO_EXIT_ON_IDLE.load(Ordering::SeqCst) {
-                            info!("--auto-exit モードのためフロントエンドからの終了要求に基づきシャットダウンします。");
+                            info!("Shutting down backend on frontend request (--auto-exit mode)");
                             thread::spawn(|| {
                                 thread::sleep(Duration::from_millis(80));
                                 std::process::exit(0);
                             });
                             json_response(&serde_json::json!({ "success": true, "status": "shutting_down" }), 200)
                         } else {
-                            info!("サーバ常駐モードのためシャットダウン要求を無視し、常駐を維持します（タスクトレイメニュー等から終了可能）");
+                            info!("Resident server mode: Ignored shutdown request and maintained tray residence");
                             json_response(&serde_json::json!({ "success": true, "status": "resident_mode_kept" }), 200)
                         }
                     }

@@ -9,10 +9,10 @@ use tracing::info;
 /// @return 成功時はOk(()), 失敗時はrusqlite::Error
 pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
     let current_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    info!("現在のDBスキーマバージョン: {}", current_version);
+    info!("Current DB schema version: {}", current_version);
 
     if current_version < 1 {
-        info!("マイグレーション v1 を適用中...");
+        info!("Applying migration v1...");
         let tx = conn.transaction()?;
 
         // メタテーブル
@@ -87,11 +87,11 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         // user_version更新
         tx.pragma_update(None, "user_version", 1)?;
         tx.commit()?;
-        info!("マイグレーション v1 の適用完了 (user_version = 1)");
+        info!("Completed migration v1 (user_version = 1)");
     }
 
     if current_version < 2 {
-        info!("マイグレーション v2 (ムードボード機能) を適用中...");
+        info!("Applying migration v2...");
         let tx = conn.transaction()?;
 
         // ボード（グループ）管理テーブル
@@ -145,11 +145,11 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 
         tx.pragma_update(None, "user_version", 2)?;
         tx.commit()?;
-        info!("マイグレーション v2 の適用完了 (user_version = 2)");
+        info!("Completed migration v2 (user_version = 2)");
     }
 
     if current_version < 3 {
-        info!("マイグレーション v3 (タイムライン複合インデックス最適化) を適用中...");
+        info!("Applying migration v3...");
         let tx = conn.transaction()?;
 
         // フォルダ順タイムライン用複合インデックス（folder_id, taken_at DESC, id DESC）
@@ -171,11 +171,11 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 
         tx.pragma_update(None, "user_version", 3)?;
         tx.commit()?;
-        info!("マイグレーション v3 の適用完了 (user_version = 3)");
+        info!("Completed migration v3 (user_version = 3)");
     }
 
     if current_version < 4 {
-        info!("マイグレーション v4 (ボードアイテム画像反転 flip_h, flip_v) を適用中...");
+        info!("Applying migration v4...");
         let tx = conn.transaction()?;
 
         tx.execute(
@@ -189,11 +189,11 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 
         tx.pragma_update(None, "user_version", 4)?;
         tx.commit()?;
-        info!("マイグレーション v4 の適用完了 (user_version = 4)");
+        info!("Completed migration v4 (user_version = 4)");
     }
 
     if current_version < 5 {
-        info!("マイグレーション v5 (ムードボード用テキストメモテーブル board_notes) を適用中...");
+        info!("Applying migration v5...");
         let tx = conn.transaction()?;
 
         tx.execute(
@@ -224,11 +224,11 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 
         tx.pragma_update(None, "user_version", 5)?;
         tx.commit()?;
-        info!("マイグレーション v5 の適用完了 (user_version = 5)");
+        info!("Completed migration v5 (user_version = 5)");
     }
 
     if current_version < 6 {
-        info!("マイグレーション v6 (タイムラインしおりテーブル bookmarks) を適用中...");
+        info!("Applying migration v6...");
         let tx = conn.transaction()?;
 
         // タイムラインしおり（ブックマーク）テーブル
@@ -257,7 +257,7 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
 
         tx.pragma_update(None, "user_version", 6)?;
         tx.commit()?;
-        info!("マイグレーション v6 の適用完了 (user_version = 6)");
+        info!("Completed migration v6 (user_version = 6)");
     }
 
     Ok(())

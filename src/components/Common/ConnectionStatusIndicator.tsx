@@ -10,6 +10,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { useConnectionMonitor } from "../../hooks/useConnectionMonitor";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 
 /**
@@ -34,6 +35,7 @@ function getPlatform(): "windows" | "mac" | "linux" {
  * - クライアントウィンドウが多重起動しないようサーバーのみを起動
  */
 export const ConnectionStatusIndicator: React.FC = () => {
+  const { t } = useTranslation();
   const { connectionStatus, retryConnection } = useConnectionMonitor();
   const lastConnectedAt = useAppStore((state) => state.lastConnectedAt);
   const [isOpen, setIsOpen] = useState(false);
@@ -90,7 +92,13 @@ export const ConnectionStatusIndicator: React.FC = () => {
 
   const lastSeenStr = lastConnectedAt
     ? new Date(lastConnectedAt).toLocaleTimeString()
-    : "未接続";
+    : t("connection.lastSeenUnconnected");
+
+  const statusTooltip = isConnected
+    ? t("connection.statusTooltipConnected")
+    : isConnecting
+    ? t("connection.statusTooltipConnecting")
+    : t("connection.statusTooltipDisconnected");
 
   return (
     <div className="relative">
@@ -104,24 +112,24 @@ export const ConnectionStatusIndicator: React.FC = () => {
             ? "bg-amber-500/10 text-amber-300 border-amber-500/40 animate-pulse"
             : "bg-rose-500/20 text-rose-300 border-rose-500/60 shadow-xs hover:bg-rose-500/30"
         }`}
-        title={`通信状態: ${isConnected ? "接続中" : isConnecting ? "再接続確認中" : "切断中 (クリックで詳細/再接続)"}`}
+        title={statusTooltip}
       >
         {isConnected ? (
           <>
             <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse" />
             <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-[11px] font-medium text-textSecondary hover:text-textPrimary">接続中</span>
+            <span className="text-[11px] font-medium text-textSecondary hover:text-textPrimary">{t("connection.connectedBadge")}</span>
           </>
         ) : isConnecting ? (
           <>
             <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
-            <span className="text-[11px] font-medium">接続確認中...</span>
+            <span className="text-[11px] font-medium">{t("connection.checkingBadge")}</span>
           </>
         ) : (
           <>
             <WifiOff className="w-3.5 h-3.5 text-rose-400 animate-bounce" />
-            <span className="text-[11px] font-bold text-rose-300">サーバー切断</span>
-            <span className="bg-rose-500 text-white rounded px-1.5 py-0.2 text-[10px] ml-0.5">再接続</span>
+            <span className="text-[11px] font-bold text-rose-300">{t("connection.disconnectedBadge")}</span>
+            <span className="bg-rose-500 text-white rounded px-1.5 py-0.2 text-[10px] ml-0.5">{t("connection.reconnectBtn")}</span>
           </>
         )}
       </button>
@@ -141,7 +149,7 @@ export const ConnectionStatusIndicator: React.FC = () => {
                 ) : (
                   <AlertCircle className="w-4 h-4 text-rose-400" />
                 )}
-                バックエンド通信ステータス
+                {t("connection.popoverTitle")}
               </span>
               <span
                 className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
@@ -156,17 +164,17 @@ export const ConnectionStatusIndicator: React.FC = () => {
 
             <div className="space-y-1.5 text-textSecondary text-[11px]">
               <div className="flex justify-between">
-                <span>サーバーURL:</span>
+                <span>{t("connection.serverUrl")}</span>
                 <span className="font-mono text-textPrimary">http://127.0.0.1:14201</span>
               </div>
               <div className="flex justify-between">
-                <span>最終正常通信:</span>
+                <span>{t("connection.lastSeen")}</span>
                 <span className="text-textPrimary">{lastSeenStr}</span>
               </div>
               <div className="flex justify-between">
-                <span>常駐状態:</span>
+                <span>{t("connection.daemonStatus")}</span>
                 <span className="text-textPrimary">
-                  {isConnected ? "タスクトレイ常駐中" : "停止または応答なし"}
+                  {isConnected ? t("connection.daemonRunning") : t("connection.daemonStopped")}
                 </span>
               </div>
             </div>
@@ -174,9 +182,9 @@ export const ConnectionStatusIndicator: React.FC = () => {
             {/* 切断時のガイダンスとアクション */}
             {isDisconnected && (
               <div className="bg-rose-950/30 border border-rose-500/30 rounded p-2 text-rose-200 text-[11px] space-y-1.5">
-                <p className="font-medium text-rose-300">サーバーが停止している可能性があります。</p>
+                <p className="font-medium text-rose-300">{t("connection.disconnectedWarn")}</p>
                 <p className="text-rose-300/80 leading-relaxed text-[10px]">
-                  タスクトレイのアイコンを確認するか、下記のボタンまたはランチャーからサーバーを起動してください。
+                  {t("connection.disconnectedHint")}
                 </p>
 
                 <div className="pt-1 flex flex-col gap-1.5">
@@ -189,22 +197,22 @@ export const ConnectionStatusIndicator: React.FC = () => {
                     {isLaunching ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        サーバー起動を試行中...
+                        {t("connection.launchingServerBtn")}
                       </>
                     ) : (
                       <>
                         <Play className="w-3.5 h-3.5" />
-                        サーバーを起動
+                        {t("connection.launchServerBtn")}
                       </>
                     )}
                   </button>
                   <p className="text-[10px] text-textSecondary text-center">
-                    ※ サーバーのみ常駐起動（クライアント画面は二重起動しません）
+                    {t("connection.launchServerNote")}
                   </p>
 
                   <div className="flex flex-col gap-1 pt-1 border-t border-rose-500/20">
                     <p className="text-[10px] text-rose-300/80">
-                      自動起動しない場合は、起動スクリプトを実行してください:
+                      {t("connection.launchManualHint")}
                     </p>
                     <button
                       onClick={handleCopyCommand}
@@ -212,7 +220,7 @@ export const ConnectionStatusIndicator: React.FC = () => {
                       title={`起動コマンド (${serverCommand}) をコピー`}
                     >
                       <Copy className="w-3 h-3" />
-                      {copied ? `コピーしました！ (${scriptName})` : `起動コマンドをコピー (${scriptName})`}
+                      {copied ? t("connection.copyCommandDone", { script: scriptName }) : t("connection.copyCommandBtn", { script: scriptName })}
                     </button>
                   </div>
                 </div>
@@ -227,7 +235,7 @@ export const ConnectionStatusIndicator: React.FC = () => {
                 className="flex-1 flex items-center justify-center gap-1.5 bg-surfaceLight hover:bg-surfaceLight/80 text-textPrimary border border-border py-1.5 px-3 rounded font-medium transition cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isConnecting ? "animate-spin" : ""}`} />
-                {isConnecting ? "接続確認中..." : "再接続を試行"}
+                {isConnecting ? t("connection.retryingBtn") : t("connection.retryBtn")}
               </button>
             </div>
           </div>

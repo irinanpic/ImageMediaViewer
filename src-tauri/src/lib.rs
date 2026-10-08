@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod locales;
 pub mod logger;
 pub mod models;
 pub mod pipeline;
@@ -9,6 +10,7 @@ pub mod scanner;
 pub mod server;
 pub mod settings;
 pub mod state;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod tray;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +22,43 @@ use crate::db::Database;
 use crate::pipeline::ThumbnailPipeline;
 use crate::state::AppState;
 
+/// プラットフォームに応じたデータディレクトリおよびキャッシュディレクトリを解決する
+///
+/// 変更理由: Windows 既存の環境変数パス（%APPDATA%, %LOCALAPPDATA%）との100%完全な後方互換性を
+/// 担保しつつ、Android / Linux / macOS においても最適なアプリ内部ストレージを自動選択するため。
+fn resolve_app_directories() -> (std::path::PathBuf, std::path::PathBuf) {
+    #[cfg(windows)]
+    {
+        let data = std::env::var("APPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+            .join("com.imagemediaviewer.desktop");
+        let cache = std::env::var("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| dirs::cache_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+            .join("com.imagemediaviewer.desktop");
+        (data, cache)
+    }
+    #[cfg(target_os = "android")]
+    {
+        // Android 環境ではアプリサンドボックス内の内部ストレージを使用
+        let base = std::path::PathBuf::from("/data/data/com.imagemediaviewer.desktop");
+        let data = base.join("files");
+        let cache = base.join("cache");
+        (data, cache)
+    }
+    #[cfg(not(any(windows, target_os = "android")))]
+    {
+        let data = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("com.imagemediaviewer.desktop");
+        let cache = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("com.imagemediaviewer.desktop");
+        (data, cache)
+    }
+}
+
 /// Tauri アプリケーションのエントリポイント
 ///
 /// 変更理由: TCP/IPポートを一切使用しない完全ポートレス一体型アーキテクチャへの刷新。
@@ -27,14 +66,7 @@ use crate::state::AppState;
 /// ポート競合ゼロ、ファイアウォール警告ゼロの安定したネイティブデスクトップアプリを実現する。
 /// メインウィンドウのクローズ時は常駐設定（stay_in_tray）に応じてトレイ常駐または完全終了を行う。
 pub fn run() {
-    let app_data_dir = std::env::var("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
-        .join("com.imagemediaviewer.desktop");
-    let app_cache_dir = std::env::var("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| dirs::cache_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
-        .join("com.imagemediaviewer.desktop");
+    let (app_data_dir, app_cache_dir) = resolve_app_directories();
 
     std::fs::create_dir_all(&app_data_dir).ok();
     std::fs::create_dir_all(&app_cache_dir).ok();
@@ -77,7 +109,7 @@ pub fn run() {
     let stay_in_tray = Arc::new(AtomicBool::new(app_settings.stay_in_tray));
 
     info!(
-        "ImageMediaViewer 初期化開始 (ログ先: {:?}, 常駐設定: {})",
+        "ImageMediaViewer initialization started (Logs: {:?}, Resident: {})",
         app_data_dir.join("logs"),
         app_settings.stay_in_tray
     );
@@ -96,58 +128,74 @@ pub fn run() {
         let writer = db.writer();
         if let Ok(reset_cnt) = crate::db::repo::reset_failed_thumbnails(&writer) {
             if reset_cnt > 0 {
-                info!("過去の生成失敗画像 {} 件を再生成対象にリセットしました", reset_cnt);
+                info!("Reset thumbnail failure flags (Targets: {})", reset_cnt);
             }
         }
     }
 
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), app_cache_dir.clone());
-    let app_state = Arc::new(AppState::new(db, thumb_store, app_cache_dir, thumb_pipeline));
+    let app_state = Arc::new(AppState::new(db, thumb_store, app_data_dir.clone(), app_cache_dir, thumb_pipeline));
 
     // アイドルウォッチャーをバックグラウンド起動
     crate::scanner::start_idle_watcher(app_state.clone());
 
+    let initial_locale = app_settings.locale.clone();
     let state_for_tray = Arc::clone(&app_state);
     let stay_for_tray = Arc::clone(&stay_in_tray);
     let stay_for_window = Arc::clone(&stay_in_tray);
     let app_data_dir_clone = app_data_dir.clone();
 
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            info!("二重起動を検知しました。既存のメインウィンドウを表示・復元します。");
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            info!("Detected second instance: Restoring existing window to front");
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
-        }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        }));
+    }
 
     // ポートレスカスタムプロトコル（thumb://, original://）の登録
     let builder = crate::protocol::register_protocols(builder, Arc::clone(&app_state));
 
-    let builder = builder
-        .on_window_event(move |window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if stay_for_window.load(Ordering::Relaxed) {
-                    // 常駐 ON: ウィンドウを閉じるのをキャンセルし、非表示にしてタスクトレイに残す
-                    api.prevent_close();
-                    let _ = window.hide();
-                    info!("メインウィンドウを非表示にし、タスクトレイ常駐に移行しました");
-                } else {
-                    // 常駐 OFF: アプリケーション全体を完全終了する
-                    info!("常駐設定がOFFのため、ウィンドウ終了に伴いアプリケーションを完全終了します");
-                    window.app_handle().exit(0);
-                }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.on_window_event(move |window, event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if stay_for_window.load(Ordering::Relaxed) {
+                // 常駐 ON: ウィンドウを閉じるのをキャンセルし、非表示にしてタスクトレイに残す
+                api.prevent_close();
+                let _ = window.hide();
+                info!("Hidden main window and transitioned to system tray");
+            } else {
+                // 常駐 OFF: アプリケーション全体を完全終了する
+                info!("Resident setting is OFF; Terminating application on window close");
+                window.app_handle().exit(0);
             }
-        })
+        }
+    });
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = stay_for_window; // モバイル環境での未使用警告抑制
+
+    let builder = builder
         .setup(move |app| {
             app.manage(app_state);
 
-            // システムトレイアイコンおよび右クリックメニューの登録
-            if let Err(e) = crate::tray::setup_system_tray(&app.handle(), state_for_tray, stay_for_tray, app_data_dir_clone) {
-                tracing::warn!("システムトレイアイコンの登録に失敗しました: {:?}", e);
+            // デスクトップ環境のみ: システムトレイアイコンおよび右クリックメニューの登録
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            if let Err(e) = crate::tray::setup_system_tray(&app.handle(), state_for_tray, stay_for_tray, app_data_dir_clone, &initial_locale) {
+                tracing::warn!("Failed to register system tray icon: {:?}", e);
+            }
+
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            {
+                let _ = (&state_for_tray, &stay_for_tray, &app_data_dir_clone);
             }
 
             // メインウィンドウを表示
@@ -194,6 +242,8 @@ pub fn run() {
             commands::create_bookmark,
             commands::delete_bookmark,
             commands::heartbeat,
+            commands::get_locale,
+            commands::set_locale,
         ]);
 
     builder

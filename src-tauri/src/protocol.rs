@@ -88,7 +88,7 @@ pub async fn handle_thumb_protocol(
     let image_id = match extract_image_id(&uri) {
         Some(id) => id,
         None => {
-            warn!("サムネイルURIから画像IDを抽出できませんでした: {}", uri);
+            warn!("Invalid thumbnail URI: {}", uri);
             return Ok(cors_response_builder(StatusCode::BAD_REQUEST)
                 .body(b"Invalid image id".to_vec())?);
         }
@@ -103,7 +103,7 @@ pub async fn handle_thumb_protocol(
     let (file_path_str, quick_hash, _, _) = match info {
         Some(item) => item,
         None => {
-            warn!("サムネイル対象の画像レコードが存在しません: id={}", image_id);
+            warn!("Thumbnail target image record not found: id={}", image_id);
             return Ok(cors_response_builder(StatusCode::NOT_FOUND)
                 .body(b"Image not found".to_vec())?);
         }
@@ -144,7 +144,7 @@ pub async fn handle_thumb_protocol(
     // 4. キャッシュ未存在の場合、原寸画像ファイルからオンデマンド生成
     let file_path = Path::new(&file_path_str);
     if !file_path.exists() {
-        warn!("サムネイル元の原寸画像ファイルが存在しません: path={}", file_path_str);
+        warn!("Thumbnail original file not found: path={}", file_path_str);
         return Ok(cors_response_builder(StatusCode::NOT_FOUND)
             .body(b"Original file not found".to_vec())?);
     }
@@ -182,7 +182,7 @@ pub async fn handle_thumb_protocol(
         }
     }
 
-    warn!("サムネイルの生成に失敗しました: id={}, path={}", image_id, file_path_str);
+    warn!("Failed to generate thumbnail: id={}, path={}", image_id, file_path_str);
     Ok(cors_response_builder(StatusCode::NOT_FOUND)
         .body(b"Failed to generate thumbnail".to_vec())?)
 }
@@ -197,7 +197,7 @@ pub async fn handle_original_protocol(
     let image_id = match extract_image_id(&uri) {
         Some(id) => id,
         None => {
-            warn!("原寸画像URIから画像IDを抽出できませんでした: {}", uri);
+            warn!("Invalid original image URI: {}", uri);
             return Ok(cors_response_builder(StatusCode::BAD_REQUEST)
                 .body(b"Invalid image id".to_vec())?);
         }
@@ -211,7 +211,7 @@ pub async fn handle_original_protocol(
     let (file_path_str, _, _, format) = match info {
         Some(item) => item,
         None => {
-            warn!("原寸画像のレコードが存在しません: id={}", image_id);
+            warn!("Original image record not found: id={}", image_id);
             return Ok(cors_response_builder(StatusCode::NOT_FOUND)
                 .body(b"Image not found".to_vec())?);
         }
@@ -219,7 +219,7 @@ pub async fn handle_original_protocol(
 
     let file_path = Path::new(&file_path_str);
     if !file_path.exists() {
-        warn!("原寸画像ファイルが存在しません: path={}", file_path_str);
+        warn!("Original image file not found: path={}", file_path_str);
         return Ok(cors_response_builder(StatusCode::NOT_FOUND)
             .body(b"Original file not found".to_vec())?);
     }
@@ -232,7 +232,7 @@ pub async fn handle_original_protocol(
                 .body(bytes)?)
         }
         Err(e) => {
-            warn!("原寸画像読み取り失敗: {:?}, error: {:?}", file_path, e);
+            warn!("Failed to read original image: {:?}, error: {:?}", file_path, e);
             Ok(cors_response_builder(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(b"Failed to read image".to_vec())?)
         }

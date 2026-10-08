@@ -1,8 +1,10 @@
-import React from "react";
+import React, { useState } from "react";
 import { Plus, RotateCw, SlidersHorizontal } from "lucide-react";
 import { BookmarkPopover } from "./BookmarkPopover";
 import { ConnectionStatusIndicator } from "../Common/ConnectionStatusIndicator";
+import { backendApi } from "../../lib/ipc";
 import { usePagedImages } from "../../hooks/usePagedImages";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { TimelineSort } from "../../types/generated/TimelineSort";
 
@@ -10,9 +12,11 @@ import type { TimelineSort } from "../../types/generated/TimelineSort";
  * タイムライン表示ツールバー（表示順切替・ムードボード追加・現画面再読込・通信状態表示＆再接続）
  *
  * 変更理由: 上部サムネイルサイズスライダーを廃止してステータスバーへ一本化し、
- * 空いた上部右側に通信途絶検知・再接続（サーバー起動）コントローラーを配置する
+ * 空いた上部右側に通信途絶検知・再接続（サーバー起動）コントローラーを配置する。
+ * 再読み込みボタン押下時は最新サマリ同期とインクリメンタル差分マージをシームレスに連携。
  */
 export const TimelineToolbar: React.FC = () => {
+  const { t } = useTranslation();
   const timelineSort = useAppStore((state) => state.timelineSort);
   const setTimelineSort = useAppStore((state) => state.setTimelineSort);
   const totalImages = useAppStore((state) => state.totalImages);
@@ -20,16 +24,41 @@ export const TimelineToolbar: React.FC = () => {
   const selectedImageIds = useAppStore((state) => state.selectedImageIds);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
   const refreshTimeline = useAppStore((state) => state.refreshTimeline);
+  const selectedFolderId = useAppStore((state) => state.selectedFolderId);
+  const setCatalogSummary = useAppStore((state) => state.setCatalogSummary);
   const { getImageByIndex } = usePagedImages();
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const selectedRecord = selectedCellIndex !== null ? getImageByIndex(selectedCellIndex) : null;
 
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      // 1. 最新サマリを取得して総件数・バケットを最新同期
+      const summary = await backendApi.getTimelineSummary(selectedFolderId ?? undefined, timelineSort);
+      setCatalogSummary(summary.total, summary.buckets, summary.version);
+
+      // 2. タイムライン再検証をキック（既存キャッシュを維持したまま差分マージ）
+      refreshTimeline();
+
+      // 3. 失敗サムネイルの再作成をバックグラウンド要求
+      backendApi.rescanMissingThumbnails().catch(() => {});
+    } catch (e) {
+      console.error("再読み込みエラー:", e);
+      refreshTimeline();
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
+
   const sortOptions: { value: TimelineSort; label: string }[] = [
-    { value: "folder", label: "📁 フォルダ順（Picasa流・シームレス）" },
-    { value: "takenAtDesc", label: "📅 撮影日時（新しい順）" },
-    { value: "takenAtAsc", label: "📅 撮影日時（古い順）" },
-    { value: "nameAsc", label: "🔤 ファイル名（昇順）" },
-    { value: "nameDesc", label: "🔤 ファイル名（降順）" },
+    { value: "folder", label: t("timeline.sortFolder") },
+    { value: "takenAtDesc", label: t("timeline.sortTakenAtDesc") },
+    { value: "takenAtAsc", label: t("timeline.sortTakenAtAsc") },
+    { value: "nameAsc", label: t("timeline.sortNameAsc") },
+    { value: "nameDesc", label: t("timeline.sortNameDesc") },
   ];
 
   return (
@@ -37,7 +66,7 @@ export const TimelineToolbar: React.FC = () => {
       {/* 左側: ソート切替セレクター */}
       <div className="flex items-center gap-2">
         <SlidersHorizontal className="w-3.5 h-3.5 text-textSecondary shrink-0" />
-        <span className="text-textSecondary font-medium shrink-0">表示順:</span>
+        <span className="text-textSecondary font-medium shrink-0">{t("timeline.sortOrder")}</span>
         <select
           value={timelineSort}
           onChange={(e) => setTimelineSort(e.target.value as TimelineSort)}
@@ -50,17 +79,18 @@ export const TimelineToolbar: React.FC = () => {
           ))}
         </select>
         <span className="text-textSecondary/80 ml-2">
-          {totalImages.toLocaleString()} 枚
+          {t("timeline.imageCount", { count: totalImages.toLocaleString() })}
         </span>
 
-        {/* 現画面再読込ボタン: 読込不可画像のリトライとキューの即時リフレッシュ */}
+        {/* 現画面再読込ボタン: 既存表示を保ったまま差分・更新・失敗画像をインクリメンタル更新 */}
         <button
-          onClick={() => refreshTimeline()}
-          className="flex items-center gap-1.5 bg-surfaceLight hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary border border-border px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-xs cursor-pointer active:scale-95"
-          title="現画面の画像を再読み込み（読込不可の画像を再取得し、キューをリフレッシュ） [Rキー]"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="flex items-center gap-1.5 bg-surfaceLight hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary border border-border px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-xs cursor-pointer active:scale-95 disabled:opacity-60"
+          title={t("timeline.refreshTooltip")}
         >
-          <RotateCw className="w-3.5 h-3.5" />
-          再読込
+          <RotateCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-accent" : ""}`} />
+          {t("timeline.refreshBtn")}
         </button>
 
         {/* 表示位置のしおり（ブックマーク）ポップオーバー */}
@@ -70,19 +100,19 @@ export const TimelineToolbar: React.FC = () => {
           <button
             onClick={() => openAddToBoardModal(selectedImageIds)}
             className="flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-white border border-accent/40 px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-sm cursor-pointer"
-            title={`${selectedImageIds.length}枚の画像をムードボードに資料として追加`}
+            title={t("timeline.addToBoardSelectedTooltip", { count: selectedImageIds.length })}
           >
             <Plus className="w-3.5 h-3.5" />
-            ボードに追加 ({selectedImageIds.length}枚)
+            {t("timeline.addToBoardSelected", { count: selectedImageIds.length })}
           </button>
         ) : selectedRecord ? (
           <button
             onClick={() => openAddToBoardModal([selectedRecord.id])}
             className="flex items-center gap-1.5 bg-accent/20 hover:bg-accent text-accent hover:text-white border border-accent/40 px-2.5 py-1 rounded text-xs font-medium transition ml-2 shadow-sm cursor-pointer"
-            title="選択中の画像をムードボードに資料として追加"
+            title={t("timeline.addToBoardCurrentTooltip")}
           >
             <Plus className="w-3.5 h-3.5" />
-            ボードに追加
+            {t("timeline.addToBoardCurrent")}
           </button>
         ) : null}
       </div>

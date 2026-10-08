@@ -9,9 +9,11 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 
 export const StatusBar: React.FC = () => {
+  const { t } = useTranslation();
   const totalImages = useAppStore((state) => state.totalImages);
   const scanProgress = useAppStore((state) => state.scanProgress);
   const thumbProgress = useAppStore((state) => state.thumbProgress);
@@ -39,7 +41,7 @@ export const StatusBar: React.FC = () => {
         <button
           onClick={toggleSidebar}
           className="p-1 hover:text-textPrimary transition"
-          title={isSidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"}
+          title={isSidebarOpen ? t("statusBar.sidebarClose") : t("statusBar.sidebarOpen")}
         >
           {isSidebarOpen ? (
             <PanelLeftClose className="w-4 h-4" />
@@ -48,14 +50,19 @@ export const StatusBar: React.FC = () => {
           )}
         </button>
 
-        <span>総画像数: <strong className="text-textPrimary">{totalImages.toLocaleString()}</strong> 枚</span>
+        <span>{t("statusBar.totalImages", { count: totalImages.toLocaleString() })}</span>
 
         {/* 走査中ステータス */}
         {isScanning && (
           <div className="flex items-center gap-1.5 text-accent animate-pulse">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
             <span>
-              走査中 ({scanProgress.phase === "walking" ? "探索中..." : `${scanProgress.processed} / ${scanProgress.discovered} 件`})
+              {scanProgress.phase === "walking"
+                ? t("statusBar.scanningWalking")
+                : t("statusBar.scanningProcessed", {
+                    processed: scanProgress.processed,
+                    discovered: scanProgress.discovered,
+                  })}
             </span>
           </div>
         )}
@@ -65,11 +72,15 @@ export const StatusBar: React.FC = () => {
           <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
             <span>
-              サムネイル生成中 ({doneCount.toLocaleString()} / {totalCount.toLocaleString()} 件
-              {failedCount > 0 && (
-                <span className="text-amber-400 ml-1">[{failedCount}件失敗]</span>
-              )}
-              {" - "}{Math.round((processedCount / totalCount) * 100)}%)
+              {t("statusBar.generatingThumbs", {
+                done: doneCount.toLocaleString(),
+                total: totalCount.toLocaleString(),
+                failed:
+                  failedCount > 0
+                    ? t("statusBar.generatingFailedSuffix", { count: failedCount })
+                    : "",
+                percent: Math.round((processedCount / totalCount) * 100),
+              })}
             </span>
           </div>
         ) : isAllThumbsProcessed && !isScanning ? (
@@ -77,18 +88,20 @@ export const StatusBar: React.FC = () => {
             <button
               onClick={openLogModal}
               className="flex items-center gap-1.5 text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 px-2 py-0.5 rounded transition text-[11px]"
-              title="サムネイル生成に失敗したファイルがあります。クリックして詳細とログを確認"
+              title={t("statusBar.thumbsCompletedWithFailedTooltip")}
             >
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>
-                サムネイル完了 ({doneCount.toLocaleString()}件完了 /{" "}
-                <strong className="underline underline-offset-2">{failedCount}件失敗</strong>)
+                {t("statusBar.thumbsCompletedWithFailed", {
+                  done: doneCount.toLocaleString(),
+                  failed: failedCount,
+                })}
               </span>
             </button>
           ) : (
             <div className="flex items-center gap-1 text-emerald-500/80 text-[11px]">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>サムネイル準備完了 ({doneCount.toLocaleString()}件)</span>
+              <span>{t("statusBar.thumbsCompletedAll", { done: doneCount.toLocaleString() })}</span>
             </div>
           )
         ) : null}
@@ -99,10 +112,10 @@ export const StatusBar: React.FC = () => {
         <button
           onClick={openLogModal}
           className="flex items-center gap-1 py-1 px-2 rounded hover:bg-surfaceLight transition text-textSecondary hover:text-textPrimary text-[11px]"
-          title="システムログ & エラー診断を開く"
+          title={t("statusBar.logsTooltip")}
         >
           <FileText className="w-3.5 h-3.5" />
-          <span>ログ</span>
+          <span>{t("statusBar.logsBtn")}</span>
           {failedCount > 0 && (
             <span className="px-1.5 py-0.2 text-[10px] bg-amber-500/20 text-amber-400 rounded-full font-bold">
               {failedCount}
@@ -115,39 +128,39 @@ export const StatusBar: React.FC = () => {
         {/* サムネイルサイズスライダー（唯一の拡大縮小バーとして集約） */}
         <div
           className="flex items-center gap-1.5 py-0.5 px-2 rounded hover:bg-surfaceLight/50 transition cursor-pointer"
-        onWheel={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const delta = e.deltaY < 0 ? 10 : -10;
-          setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
-        }}
-        title="サムネイルサイズ (スライダー、ホイール、またはグリッド上でCtrl+ホイールで変更)"
-      >
-        <button
-          onClick={() => setCellSize(Math.max(80, cellSize - 20))}
-          className="p-1 hover:text-textPrimary text-textSecondary transition"
-          title="サムネイル縮小"
+          onWheel={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const delta = e.deltaY < 0 ? 10 : -10;
+            setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
+          }}
+          title={t("statusBar.zoomSliderTooltip")}
         >
-          <ZoomOut className="w-3.5 h-3.5" />
-        </button>
-        <input
-          type="range"
-          min="80"
-          max="320"
-          step="10"
-          value={cellSize}
-          onChange={(e) => setCellSize(Number(e.target.value))}
-          className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
-        />
-        <button
-          onClick={() => setCellSize(Math.min(320, cellSize + 20))}
-          className="p-1 hover:text-textPrimary text-textSecondary transition"
-          title="サムネイル拡大"
-        >
-          <ZoomIn className="w-3.5 h-3.5" />
-        </button>
-        <span className="w-10 text-right tabular-nums font-mono text-[11px]">{cellSize}px</span>
-      </div>
+          <button
+            onClick={() => setCellSize(Math.max(80, cellSize - 20))}
+            className="p-1 hover:text-textPrimary text-textSecondary transition"
+            title={t("statusBar.zoomOutTooltip")}
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <input
+            type="range"
+            min="80"
+            max="320"
+            step="10"
+            value={cellSize}
+            onChange={(e) => setCellSize(Number(e.target.value))}
+            className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
+          />
+          <button
+            onClick={() => setCellSize(Math.min(320, cellSize + 20))}
+            className="p-1 hover:text-textPrimary text-textSecondary transition"
+            title={t("statusBar.zoomInTooltip")}
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          <span className="w-10 text-right tabular-nums font-mono text-[11px]">{cellSize}px</span>
+        </div>
       </div>
     </footer>
   );

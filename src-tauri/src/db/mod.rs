@@ -84,7 +84,7 @@ impl Database {
         configure_connection(&write_conn)?;
         migrations::apply_migrations(&mut write_conn)?;
 
-        info!("データベースを正常に初期化しました: {:?}", db_path);
+        info!("Database initialized successfully: {:?}", db_path);
 
         Ok(Self {
             db_path,

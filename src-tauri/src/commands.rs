@@ -69,7 +69,7 @@ pub async fn add_watch_folder(
     let norm_clone = normalized.clone();
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(e) = crate::scanner::scan_folder(app, state_clone, folder_id, norm_clone) {
-            warn!("フォルダ走査中にエラーが発生しました: {:?}", e);
+            warn!("Error during folder scanning: {:?}", e);
         }
     });
 
@@ -305,7 +305,7 @@ pub async fn rescan_missing_thumbnails(state: State<'_, Arc<AppState>>) -> Resul
     let writer = state.db.writer();
     let reset_count = crate::db::repo::reset_failed_thumbnails(&writer).unwrap_or(0);
     state.thumb_pipeline.trigger_background_refill();
-    info!("未生成・失敗サムネイルの再作成を開始しました: リセット件数={}", reset_count);
+    info!("Reset thumbnail failure flags (Targets: {})", reset_count);
     Ok(serde_json::json!({
         "success": true,
         "resetCount": reset_count
@@ -546,6 +546,33 @@ pub async fn delete_bookmark(
 pub async fn heartbeat() -> Result<serde_json::Value, AppError> {
     Ok(serde_json::json!({ "alive": true }))
 }
+
+/// 現在の言語設定を取得
+#[command]
+pub async fn get_locale(state: State<'_, Arc<AppState>>) -> Result<String, AppError> {
+    let settings = crate::settings::load_settings(&state.data_dir);
+    Ok(settings.locale)
+}
+
+/// 言語設定を更新し、タスクトレイメニューも同期更新する
+#[command]
+pub async fn set_locale(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    locale: String,
+) -> Result<String, AppError> {
+    let mut settings = crate::settings::load_settings(&state.data_dir);
+    settings.locale = locale.clone();
+    crate::settings::save_settings(&state.data_dir, &settings)
+        .map_err(|e| AppError::io(format!("設定の保存に失敗しました: {}", e)))?;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    crate::tray::update_tray_locale(&app, &locale);
+
+    info!("Language updated: locale = {}", locale);
+    Ok(locale)
+}
+
 
 
 

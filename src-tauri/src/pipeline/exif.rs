@@ -84,7 +84,7 @@ pub fn extract_metadata(path: &Path, mtime_secs: i64) -> ExtractedMetadata {
     let (mut raw_w, mut raw_h) = match imagesize::size(path) {
         Ok(dim) => (Some(dim.width as u32), Some(dim.height as u32)),
         Err(e) => {
-            warn!("画像ヘッダ解析に失敗: {:?}, error: {:?}", path, e);
+            warn!("Failed to parse image header: {:?}, error: {:?}", path, e);
             (None, None)
         }
     };

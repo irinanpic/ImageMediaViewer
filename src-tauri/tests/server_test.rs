@@ -16,7 +16,7 @@ fn test_http_server_heartbeat_and_health() {
     let db = Database::open(&db_path).unwrap();
     let thumb_store = Arc::new(ThumbnailStore::open(&cache_dir).unwrap());
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), cache_dir.clone());
-    let app_state = Arc::new(AppState::new(db, thumb_store, cache_dir, thumb_pipeline));
+    let app_state = Arc::new(AppState::new(db, thumb_store, dir.path().to_path_buf(), cache_dir, thumb_pipeline));
 
     // テスト用ポート 14299 でサーバーを起動（常駐モード auto_exit = false）
     let test_port = 14299;

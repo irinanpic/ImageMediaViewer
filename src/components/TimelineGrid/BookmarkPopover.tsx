@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Bookmark as BookmarkIcon, ChevronRight, Clock, Folder, Trash2, X } from "lucide-react";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { Bookmark } from "../../types/bookmark";
 
@@ -10,6 +11,7 @@ import type { Bookmark } from "../../types/bookmark";
  * 自由に保存し、後から一覧からワンクリックでその位置へ即座に復帰できるようにするため。
  */
 export const BookmarkPopover: React.FC = () => {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [customTitle, setCustomTitle] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -28,16 +30,19 @@ export const BookmarkPopover: React.FC = () => {
   const currentFolder = selectedFolderId ? folders.find((f) => f.id === selectedFolderId) : null;
   const currentFolderName = currentFolder
     ? (currentFolder.path.split(/[\\/]/).filter(Boolean).pop() || currentFolder.path)
-    : "すべての画像";
+    : t("bookmark.all");
 
   // 現在位置に基づくデフォルトタイトルの自動生成
   const generateDefaultTitle = () => {
-    if (!currentVisibleInfo) return "タイムライン位置";
-    const day = currentVisibleInfo.dayLabel || "タイムライン";
+    if (!currentVisibleInfo) return t("bookmark.defaultTitleFallback");
+    const day = currentVisibleInfo.dayLabel || t("timeline.timelinePosition");
     if (typeof currentVisibleInfo.imageIndex === "number") {
-      return `${day} (${(currentVisibleInfo.imageIndex + 1).toLocaleString()}枚目)`;
+      return t("bookmark.defaultTitleWithIndex", {
+        day,
+        index: (currentVisibleInfo.imageIndex + 1).toLocaleString(),
+      });
     }
-    return day;
+    return t("bookmark.defaultTitleDay", { day });
   };
 
   // ポップオーバーを開いた際にデフォルトタイトルを入力欄にセット & 最新しおり一覧を同期
@@ -107,10 +112,10 @@ export const BookmarkPopover: React.FC = () => {
             ? "bg-accent text-white border-accent shadow-accent/20"
             : "bg-surfaceLight hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary border-border"
         }`}
-        title="表示位置のしおり（ブックマーク）を保存・一覧表示"
+        title={t("bookmark.buttonTooltip")}
       >
         <BookmarkIcon className="w-3.5 h-3.5" />
-        <span>しおり</span>
+        <span>{t("bookmark.button")}</span>
         {bookmarks.length > 0 && (
           <span className="ml-0.5 px-1.5 py-0.2 bg-accent/30 text-accent font-semibold rounded-full text-[10px] group-hover:bg-accent group-hover:text-white">
             {bookmarks.length}
@@ -125,7 +130,7 @@ export const BookmarkPopover: React.FC = () => {
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-border bg-surfaceLight/40">
             <div className="flex items-center gap-1.5 font-semibold text-textPrimary">
               <BookmarkIcon className="w-4 h-4 text-accent" />
-              <span>しおり（ブックマーク）</span>
+              <span>{t("bookmark.title")}</span>
             </div>
             <button
               onClick={() => setIsOpen(false)}
@@ -138,11 +143,11 @@ export const BookmarkPopover: React.FC = () => {
           {/* 現在位置の追加フォーム */}
           <div className="p-3 border-b border-border/80 bg-surfaceLight/20 flex flex-col gap-2">
             <div className="text-[11px] text-textSecondary flex items-center justify-between">
-              <span>現在の表示位置:</span>
+              <span>{t("bookmark.currentPosition")}</span>
               <span className="font-medium text-textPrimary truncate max-w-[160px]">
-                {currentVisibleInfo?.dayLabel ?? "先頭"}
+                {currentVisibleInfo?.dayLabel ?? t("bookmark.positionStart")}
                 {typeof currentVisibleInfo?.imageIndex === "number" && (
-                  ` (${(currentVisibleInfo.imageIndex + 1).toLocaleString()}枚目)`
+                  ` (${(currentVisibleInfo.imageIndex + 1).toLocaleString()}${t("common.images")})`
                 )}
               </span>
             </div>
@@ -156,7 +161,7 @@ export const BookmarkPopover: React.FC = () => {
                     handleSave();
                   }
                 }}
-                placeholder="しおりの名前を入力..."
+                placeholder={t("bookmark.inputPlaceholder")}
                 className="flex-1 bg-surface border border-border rounded px-2.5 py-1.5 text-xs outline-none focus:border-accent text-textPrimary placeholder:text-textSecondary/50"
               />
               <button
@@ -164,7 +169,7 @@ export const BookmarkPopover: React.FC = () => {
                 className="flex items-center gap-1 bg-accent hover:bg-accent/90 text-white px-3 py-1.5 rounded font-medium transition cursor-pointer shrink-0 shadow-sm"
               >
                 <BookmarkIcon className="w-3.5 h-3.5" />
-                <span>保存</span>
+                <span>{t("bookmark.saveBtn")}</span>
               </button>
             </div>
           </div>
@@ -172,10 +177,9 @@ export const BookmarkPopover: React.FC = () => {
           {/* 登録済みしおり一覧 */}
           <div className="max-h-72 overflow-y-auto divide-y divide-border/40">
             {bookmarks.length === 0 ? (
-              <div className="py-8 text-center text-textSecondary text-[11px]">
+              <div className="py-8 text-center text-textSecondary text-[11px] whitespace-pre-line">
                 <BookmarkIcon className="w-8 h-8 text-textSecondary/30 mx-auto mb-2" />
-                登録されたしおりはありません。<br />
-                現在の閲覧位置をしおりに追加できます。
+                {t("bookmark.noBookmarks")}
               </div>
             ) : (
               bookmarks.map((b) => (
@@ -191,7 +195,7 @@ export const BookmarkPopover: React.FC = () => {
                     <div className="flex items-center gap-2 text-[10px] text-textSecondary mt-0.5">
                       <span className="flex items-center gap-0.5 truncate">
                         <Folder className="w-2.5 h-2.5" />
-                        {b.folderName ?? "すべて"}
+                        {b.folderName ?? t("bookmark.all")}
                       </span>
                       <span>•</span>
                       <span className="flex items-center gap-0.5">
@@ -208,7 +212,7 @@ export const BookmarkPopover: React.FC = () => {
                         removeBookmark(b.id);
                       }}
                       className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 text-textSecondary transition"
-                      title="このしおりを削除"
+                      title={t("bookmark.deleteTooltip")}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

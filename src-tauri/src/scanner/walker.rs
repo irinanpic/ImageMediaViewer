@@ -123,7 +123,7 @@ pub fn scan_folder_core(
 ) -> Result<(), AppError> {
     let root = Path::new(&folder_path);
     if !root.exists() {
-        warn!("走査対象ルートフォルダが存在しません: {}", folder_path);
+        warn!("Root folder for scanning does not exist: {}", folder_path);
         return Ok(());
     }
 
@@ -171,13 +171,13 @@ pub fn scan_folder_core(
         .filter_entry(|e| !is_hidden_or_ignored(e))
     {
         if cancel_flag.load(Ordering::SeqCst) {
-            info!("走査がキャンセルされました");
+            info!("Scan was cancelled");
             return Ok(());
         }
 
         // バックグラウンド走査時: ユーザーのサムネイル要求が発生したら即座に中断してCPUを譲る
         if is_background && file_count % 50 == 0 && !state.thumb_pipeline.is_idle() {
-            info!("ユーザー操作・サムネイル要求を検知したためバックグラウンド走査を一時中断します");
+            info!("User action or thumbnail requests detected: Pausing background scan");
             return Ok(());
         }
 
@@ -190,7 +190,7 @@ pub fn scan_folder_core(
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                warn!("ディレクトリエントリ読み取り警告: {:?}", e);
+                warn!("Directory entry read warning: {:?}", e);
                 continue;
             }
         };
@@ -225,8 +225,8 @@ pub fn scan_folder_core(
 
     let total_discovered = discovered_files.len() as u64;
     info!(
-        "フォルダ [{}] で差分対象画像 {} 件を発見",
-        folder_path, total_discovered
+        "Found {} changed images in [{}]",
+        total_discovered, folder_path
     );
 
     // 2. Indexing フェーズ (並列ヘッダ読み + quick_hash + バッチ書き込み)
@@ -248,13 +248,13 @@ pub fn scan_folder_core(
 
     for chunk in discovered_files.chunks(chunk_size) {
         if cancel_flag.load(Ordering::SeqCst) {
-            info!("走査がキャンセルされました");
+            info!("Scan was cancelled");
             return Ok(());
         }
 
         // バックグラウンド走査時: ユーザー操作発生時は直ちに中断
         if is_background && !state.thumb_pipeline.is_idle() {
-            info!("ユーザー操作・サムネイル要求を検知したためインデックス処理を一時中断します");
+            info!("User action or thumbnail requests detected: Pausing indexing");
             return Ok(());
         }
 
@@ -287,7 +287,7 @@ pub fn scan_folder_core(
         {
             let mut conn = state.db.writer();
             if let Err(e) = crate::db::repo::upsert_images(&mut conn, &parsed_records) {
-                warn!("バッチUPSERT失敗: {:?}", e);
+                warn!("Batch UPSERT failed: {:?}", e);
             }
         }
 
@@ -336,7 +336,7 @@ pub fn scan_folder_core(
         .collect();
 
     if !deleted_paths.is_empty() {
-        info!("削除されたファイル {} 件をDBから除去", deleted_paths.len());
+        info!("Removed {} deleted files from database", deleted_paths.len());
         let conn = state.db.writer();
         for chunk in deleted_paths.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");

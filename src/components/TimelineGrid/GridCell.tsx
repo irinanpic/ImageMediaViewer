@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Check, ImageOff, Loader2 } from "lucide-react";
 import { getThumbnailUrl } from "../../lib/thumbUrl";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { ImageRecord } from "../../types/generated/ImageRecord";
 
@@ -24,6 +25,7 @@ const loadedThumbUrls = new Set<string>();
  */
 export const GridCell: React.FC<GridCellProps> = React.memo(
   ({ record, globalIndex, isScrollingFast, size }) => {
+    const { t } = useTranslation();
     const openViewer = useAppStore((state) => state.openViewer);
     const selectedCellIndex = useAppStore((state) => state.selectedCellIndex);
     const setSelectedCellIndex = useAppStore((state) => state.setSelectedCellIndex);
@@ -168,7 +170,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
         style={{ width: size, height: size }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
-        title={hasError ? "クリックして再読込を試行" : record ? `画像 #${record.id} (Ctrl+クリックで複数選択)` : ""}
+        title={hasError ? t("timeline.cellErrorTooltip") : record ? t("timeline.cellImageTooltip", { id: record.id }) : ""}
         className={`relative bg-surface rounded overflow-hidden cursor-pointer group transition-all duration-150 select-none ${
           isMultiSelected
             ? "ring-2 ring-accent ring-offset-2 ring-offset-background border-accent shadow-lg shadow-accent/30"
@@ -186,8 +188,8 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
         {hasError ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-surface text-textSecondary p-2 text-center hover:bg-surfaceLight/60 transition">
             <ImageOff className="w-5 h-5 mb-1 text-red-400" />
-            <span className="text-[10px] text-red-400 font-medium">読込不可</span>
-            <span className="text-[9px] text-textSecondary/80 mt-0.5 group-hover:underline">クリックで再試行</span>
+            <span className="text-[10px] text-red-400 font-medium">{t("timeline.cellErrorRetry")}</span>
+            <span className="text-[9px] text-textSecondary/80 mt-0.5 group-hover:underline">{t("timeline.cellErrorRetryHint")}</span>
           </div>
         ) : (
           <img
@@ -219,7 +221,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
               ? "bg-accent text-white shadow-md scale-105"
               : "opacity-0 group-hover:opacity-100 bg-black/50 text-white/80 hover:bg-accent hover:text-white border border-white/60 shadow-xs"
           }`}
-          title={isMultiSelected ? "選択を解除" : "選択に追加"}
+          title={isMultiSelected ? t("timeline.cellDeselectTooltip") : t("timeline.cellSelectTooltip")}
         >
           <Check className="w-3.5 h-3.5 stroke-[3]" />
         </div>

@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { getOriginalImageUrl } from "../../lib/thumbUrl";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { Board, BoardItem, BoardNote } from "../../types/board";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
@@ -30,12 +31,12 @@ import { ImageDetailPanel } from "../Common/ImageDetailPanel";
 
 /** 付箋メモのカラーパレット定義 */
 const NOTE_COLORS = [
-  { label: "イエロー", bg: "#fef08a", text: "#1c1917", border: "#fde047" },
-  { label: "スカイブルー", bg: "#bae6fd", text: "#0c4a6e", border: "#7dd3fc" },
-  { label: "ミントグリーン", bg: "#bbf7d0", text: "#064e3b", border: "#86efac" },
-  { label: "ピンク", bg: "#fbcfe8", text: "#831843", border: "#f472b6" },
-  { label: "パープル", bg: "#e9d5ff", text: "#581c87", border: "#c084fc" },
-  { label: "ダーク", bg: "#27272a", text: "#f4f4f5", border: "#3f3f46" },
+  { key: "yellow", labelJa: "イエロー", labelEn: "Yellow", bg: "#fef08a", text: "#1c1917", border: "#fde047" },
+  { key: "skyBlue", labelJa: "スカイブルー", labelEn: "Sky Blue", bg: "#bae6fd", text: "#0c4a6e", border: "#7dd3fc" },
+  { key: "mintGreen", labelJa: "ミントグリーン", labelEn: "Mint Green", bg: "#bbf7d0", text: "#064e3b", border: "#86efac" },
+  { key: "pink", labelJa: "ピンク", labelEn: "Pink", bg: "#fbcfe8", text: "#831843", border: "#f472b6" },
+  { key: "purple", labelJa: "パープル", labelEn: "Purple", bg: "#e9d5ff", text: "#581c87", border: "#c084fc" },
+  { key: "dark", labelJa: "ダーク", labelEn: "Dark", bg: "#27272a", text: "#f4f4f5", border: "#3f3f46" },
 ];
 
 /**
@@ -46,6 +47,7 @@ const NOTE_COLORS = [
  * また、画像詳細情報の確認やテキストメモ（付箋）の自由配置・編集機能を提供する。
  */
 export const MoodboardCanvas: React.FC = () => {
+  const { t, locale } = useTranslation();
   const activeBoardId = useAppStore((state) => state.activeBoardId);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setBoards = useAppStore((state) => state.setBoards);
@@ -436,9 +438,10 @@ export const MoodboardCanvas: React.FC = () => {
     const centerY = -pan.y / zoom + (containerHeight / 2) / zoom - 80;
 
     try {
+      const initialText = t("moodboard.defaultNoteText");
       const newNote = await backendApi.createBoardNote({
         boardId: activeBoardId,
-        text: "新規メモ",
+        text: initialText,
         x: Math.round(centerX),
         y: Math.round(centerY),
         width: 240,
@@ -454,12 +457,12 @@ export const MoodboardCanvas: React.FC = () => {
       setSelectedItemId(null);
       setSelectedNoteId(newNote.id);
       setEditingNoteId(newNote.id);
-      setEditingText("新規メモ");
-      editingTextRef.current = "新規メモ";
+      setEditingText(initialText);
+      editingTextRef.current = initialText;
     } catch (err) {
       console.error("メモ作成失敗:", err);
     }
-  }, [activeBoardId, pan, zoom, flushSaveEditingNote]);
+  }, [activeBoardId, pan, zoom, flushSaveEditingNote, t]);
 
 
   /**
@@ -1309,17 +1312,20 @@ export const MoodboardCanvas: React.FC = () => {
           className="flex items-center gap-1.5 text-xs text-textSecondary hover:text-textPrimary bg-surfaceLight/30 hover:bg-surfaceLight/60 px-3 py-1.5 rounded transition"
         >
           <ArrowLeft className="w-4 h-4" />
-          タイムラインに戻る
+          {t("moodboard.backToTimeline")}
         </button>
 
         <div className="h-4 w-px bg-border/40" />
 
         <div className="flex items-center gap-2">
           <span className="font-semibold text-sm text-textPrimary">
-            {board?.name || "ムードボード"}
+            {board?.name || t("moodboard.defaultBoardName")}
           </span>
           <span className="text-xs text-textSecondary">
-            ({items.length} 点の資料{notes.length > 0 ? `, ${notes.length} 件のメモ` : ""})
+            {t("moodboard.itemCountSummary", {
+              images: items.length,
+              notes: notes.length > 0 ? t("moodboard.notesCountSuffix", { count: notes.length }) : "",
+            })}
           </span>
         </div>
 
@@ -1329,10 +1335,10 @@ export const MoodboardCanvas: React.FC = () => {
         <button
           onClick={handleCreateNote}
           className="flex items-center gap-1.5 text-xs text-white bg-accent hover:bg-accent/90 px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
-          title="キャンバス中央にテキストメモ（付箋）を配置"
+          title={t("moodboard.addNoteTooltip")}
         >
           <StickyNote className="w-3.5 h-3.5" />
-          メモを追加
+          {t("moodboard.addNoteBtn")}
         </button>
 
         {/* 自動並び替えボタン（被り解消・タイル整列） */}
@@ -1340,10 +1346,10 @@ export const MoodboardCanvas: React.FC = () => {
           <button
             onClick={handleAutoArrange}
             className="flex items-center gap-1.5 text-xs text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight/80 border border-border/60 hover:border-accent px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
-            title="ボード上の画像とメモが被らないように自動整列して画面中央にフィット"
+            title={t("moodboard.autoArrangeTooltip")}
           >
             <LayoutGrid className="w-3.5 h-3.5 text-accent" />
-            自動並び替え
+            {t("moodboard.autoArrangeBtn")}
           </button>
         )}
       </div>
@@ -1356,7 +1362,7 @@ export const MoodboardCanvas: React.FC = () => {
             setZoom(nextZoom);
             scheduleSaveCamera(pan, nextZoom);
           }}
-          title="縮小"
+          title={t("moodboard.zoomOutTooltip")}
           className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
         >
           <ZoomOut className="w-4 h-4" />
@@ -1370,7 +1376,7 @@ export const MoodboardCanvas: React.FC = () => {
             setZoom(nextZoom);
             scheduleSaveCamera(pan, nextZoom);
           }}
-          title="拡大"
+          title={t("moodboard.zoomInTooltip")}
           className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
         >
           <ZoomIn className="w-4 h-4" />
@@ -1381,10 +1387,10 @@ export const MoodboardCanvas: React.FC = () => {
             setPan({ x: 0, y: 0 });
             scheduleSaveCamera({ x: 0, y: 0 }, 1);
           }}
-          title="位置とズームをリセット"
+          title={t("moodboard.zoomResetTooltip")}
           className="px-2 py-0.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition ml-1"
         >
-          リセット
+          {t("moodboard.zoomResetBtn")}
         </button>
       </div>
 
@@ -1400,11 +1406,14 @@ export const MoodboardCanvas: React.FC = () => {
             }`}
           >
             <Crop className="w-4 h-4" />
-            {isCropping ? "クリップ完了 (Enter)" : "クリッピング (C)"}
+            {isCropping ? t("moodboard.cropBtnActive") : t("moodboard.cropBtnInactive")}
           </button>
 
           <div className="flex items-center gap-1 bg-surfaceLight/30 px-2 py-1 rounded">
-            <span className="text-[11px] font-mono text-textSecondary w-10 text-center" title="現在の回転角度">
+            <span
+              className="text-[11px] font-mono text-textSecondary w-10 text-center"
+              title={t("moodboard.currentRotationTooltip", { degree: Math.round(selectedItem.rotation) })}
+            >
               {Math.round(selectedItem.rotation)}°
             </span>
             <button
@@ -1415,7 +1424,7 @@ export const MoodboardCanvas: React.FC = () => {
                 );
                 backendApi.updateBoardItem(selectedItem.id, { rotation: nextRot });
               }}
-              title="90度回転"
+              title={t("moodboard.rotate90Tooltip")}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
             >
               <RotateCw className="w-3.5 h-3.5" />
@@ -1428,7 +1437,7 @@ export const MoodboardCanvas: React.FC = () => {
                   );
                   backendApi.updateBoardItem(selectedItem.id, { rotation: 0 });
                 }}
-                title="回転を0°にリセット"
+                title={t("moodboard.rotationResetTooltip")}
                 className="text-[10px] text-accent hover:underline px-1"
               >
                 0°
@@ -1439,7 +1448,7 @@ export const MoodboardCanvas: React.FC = () => {
           {/* 画像反転コントロール（左右反転・上下反転） */}
           <div
             className="flex items-center gap-0.5 bg-surfaceLight/30 px-1 py-0.5 rounded border border-border/40"
-            title="画像の反転"
+            title={t("moodboard.flipGroupTooltip")}
           >
             <button
               onClick={handleToggleFlipH}
@@ -1448,7 +1457,7 @@ export const MoodboardCanvas: React.FC = () => {
                   ? "bg-accent text-white shadow-xs"
                   : "hover:bg-surfaceLight/50 text-textSecondary hover:text-textPrimary"
               }`}
-              title="左右反転 (H)"
+              title={t("moodboard.flipHTooltip")}
             >
               <FlipHorizontal className="w-3.5 h-3.5" />
             </button>
@@ -1459,7 +1468,7 @@ export const MoodboardCanvas: React.FC = () => {
                   ? "bg-accent text-white shadow-xs"
                   : "hover:bg-surfaceLight/50 text-textSecondary hover:text-textPrimary"
               }`}
-              title="上下反転 (V)"
+              title={t("moodboard.flipVTooltip")}
             >
               <FlipVertical className="w-3.5 h-3.5" />
             </button>
@@ -1473,10 +1482,10 @@ export const MoodboardCanvas: React.FC = () => {
                 ? "bg-accent text-white shadow-xs"
                 : "bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary"
             }`}
-            title="画像の詳細情報を表示 (I)"
+            title={t("moodboard.imageDetailsTooltip")}
           >
             <Info className="w-3.5 h-3.5" />
-            <span>詳細情報</span>
+            <span>{t("moodboard.imageDetailsBtn")}</span>
           </button>
 
           {/* クリッピング中専用: リセットボタン */}
@@ -1484,10 +1493,10 @@ export const MoodboardCanvas: React.FC = () => {
             <button
               onClick={handleResetCrop}
               className="flex items-center gap-1 bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary px-2.5 py-1 rounded text-xs transition border border-border/40"
-              title="切り抜きを解除して元の全体表示に戻す (R)"
+              title={t("moodboard.resetCropTooltip")}
             >
               <RotateCcw className="w-3 h-3" />
-              リセット
+              {t("moodboard.resetCropBtn")}
             </button>
           )}
 
@@ -1499,7 +1508,7 @@ export const MoodboardCanvas: React.FC = () => {
               );
               backendApi.updateBoardItem(selectedItem.id, { isLocked: nextLocked });
             }}
-            title={selectedItem.isLocked ? "ロック解除" : "位置固定ロック"}
+            title={selectedItem.isLocked ? t("moodboard.unlockTooltip") : t("moodboard.lockTooltip")}
             className="p-1.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
           >
             {selectedItem.isLocked ? <Lock className="w-4 h-4 text-accent" /> : <Unlock className="w-4 h-4" />}
@@ -1510,25 +1519,25 @@ export const MoodboardCanvas: React.FC = () => {
           {/* 上下関係（重なり順 / Z-Index）変更コントロール */}
           <div
             className="flex items-center gap-0.5 bg-surfaceLight/30 px-1 py-0.5 rounded border border-border/40"
-            title="画像の重なり順（上下位置関係）を変更"
+            title={t("moodboard.layerOrderGroupTooltip")}
           >
             <button
               onClick={handleSendToBack}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="最背面へ移動 (PageDown / Ctrl+Shift+[)"
+              title={t("moodboard.sendToBackTooltip")}
             >
               <ChevronsDown className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={handleSendBackward}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="背面へ移動 ([ / Ctrl+[)"
+              title={t("moodboard.sendBackwardTooltip")}
             >
               <ChevronDown className="w-3.5 h-3.5" />
             </button>
             <div
               className="text-[10px] text-textSecondary font-mono px-1.5 select-none flex items-center gap-1"
-              title={`重なり順: レイヤー ${selectedItem.zIndex}`}
+              title={t("moodboard.layerBadgeTooltip", { layer: selectedItem.zIndex })}
             >
               <Layers className="w-3 h-3 text-accent" />
               <span>{selectedItem.zIndex}</span>
@@ -1536,14 +1545,14 @@ export const MoodboardCanvas: React.FC = () => {
             <button
               onClick={handleBringForward}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="前面へ移動 (] / Ctrl+])"
+              title={t("moodboard.bringForwardTooltip")}
             >
               <ChevronUp className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={handleBringToFront}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="最前面へ移動 (PageUp / Ctrl+Shift+])"
+              title={t("moodboard.bringToFrontTooltip")}
             >
               <ChevronsUp className="w-3.5 h-3.5" />
             </button>
@@ -1559,7 +1568,7 @@ export const MoodboardCanvas: React.FC = () => {
                 setIsCropping(false);
               });
             }}
-            title="ボードから削除 (Delete)"
+            title={t("moodboard.deleteItemTooltip")}
             className="p-1.5 hover:bg-red-500/20 text-textSecondary hover:text-red-400 rounded transition"
           >
             <Trash2 className="w-4 h-4" />
@@ -1590,14 +1599,14 @@ export const MoodboardCanvas: React.FC = () => {
                 ? "bg-accent text-white shadow-xs"
                 : "bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textPrimary"
             }`}
-            title={editingNoteId === selectedNote.id ? "メモを保存して完了 (Ctrl+Enter)" : "テキストを編集"}
+            title={editingNoteId === selectedNote.id ? t("moodboard.editNoteDoneTooltip") : t("moodboard.editNoteStartTooltip")}
           >
             <Edit3 className="w-3.5 h-3.5" />
-            <span>{editingNoteId === selectedNote.id ? "完了" : "テキスト編集"}</span>
+            <span>{editingNoteId === selectedNote.id ? t("moodboard.editNoteDone") : t("moodboard.editNoteStart")}</span>
           </button>
 
           {/* カラーパレット */}
-          <div className="flex items-center gap-1.5 bg-surfaceLight/30 px-2 py-1 rounded border border-border/40" title="メモの色を変更">
+          <div className="flex items-center gap-1.5 bg-surfaceLight/30 px-2 py-1 rounded border border-border/40" title={t("moodboard.noteColorTooltip")}>
             {NOTE_COLORS.map((c) => (
               <button
                 key={c.bg}
@@ -1608,7 +1617,7 @@ export const MoodboardCanvas: React.FC = () => {
                     ? "ring-2 ring-accent ring-offset-1 ring-offset-surface scale-115 border-white/60"
                     : "border-black/20"
                 }`}
-                title={c.label}
+                title={locale === "ja" ? c.labelJa : c.labelEn}
               />
             ))}
           </div>
@@ -1616,7 +1625,7 @@ export const MoodboardCanvas: React.FC = () => {
           {/* ロック切替 */}
           <button
             onClick={() => handleToggleNoteLock(selectedNote.id)}
-            title={selectedNote.isLocked ? "ロック解除" : "位置固定ロック"}
+            title={selectedNote.isLocked ? t("moodboard.unlockTooltip") : t("moodboard.lockTooltip")}
             className="p-1.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
           >
             {selectedNote.isLocked ? <Lock className="w-4 h-4 text-accent" /> : <Unlock className="w-4 h-4" />}
@@ -1627,18 +1636,18 @@ export const MoodboardCanvas: React.FC = () => {
           {/* 重なり順変更 */}
           <div
             className="flex items-center gap-0.5 bg-surfaceLight/30 px-1 py-0.5 rounded border border-border/40"
-            title="メモの重なり順を変更"
+            title={t("moodboard.noteLayerOrderGroupTooltip")}
           >
             <button
               onClick={handleSendNoteToBack}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="最背面へ移動"
+              title={t("moodboard.sendNoteToBackTooltip")}
             >
               <ChevronsDown className="w-3.5 h-3.5" />
             </button>
             <div
               className="text-[10px] text-textSecondary font-mono px-1.5 select-none flex items-center gap-1"
-              title={`重なり順: レイヤー ${selectedNote.zIndex}`}
+              title={t("moodboard.layerBadgeTooltip", { layer: selectedNote.zIndex })}
             >
               <Layers className="w-3 h-3 text-accent" />
               <span>{selectedNote.zIndex}</span>
@@ -1646,7 +1655,7 @@ export const MoodboardCanvas: React.FC = () => {
             <button
               onClick={handleBringNoteToFront}
               className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition cursor-pointer"
-              title="最前面へ移動"
+              title={t("moodboard.bringNoteToFrontTooltip")}
             >
               <ChevronsUp className="w-3.5 h-3.5" />
             </button>
@@ -1657,7 +1666,7 @@ export const MoodboardCanvas: React.FC = () => {
           {/* 削除ボタン */}
           <button
             onClick={() => handleDeleteNote(selectedNote.id)}
-            title="メモを削除 (Delete)"
+            title={t("moodboard.deleteNoteTooltip")}
             className="p-1.5 hover:bg-red-500/20 text-textSecondary hover:text-red-400 rounded transition cursor-pointer"
           >
             <Trash2 className="w-4 h-4" />
@@ -1746,12 +1755,12 @@ export const MoodboardCanvas: React.FC = () => {
                 <div
                   onMouseDown={handleCropMouseDown}
                   className="absolute inset-0 pointer-events-auto cursor-crosshair bg-black/30"
-                  title="ドラッグして切り取る矩形領域を指定してください"
+                  title={t("moodboard.cropAreaTooltip")}
                 >
                   {/* ヘッダーガイドバッジ */}
                   <div className="absolute -top-7 left-0 bg-accent text-[11px] text-white px-2 py-0.5 rounded font-medium shadow flex items-center gap-1.5 whitespace-nowrap">
                     <Crop className="w-3 h-3" />
-                    <span>ドラッグして切り取り領域を指定 (Enterで完了)</span>
+                    <span>{t("moodboard.cropGuideText")}</span>
                   </div>
 
                   {/* 確定済みの既存クリッピング枠（ドラッグ中でないときに表示） */}
@@ -1766,7 +1775,7 @@ export const MoodboardCanvas: React.FC = () => {
                       className="absolute border-2 border-accent bg-accent/15 shadow-sm pointer-events-none"
                     >
                       <div className="absolute top-1 left-1 bg-accent/90 text-[9px] text-white px-1 py-0.2 rounded font-mono">
-                        現在の範囲
+                        {t("moodboard.cropCurrentBounds")}
                       </div>
                     </div>
                   )}
@@ -1796,7 +1805,7 @@ export const MoodboardCanvas: React.FC = () => {
               {isSelected && !item.isLocked && !isCropping && (
                 <div
                   className="absolute -top-7 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-auto select-none z-20"
-                  title="ドラッグして任意角度に回転 (Shift+ドラッグで15°スナップ)"
+                  title={t("moodboard.rotateHandleTooltip")}
                 >
                   {/* 回転中の角度ツールチップ */}
                   {rotatingDegree !== null && isRotatingItemRef.current && (
@@ -1881,7 +1890,7 @@ export const MoodboardCanvas: React.FC = () => {
               <div className="flex items-center justify-between pb-1 border-b border-black/10 text-[10px] opacity-75 cursor-grab active:cursor-grabbing shrink-0">
                 <span className="font-semibold flex items-center gap-1">
                   <StickyNote className="w-3 h-3" />
-                  メモ
+                  {t("moodboard.noteHeaderBadge")}
                 </span>
                 {note.isLocked && <Lock className="w-3 h-3 text-accent" />}
               </div>
@@ -1916,15 +1925,15 @@ export const MoodboardCanvas: React.FC = () => {
                       }}
                       style={{ color: colorDef.text }}
                       className="w-full flex-1 min-h-0 bg-transparent resize-none outline-none leading-relaxed text-xs font-sans cursor-text"
-                      placeholder="メモを入力... (Enterで改行、Ctrl+Enterで確定)"
+                      placeholder={t("moodboard.noteInputPlaceholder")}
                     />
                     <div className="text-[9px] opacity-40 select-none pt-0.5 text-right font-mono tracking-tight shrink-0">
-                      Ctrl+Enterで確定 / Escで取消
+                      {t("moodboard.noteHintSaveEsc")}
                     </div>
                   </div>
                 ) : (
                   <div className="w-full h-full whitespace-pre-wrap break-words leading-relaxed select-none overflow-y-auto">
-                    {note.text || <span className="opacity-40 italic">（ダブルクリックで編集）</span>}
+                    {note.text || <span className="opacity-40 italic">{t("moodboard.noteEmptyPlaceholder")}</span>}
                   </div>
                 )}
               </div>

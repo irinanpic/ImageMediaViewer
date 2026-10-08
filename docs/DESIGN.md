@@ -6,7 +6,10 @@
 
 ## 1. システム全体アーキテクチャ
 
-ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** が同一プロセス内で完全一体化されたデスクトップアプリケーションです。TCP/IP ポートを一切使用せず、Tauri Native IPC および内部カスタムプロトコル（`thumb://`, `original://`）によって高速・安全に連携します。また、多重起動防止（Single Instance）により常に単一プロセスでの稼働を保証します。
+ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** が同一プロセス内で完全一体化されたクロスプラットフォーム・デスクトップ/モバイルアプリケーションです。TCP/IP ポートを一切使用せず、Tauri Native IPC および内部カスタムプロトコル（`thumb://`, `original://`）によって高速・安全に連携します。
+
+プラットフォーム固有の機能（タスクトレイ常駐制御、二重起動防止プラグイン等）は `#[cfg(desktop)]` によりデスクトップ限定に抽象化・分離されており、Windows 版の既存動作を 100% 維持したまま Android / ChromeOS 等へのクロスプラットフォーム展開が可能なアーキテクチャを採用しています。
+
 
 ```mermaid
 flowchart TD
@@ -634,5 +637,58 @@ flowchart TD
   * キューが空で未生成サムネイルもない定常時、ワーカースレッド群の条件変数タイムアウトを従来の5秒から **60秒** へ延長。
   * 常駐アイドル時のCPU使用率は **0.0%** を維持し、バッテリー消費や発熱を最小限に抑える。
   * 新規画像の追加や表示スクロールが発生した際は、`Condvar::notify_one` / `notify_all` により **0ミリ秒で即座に起床** するため、応答性への悪影響は皆無。
+
+---
+
+## 9. 多言語対応 (i18n) アーキテクチャ
+
+ImageMediaViewer は、プログラム本体のロジックと言語リソースを完全に分離し、外部ライブラリ（i18next 等）を追加せずに型安全・超軽量・ゼロアロケーションの独自多言語機構を採用しています。
+
+```mermaid
+flowchart LR
+    subgraph Frontend ["フロントエンド (React / TypeScript)"]
+        UIComp["UIコンポーネント (t() / useTranslation)"]
+        StoreLocale["Zustand store (locale: ja | en)"]
+        Fallback["透過的フォールバック (enマスター)"]
+        JaRes["日本語リソース (ja.ts)"]
+        EnRes["英語マスターリソース (en.ts)"]
+    end
+
+    subgraph Backend ["バックエンド (Rust / Tauri v2)"]
+        Tray["OSタスクトレイメニュー (update_tray_locale)"]
+        Settings["設定永続化 (app_settings.json)"]
+        RustLocales["Rust言語リソース (locales.rs)"]
+    end
+
+    StoreLocale -->|言語変更| UIComp
+    UIComp --> Fallback
+    Fallback --> JaRes
+    Fallback -. "翻訳未達キー" .-> EnRes
+    StoreLocale -->|backendApi.setLocale| Settings
+    Settings --> Tray
+    Tray --> RustLocales
+```
+
+### 9.1 フロントエンド多言語機構 (`src/locales/`)
+* **独立言語リソース部品 (`en.ts`, `ja.ts`)**:
+  * 英語 (`en.ts`) をマスター型定義（`TranslationSchema`）とし、すべてのカテゴリ（`sidebar`, `statusBar`, `timeline`, `viewer`, `metadata`, `moodboard`, `logModal`, `connection`, `addToBoardModal`, `errorBoundary` 等）のキー構造を型推論。
+  * 新たな言語を追加する際は、単に辞書オブジェクト（`zh.ts`, `es.ts` 等）を追加・登録するだけで容易に拡張可能。
+* **開発先行時の自動英語フォールバック**:
+  * 機能開発が先行し、特定言語リソースへの翻訳登録が追いつかない場合でも、キー単位で自動的に英語マスターリソースから取得して表示。未翻訳箇所でアプリがクラッシュしたりキー名（`timeline.toolbar.reload` 等）がそのまま露出することを防止。
+* **ホットパスのゼロアロケーション・性能劣化防止**:
+  * タイムライン仮想スクロールグリッド（`GridCell`）等、1秒間に数百回呼び出される可能性のあるホットパスでのオーバーヘッドを徹底排除。
+  * `getNestedValue`: ドット区切り文字列（`category.item`）を split 配列生成せず、`indexOf('.')` で直接切り出すゼロヒープアロケーション検索を実装。
+  * 置換パラメータ（`{param}`）が含まれない静的テキストは、正規表現マッチングを完全バイパスして即座に返却。
+* **UI言語切替トグル**:
+  * サイドバー下部に「日本語 / English」切り替えUIを常設。LocalStorage およびバックエンド設定へ即時永続化。
+
+### 9.2 Rust バックエンド多言語機構 (`src-tauri/src/locales.rs`, `tray.rs`)
+* **タスクトレイの動的言語切替**:
+  * OSタスクトレイのメニュー（「メイン画面を開く」「常に最前面表示」「常駐する」「終了」）およびトレイアイコンのツールチップを、アプリを再起動することなく実行時に即座に切り替え。
+  * `setup_system_tray` 時に作成した各メニューアイテムのハンドルを `TrayMenuHandles` 構造体として `app.manage` に保持し、`set_locale` コマンド呼び出し時に `tray.rs` の `update_tray_locale` が各ハンドルの `set_text` を呼んで即時更新。
+* **ゼロアロケーション `&'static str` 参照**:
+  * バックエンドのトレイメッセージはヒープ割り当てを行わず、静的参照（`&'static TrayMessages`）を直接返却。未知の言語コードに対しても英語（`TRAY_EN`）へ安全にフォールバック。
+* **設定の自動同期永続化**:
+  * 言語設定は `AppSettings` の `locale` フィールドにシリアライズされ、次回起動時もトレイメニューおよびUIが前回の言語で復元。
 
 

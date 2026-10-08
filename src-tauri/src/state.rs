@@ -54,6 +54,8 @@ pub struct AppState {
     pub db: Database,
     /// サムネイル専用SQLiteデータベース管理
     pub thumb_store: Arc<ThumbnailStore>,
+    /// アプリケーションデータディレクトリ（設定ファイル、DB保存先）
+    pub data_dir: PathBuf,
     /// サムネイル等のキャッシュディレクトリ
     pub cache_dir: PathBuf,
     /// サムネイル生成バックグラウンドパイプライン
@@ -72,6 +74,7 @@ impl AppState {
     pub fn new(
         db: Database,
         thumb_store: Arc<ThumbnailStore>,
+        data_dir: PathBuf,
         cache_dir: PathBuf,
         thumb_pipeline: Arc<ThumbnailPipeline>,
     ) -> Self {
@@ -83,6 +86,7 @@ impl AppState {
         Self {
             db,
             thumb_store,
+            data_dir,
             cache_dir,
             thumb_pipeline,
             catalog_version: AtomicI64::new(version),

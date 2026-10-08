@@ -11,12 +11,15 @@ pub struct AppSettings {
     /// true: ウィンドウを非表示にしてタスクトレイに常駐（デフォルト）
     /// false: ウィンドウを閉じた際にアプリケーション全体を完全終了
     pub stay_in_tray: bool,
+    /// アプリケーション全体の言語設定 ("ja" | "en")
+    pub locale: String,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             stay_in_tray: true, // デフォルト ON
+            locale: "ja".to_string(), // デフォルト 日本語
         }
     }
 }
@@ -62,6 +65,7 @@ mod tests {
     fn test_default_settings() {
         let default_settings = AppSettings::default();
         assert!(default_settings.stay_in_tray, "デフォルト設定で常駐フラグが true であること");
+        assert_eq!(default_settings.locale, "ja", "デフォルト設定で言語が 'ja' であること");
     }
 
     #[test]
@@ -74,12 +78,16 @@ mod tests {
         assert_eq!(initial, AppSettings::default());
 
         // 2. 設定変更して保存
-        let modified = AppSettings { stay_in_tray: false };
+        let modified = AppSettings {
+            stay_in_tray: false,
+            locale: "en".to_string(),
+        };
         save_settings(dir_path, &modified).expect("設定の保存に失敗");
 
         // 3. 再ロードして保存された値が反映されていること
         let loaded = load_settings(dir_path);
         assert_eq!(loaded, modified);
         assert!(!loaded.stay_in_tray);
+        assert_eq!(loaded.locale, "en");
     }
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Check, LayoutGrid, Plus, X } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { Board } from "../../types/board";
 
@@ -8,6 +9,7 @@ import type { Board } from "../../types/board";
  * 画像をムードボードに追加するモーダルコンポーネント
  */
 export const AddToBoardModal: React.FC = () => {
+  const { t } = useTranslation();
   const isAddToBoardModalOpen = useAppStore((state) => state.isAddToBoardModalOpen);
   const addToBoardTargetImageIds = useAppStore((state) => state.addToBoardTargetImageIds);
   const closeAddToBoardModal = useAppStore((state) => state.closeAddToBoardModal);
@@ -36,7 +38,7 @@ export const AddToBoardModal: React.FC = () => {
     setIsSubmitting(true);
     try {
       await backendApi.addBoardItems(board.id, addToBoardTargetImageIds);
-      setSuccessMessage(`「${board.name}」に追加しました！`);
+      setSuccessMessage(t("addToBoardModal.successMsg", { name: board.name }));
       setTimeout(() => {
         closeAddToBoardModal();
         setActiveBoardId(board.id);
@@ -59,7 +61,7 @@ export const AddToBoardModal: React.FC = () => {
       await backendApi.addBoardItems(created.id, addToBoardTargetImageIds);
       const all = await backendApi.getBoards();
       setBoards(all);
-      setSuccessMessage(`新規ボード「${created.name}」を作成して追加しました！`);
+      setSuccessMessage(t("addToBoardModal.createAndAddSuccessMsg", { name: created.name }));
       setTimeout(() => {
         closeAddToBoardModal();
         setActiveBoardId(created.id);
@@ -80,7 +82,7 @@ export const AddToBoardModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <LayoutGrid className="w-5 h-5 text-accent" />
             <h3 className="font-semibold text-textPrimary text-sm">
-              ムードボードに資料として追加
+              {t("addToBoardModal.title")}
             </h3>
           </div>
           <button
@@ -94,7 +96,7 @@ export const AddToBoardModal: React.FC = () => {
         {/* コンテンツ */}
         <div className="p-5 space-y-4">
           <p className="text-xs text-textSecondary">
-            選択中の画像 <span className="font-semibold text-textPrimary">{addToBoardTargetImageIds.length} 点</span> を配置するボードを選択してください。
+            {t("addToBoardModal.instruction", { count: addToBoardTargetImageIds.length })}
           </p>
 
           {successMessage && (
@@ -108,7 +110,7 @@ export const AddToBoardModal: React.FC = () => {
           <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
             {boards.length === 0 ? (
               <div className="text-center py-4 text-xs text-textSecondary border border-dashed border-border/60 rounded-lg">
-                作成済みのボードはありません
+                {t("addToBoardModal.noBoards")}
               </div>
             ) : (
               boards.map((b) => (
@@ -122,7 +124,7 @@ export const AddToBoardModal: React.FC = () => {
                     {b.name}
                   </span>
                   <span className="text-[11px] text-textSecondary">
-                    {b.itemCount} 点の資料
+                    {t("addToBoardModal.itemCount", { count: b.itemCount })}
                   </span>
                 </button>
               ))
@@ -131,21 +133,21 @@ export const AddToBoardModal: React.FC = () => {
 
           <div className="relative flex py-1 items-center">
             <div className="flex-grow border-t border-border/40"></div>
-            <span className="flex-shrink mx-3 text-[11px] text-textSecondary">または</span>
+            <span className="flex-shrink mx-3 text-[11px] text-textSecondary">{t("addToBoardModal.or")}</span>
             <div className="flex-grow border-t border-border/40"></div>
           </div>
 
           {/* 新規ボード作成フォーム */}
           <form onSubmit={handleCreateAndAdd} className="space-y-2.5">
             <label className="text-xs font-medium text-textSecondary block">
-              新しいボードを作成
+              {t("addToBoardModal.createNewBoardLabel")}
             </label>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={newBoardName}
                 onChange={(e) => setNewBoardName(e.target.value)}
-                placeholder="例: ポーズ資料 / 色彩参考"
+                placeholder={t("addToBoardModal.boardNamePlaceholder")}
                 disabled={isSubmitting}
                 className="flex-1 bg-surfaceLight/40 border border-border/60 rounded-lg px-3 py-2 text-xs text-textPrimary placeholder:text-textSecondary/50 focus:outline-none focus:border-accent"
               />
@@ -155,7 +157,7 @@ export const AddToBoardModal: React.FC = () => {
                 className="flex items-center gap-1 bg-accent hover:bg-accent/90 disabled:opacity-50 text-white text-xs font-medium px-3.5 py-2 rounded-lg transition shadow-md shadow-accent/20"
               >
                 <Plus className="w-3.5 h-3.5" />
-                作成 & 追加
+                {t("addToBoardModal.createAndAddBtn")}
               </button>
             </div>
           </form>

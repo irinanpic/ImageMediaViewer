@@ -27,6 +27,10 @@ const DEFAULT_TRANSFORM: ViewerTransformState = {
 };
 
 interface AppStoreState {
+  // 多言語（i18n）スライス
+  locale: "ja" | "en";
+  setLocale: (locale: "ja" | "en") => void;
+
   // カタログスライス
   totalImages: number;
   buckets: DayBucket[];
@@ -118,6 +122,27 @@ interface AppStoreState {
 }
 
 export const useAppStore = create<AppStoreState>((set) => ({
+  // 多言語（i18n）初期状態
+  locale: (() => {
+    try {
+      const saved = localStorage.getItem("imv_locale");
+      return saved === "en" || saved === "ja" ? saved : "ja";
+    } catch {
+      return "ja";
+    }
+  })(),
+  setLocale: (locale) => {
+    try {
+      localStorage.setItem("imv_locale", locale);
+    } catch {
+      // localStorage 保存失敗時は無視
+    }
+    set({ locale });
+    backendApi.setLocale(locale).catch(() => {
+      // バックエンド通信不可時やブラウザ環境での例外は安全に無視
+    });
+  },
+
   // カタログ初期状態
   totalImages: 0,
   buckets: [],

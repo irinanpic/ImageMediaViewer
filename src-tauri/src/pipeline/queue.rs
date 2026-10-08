@@ -167,7 +167,7 @@ impl ThumbnailPipeline {
         });
 
         info!(
-            "サムネイル生成ワーカースレッド起動: {} スレッド（バックグラウンド上限 {}）",
+            "Thumbnail worker threads started: {} threads (Background limit: {})",
             worker_count, max_low
         );
         for i in 0..worker_count {
@@ -621,7 +621,7 @@ impl ThumbnailPipeline {
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
-        info!("サムネイルワーカー {} を停止しました", worker_id);
+        info!("Stopped thumbnail worker {}", worker_id);
     }
 
     /// 1件のサムネイルを生成しDBのステータスを更新する
@@ -672,15 +672,15 @@ impl ThumbnailPipeline {
             Ok(webp_bytes) => {
                 // サムネイル専用DB（thumbnails.db）へBLOB格納
                 if let Err(e) = self.thumb_store.put(&job.quick_hash, &webp_bytes) {
-                    warn!("サムネイルBLOB保存失敗 (hash: {}): {}", job.quick_hash, e);
+                    warn!("Failed to store thumbnail BLOB (hash: {}): {}", job.quick_hash, e);
                 }
                 crate::db::repo::update_thumb_status(&conn, job.image_id, 1).ok();
                 true
             }
             Err(e) => {
                 warn!(
-                    "サムネイル生成失敗 (id: {}, パス: {:?}): {}",
-                    job.image_id, job.file_path, e
+                    "Failed to generate thumbnail: id={}, path={}: {}",
+                    job.image_id, job.file_path.display(), e
                 );
                 crate::db::repo::update_thumb_status(&conn, job.image_id, 2).ok();
                 false

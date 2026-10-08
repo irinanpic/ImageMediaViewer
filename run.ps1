@@ -4,14 +4,24 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { (Get-Location).Path }
-# 存在する実行ファイル候補の中から、更新日時が最も新しいものを選択
-$candidatePaths = @(
-    (Join-Path $scriptDir "src-tauri\target\release\image-media-viewer.exe"),
-    (Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe"),
-    (Join-Path $scriptDir "image-media-viewer.exe")
+
+# 実行ファイル候補の探索
+# 注意: cargo test や cargo build (debug) で生成される debug バイナリは
+# アセットが埋め込まれず devUrl (127.0.0.1:1420) を参照するため、
+# 本番・アセット埋め込み済みの release バイナリを最優先で選択します。
+$releaseCandidates = @(
+    (Join-Path $scriptDir "image-media-viewer.exe"),
+    (Join-Path $scriptDir "src-tauri\target\release\image-media-viewer.exe")
 )
 
-$backendExe = $candidatePaths | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending | Select-Object -First 1
+$backendExe = $releaseCandidates | Where-Object { Test-Path $_ } | Sort-Object { (Get-Item $_).LastWriteTime } -Descending | Select-Object -First 1
+
+if (-not $backendExe) {
+    $debugExe = Join-Path $scriptDir "src-tauri\target\debug\image-media-viewer.exe"
+    if (Test-Path $debugExe) {
+        $backendExe = $debugExe
+    }
+}
 
 if (-not $backendExe -or -not (Test-Path $backendExe)) {
     Write-Host "アプリケーション実行ファイルが見つかりません。ビルドを実行してください。" -ForegroundColor Red

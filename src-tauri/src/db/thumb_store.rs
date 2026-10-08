@@ -99,7 +99,7 @@ impl ThumbnailStore {
             ) WITHOUT ROWID;",
         )?;
 
-        info!("サムネイル専用DBを正常に初期化しました: {:?}", db_path);
+        info!("Thumbnail DB initialized successfully: {:?}", db_path);
 
         Ok(Self {
             db_path,

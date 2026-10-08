@@ -4,6 +4,7 @@ import {
   Folder,
   FolderPlus,
   FolderSync,
+  Globe,
   GripVertical,
   Layers,
   LayoutGrid,
@@ -15,10 +16,12 @@ import {
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { isTauriEnvironment } from "../../lib/thumbUrl";
+import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { WatchedFolder } from "../../types/generated/WatchedFolder";
 
 export const Sidebar: React.FC = () => {
+  const { t, locale, setLocale } = useTranslation();
   const folders = useAppStore((state) => state.folders);
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const setSelectedFolderId = useAppStore((state) => state.setSelectedFolderId);
@@ -47,7 +50,7 @@ export const Sidebar: React.FC = () => {
       const updated = await backendApi.getWatchFolders();
       useAppStore.getState().setFolders(updated);
     } catch (err: any) {
-      alert(`フォルダの追加に失敗しました:\n${err.message || err}`);
+      alert(t("sidebar.addFolderFailed", { error: err.message || err }));
     }
   };
 
@@ -96,25 +99,25 @@ export const Sidebar: React.FC = () => {
         const res = await open({
           directory: true,
           multiple: false,
-          title: "監視対象フォルダを選択",
+          title: t("sidebar.selectFolderDialogTitle"),
         });
         if (typeof res === "string") selected = res;
       } else {
-        selected = prompt("監視対象フォルダの絶対パスを入力してください (例: C:\\Pictures):");
+        selected = prompt(t("sidebar.enterPathPrompt"));
       }
 
       if (selected) {
         await addFolderByPath(selected);
       }
     } catch (err: any) {
-      alert(`フォルダの追加に失敗しました:\n${err.message || err}`);
+      alert(t("sidebar.addFolderFailed", { error: err.message || err }));
     }
   };
 
   // フォルダ解除
   const handleRemoveFolder = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
-    if (!confirm("このフォルダの登録を解除しますか？\n（元ファイルは削除されません）")) {
+    if (!confirm(t("sidebar.removeFolderConfirm"))) {
       return;
     }
 
@@ -126,7 +129,7 @@ export const Sidebar: React.FC = () => {
       const updated = await backendApi.getWatchFolders();
       useAppStore.getState().setFolders(updated);
     } catch (err: any) {
-      alert(`解除に失敗しました:\n${err.message || err}`);
+      alert(t("sidebar.removeFolderFailed", { error: err.message || err }));
     }
   };
 
@@ -136,7 +139,7 @@ export const Sidebar: React.FC = () => {
     try {
       await backendApi.rescan(id);
     } catch (err: any) {
-      alert(`再走査に失敗しました: ${err.message || err}`);
+      alert(t("sidebar.rescanFailed", { error: err.message || err }));
     }
   };
 
@@ -183,7 +186,7 @@ export const Sidebar: React.FC = () => {
         const guessedName = file.name;
         const suggestedPath = parentHint ? `${parentHint}\\${guessedName}` : `C:\\Pictures\\${guessedName}`;
         const inputPath = prompt(
-          `ドロップされた項目「${guessedName}」を監視フォルダに追加します。\nフォルダの絶対パスを入力または確認してください:`,
+          t("sidebar.dragDropPrompt", { name: guessedName }),
           suggestedPath
         );
         if (inputPath) {
@@ -199,14 +202,14 @@ export const Sidebar: React.FC = () => {
     <aside className="w-64 bg-surface border-r border-border flex flex-col h-full select-none z-10">
       {/* ヘッダ */}
       <div className="p-4 border-b border-border flex items-center justify-between">
-        <h2 className="text-sm font-bold text-textPrimary tracking-wide">監視フォルダ</h2>
+        <h2 className="text-sm font-bold text-textPrimary tracking-wide">{t("sidebar.folders")}</h2>
         <button
           onClick={handleAddFolder}
-          title="フォルダを追加"
+          title={t("sidebar.addFolder")}
           className="flex items-center gap-1 text-xs bg-accent hover:bg-accentHover text-white px-2.5 py-1.5 rounded transition font-medium"
         >
           <FolderPlus className="w-4 h-4" />
-          <span>追加</span>
+          <span>{t("sidebar.addFolderBtn")}</span>
         </button>
       </div>
 
@@ -223,20 +226,20 @@ export const Sidebar: React.FC = () => {
         >
           <div className="flex items-center gap-2 truncate">
             <Layers className="w-4 h-4 shrink-0" />
-            <span className="truncate">すべての写真</span>
+            <span className="truncate">{t("sidebar.allPhotos")}</span>
           </div>
           {totalImages > 0 && (
             <div className="text-[11px] shrink-0 font-mono flex items-center gap-1">
               {thumbProgress && thumbProgress.total > 0 && thumbProgress.done < thumbProgress.total ? (
-                <span className="text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded text-[10px]" title="全サムネイル生成中">
-                  ⏳ 生成中 {thumbProgress.done.toLocaleString()} / {totalImages.toLocaleString()}
+                <span className="text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded text-[10px]" title={t("sidebar.generating", { done: thumbProgress.done.toLocaleString(), total: totalImages.toLocaleString() })}>
+                  {t("sidebar.generating", { done: thumbProgress.done.toLocaleString(), total: totalImages.toLocaleString() })}
                 </span>
               ) : thumbProgress && thumbProgress.total > 0 && thumbProgress.done >= thumbProgress.total ? (
-                <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium" title="すべてのサムネイル生成が完了しています">
-                  ✓ 完了 ({totalImages.toLocaleString()}枚)
+                <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium" title={t("sidebar.allDoneTooltip")}>
+                  {t("sidebar.allDone", { total: totalImages.toLocaleString() })}
                 </span>
               ) : (
-                <span className="text-textSecondary/80 font-mono text-[10px]">({totalImages.toLocaleString()}枚)</span>
+                <span className="text-textSecondary/80 font-mono text-[10px]">{t("sidebar.imagesCount", { count: totalImages.toLocaleString() })}</span>
               )}
             </div>
           )}
@@ -297,7 +300,7 @@ export const Sidebar: React.FC = () => {
                 <GripVertical className="w-3.5 h-3.5 text-textSecondary/40 group-hover:text-textSecondary/80 cursor-grab shrink-0 -ml-1" />
 
                 {isOffline ? (
-                  <span title="オフライン">
+                  <span title={t("sidebar.offlineTooltip")}>
                     <WifiOff className="w-4 h-4 text-amber-500 shrink-0" />
                   </span>
                 ) : (
@@ -308,23 +311,23 @@ export const Sidebar: React.FC = () => {
                 {/* サムネイル生成状況・枚数バッジ */}
                 <span className="text-[11px] shrink-0 ml-1">
                   {folder.imageCount === 0 ? (
-                    <span className="text-textSecondary/60 font-mono text-[10px]">(0枚)</span>
+                    <span className="text-textSecondary/60 font-mono text-[10px]">{t("sidebar.imagesCount", { count: 0 })}</span>
                   ) : isGenerating ? (
                     <span
                       className="text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded text-[10px] font-mono"
-                      title={`サムネイル生成中: ${folder.thumbCount ?? 0} / ${folder.imageCount} 件`}
+                      title={t("sidebar.generating", { done: folder.thumbCount ?? 0, total: folder.imageCount })}
                     >
-                      ⏳ 生成中 {folder.thumbCount ?? 0}/{folder.imageCount}
+                      {t("sidebar.generatingCount", { done: folder.thumbCount ?? 0, total: folder.imageCount })}
                     </span>
                   ) : isAllDone ? (
                     <span
                       className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                      title="すべてのサムネイル生成が完了しています"
+                      title={t("sidebar.allDoneTooltip")}
                     >
-                      ✓ 完了 ({folder.imageCount})
+                      {t("sidebar.allDoneCount", { total: folder.imageCount })}
                     </span>
                   ) : (
-                    <span className="text-textSecondary/80 font-mono text-[10px]">({folder.imageCount}枚)</span>
+                    <span className="text-textSecondary/80 font-mono text-[10px]">{t("sidebar.imagesCount", { count: folder.imageCount })}</span>
                   )}
                 </span>
               </div>
@@ -333,21 +336,21 @@ export const Sidebar: React.FC = () => {
               <div className="hidden group-hover:flex items-center gap-1 shrink-0 ml-2">
                 <button
                   onClick={handleRescanMissing}
-                  title="未生成・失敗サムネイルを再作成"
+                  title={t("sidebar.recreateThumbsTooltip")}
                   className="p-1 hover:text-amber-400 transition"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={(e) => handleRescanFolder(e, folder.id)}
-                  title="再走査"
+                  title={t("sidebar.rescanFolderTooltip")}
                   className="p-1 hover:text-accent transition"
                 >
                   <FolderSync className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={(e) => handleRemoveFolder(e, folder.id)}
-                  title="解除"
+                  title={t("sidebar.removeFolderTooltip")}
                   className="p-1 hover:text-red-400 transition"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
@@ -373,8 +376,8 @@ export const Sidebar: React.FC = () => {
           }`}
         >
           <Upload className="w-4 h-4 mb-1" />
-          <span className="text-xs">フォルダをドロップ</span>
-          <span className="text-[10px]">またはクリックして追加</span>
+          <span className="text-xs">{t("sidebar.dragDropDrop")}</span>
+          <span className="text-[10px]">{t("sidebar.dragDropOrClick")}</span>
         </div>
 
         {/* ムードボード（資料グループ）セクション */}
@@ -382,11 +385,11 @@ export const Sidebar: React.FC = () => {
           <div className="flex items-center justify-between px-2 mb-2">
             <span className="text-[11px] font-semibold text-textSecondary uppercase tracking-wider flex items-center gap-1.5">
               <LayoutGrid className="w-3.5 h-3.5 text-accent" />
-              ムードボード
+              {t("sidebar.moodboardSection")}
             </span>
             <button
               onClick={async () => {
-                const name = prompt("新規ムードボード名を入力してください (例: ポーズ資料 / 構図参考):");
+                const name = prompt(t("sidebar.createBoardPrompt"));
                 if (name && name.trim()) {
                   try {
                     const created = await backendApi.createBoard({ name: name.trim() });
@@ -394,12 +397,13 @@ export const Sidebar: React.FC = () => {
                     setBoards(all);
                     setActiveBoardId(created.id);
                     setCurrentView("board");
-                  } catch (err) {
-                    alert(`作成失敗: ${err}`);
+                  } catch (err: unknown) {
+                    const errMsg = err instanceof Error ? err.message : String(err);
+                    alert(t("sidebar.createBoardFailed", { error: errMsg }));
                   }
                 }
               }}
-              title="新規ボード作成"
+              title={t("sidebar.createBoardTooltip")}
               className="p-1 hover:bg-surfaceLight rounded text-textSecondary hover:text-accent transition"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -409,7 +413,7 @@ export const Sidebar: React.FC = () => {
           <div className="space-y-1">
             {boards.length === 0 ? (
               <div className="px-3 py-2 text-[11px] text-textSecondary/60 italic">
-                ボード未作成
+                {t("sidebar.noBoardsCreated")}
               </div>
             ) : (
               boards.map((b) => {
@@ -436,7 +440,7 @@ export const Sidebar: React.FC = () => {
                     <button
                       onClick={async (e) => {
                         e.stopPropagation();
-                        if (confirm(`ムードボード「${b.name}」を削除しますか？\n（元画像ファイルは削除されません）`)) {
+                        if (confirm(t("sidebar.deleteBoardConfirm", { name: b.name }))) {
                           await backendApi.deleteBoard(b.id);
                           const updated = await backendApi.getBoards();
                           setBoards(updated);
@@ -446,7 +450,7 @@ export const Sidebar: React.FC = () => {
                           }
                         }
                       }}
-                      title="ボードを削除"
+                      title={t("sidebar.deleteBoardTooltip")}
                       className="hidden group-hover:block p-1 hover:text-red-400 transition ml-1"
                     >
                       <Trash2 className="w-3 h-3" />
@@ -456,6 +460,36 @@ export const Sidebar: React.FC = () => {
               })
             )}
           </div>
+        </div>
+      </div>
+
+      {/* サイドバー最下部: 言語切り替えトグル */}
+      <div className="p-3 border-t border-border bg-surfaceLight/20 flex items-center justify-between text-xs text-textSecondary">
+        <div className="flex items-center gap-1.5 font-medium">
+          <Globe className="w-3.5 h-3.5 text-accent" />
+          <span className="text-[11px]">{t("sidebar.language")}</span>
+        </div>
+        <div className="flex items-center bg-surface border border-border/80 rounded-lg p-0.5 text-[11px]">
+          <button
+            onClick={() => setLocale("ja")}
+            className={`px-2 py-0.5 rounded transition font-medium ${
+              locale === "ja"
+                ? "bg-accent text-white shadow-xs"
+                : "text-textSecondary hover:text-textPrimary"
+            }`}
+          >
+            日本語
+          </button>
+          <button
+            onClick={() => setLocale("en")}
+            className={`px-2 py-0.5 rounded transition font-medium ${
+              locale === "en"
+                ? "bg-accent text-white shadow-xs"
+                : "text-textSecondary hover:text-textPrimary"
+            }`}
+          >
+            English
+          </button>
         </div>
       </div>
     </aside>

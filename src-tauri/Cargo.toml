@@ -25,9 +25,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2.3", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-# 選定理由: 二重起動を防止し、トレイ常駐時や起動中に再度アプリを実行した際、既存ウィンドウを最前面へ復元するため
-tauri-plugin-single-instance = "2"
-opener = { version = "0.7", features = ["reveal"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -50,6 +47,14 @@ thiserror = "2"
 ts-rs = { version = "10", features = ["chrono-impl"] }
 tiny_http = "0.12"
 dirs = "7.0.0"
+
+# デスクトップ専用（Windows, macOS, Linux）の依存関係
+# モバイル環境（Android, iOS）では二重起動防止やデスクトップファイルマネージャー機能が非対応または不要なため分離
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# 選定理由: 二重起動を防止し、トレイ常駐時や起動中に再度アプリを実行した際、既存ウィンドウを最前面へ復元するため
+tauri-plugin-single-instance = "2"
+# 選定理由: デスクトップ環境のエクスプローラー等で該当ファイルを選択状態（ハイライト）で開くため
+opener = { version = "0.7", features = ["reveal"] }
 
 [dev-dependencies]
 tempfile = "3"

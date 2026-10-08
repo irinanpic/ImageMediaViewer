@@ -304,5 +304,18 @@ export const backendApi = {
    */
   openLogFolder: (): Promise<{ success: boolean; path: string }> =>
     callIpc<{ success: boolean; path: string }>("open_log_folder"),
+
+  /**
+   * バックエンドの現在の言語設定を取得
+   */
+  getLocale: (): Promise<string> =>
+    callIpc<string>("get_locale"),
+
+  /**
+   * バックエンドの言語設定を更新し、タスクトレイメニューも同期更新
+   * @param locale 言語コード ("ja" | "en")
+   */
+  setLocale: (locale: string): Promise<string> =>
+    callIpc<string>("set_locale", { locale }),
 };
 
