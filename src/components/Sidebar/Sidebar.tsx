@@ -15,10 +15,11 @@ import {
   WifiOff,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
-import { isTauriEnvironment } from "../../lib/thumbUrl";
+import { isTauriEnvironment, isMobileEnvironment } from "../../lib/thumbUrl";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { WatchedFolder } from "../../types/generated/WatchedFolder";
+import { AddFolderModal } from "./AddFolderModal";
 
 export const Sidebar: React.FC = () => {
   const { t, locale, setLocale } = useTranslation();
@@ -90,18 +91,33 @@ export const Sidebar: React.FC = () => {
   const [draggedFolderIndex, setDraggedFolderIndex] = useState<number | null>(null);
   const [dragOverFolderIndex, setDragOverFolderIndex] = useState<number | null>(null);
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
+  // モバイル向けフォルダ追加モーダルの表示状態
+  const [isAddFolderModalOpen, setIsAddFolderModalOpen] = useState(false);
 
   // フォルダ追加ダイアログオープン
   const handleAddFolder = async () => {
+    // モバイル環境（Android/iOS）では open({ directory: true }) が非対応のため専用モーダルを開く
+    if (isMobileEnvironment()) {
+      setIsAddFolderModalOpen(true);
+      return;
+    }
+
     try {
       let selected: string | null = null;
       if (isTauriEnvironment()) {
-        const res = await open({
-          directory: true,
-          multiple: false,
-          title: t("sidebar.selectFolderDialogTitle"),
-        });
-        if (typeof res === "string") selected = res;
+        try {
+          const res = await open({
+            directory: true,
+            multiple: false,
+            title: t("sidebar.selectFolderDialogTitle"),
+          });
+          if (typeof res === "string") selected = res;
+        } catch (dialogErr: any) {
+          // ネイティブダイアログが未対応・失敗した場合はフォールバックモーダルを開く
+          console.warn("Native folder dialog failed, falling back to AddFolderModal:", dialogErr);
+          setIsAddFolderModalOpen(true);
+          return;
+        }
       } else {
         selected = prompt(t("sidebar.enterPathPrompt"));
       }
@@ -199,6 +215,7 @@ export const Sidebar: React.FC = () => {
   if (!isSidebarOpen) return null;
 
   return (
+    <>
     <aside className="w-64 bg-surface border-r border-border flex flex-col h-full select-none z-10">
       {/* ヘッダ */}
       <div className="p-4 border-b border-border flex items-center justify-between">
@@ -493,5 +510,11 @@ export const Sidebar: React.FC = () => {
         </div>
       </div>
     </aside>
+    <AddFolderModal
+      isOpen={isAddFolderModalOpen}
+      onClose={() => setIsAddFolderModalOpen(false)}
+      onSelectPath={addFolderByPath}
+    />
+    </>
   );
 };

@@ -74,54 +74,68 @@ export function getImageFormatName(format?: string | null, filePath?: string): s
     case "avif":
       return "AVIF";
     default:
-      return ext ? ext.toUpperCase() : "不明";
+      return ext ? ext.toUpperCase() : "UNKNOWN";
   }
 }
+
+/** 翻訳関数の型定義 */
+export type TranslationFunction = (key: string, params?: Record<string, string | number>) => string;
 
 /**
  * フォーマットに応じた可逆／非可逆圧縮の種別を取得
  *
+ * 変更理由: 多言語対応。英語設定時には英語表記（Lossless, Lossy等）を返し、
+ * 日本語設定時には従来の日本語併記（可逆圧縮 (Lossless)等）を返す。
+ *
  * @param formatName 正規化されたフォーマット名
+ * @param t 翻訳関数（省略時はデフォルト英語/バイリンガル表記）
  * @returns 圧縮種別テキスト
  */
-export function getCompressionType(formatName: string): string {
+export function getCompressionType(formatName: string, t?: TranslationFunction): string {
   switch (formatName) {
     case "JPEG":
-      return "非可逆圧縮 (Lossy)";
+      return t ? t("metadata.compressionLossy") : "非可逆圧縮 (Lossy)";
     case "PNG":
-      return "可逆圧縮 (Lossless)";
+      return t ? t("metadata.compressionLossless") : "可逆圧縮 (Lossless)";
     case "GIF":
-      return "可逆圧縮 (Lossless / 256色)";
+      return t ? t("metadata.compressionLossless256") : "可逆圧縮 (Lossless / 256色)";
     case "BMP":
-      return "非圧縮 / 可逆 (Uncompressed)";
+      return t ? t("metadata.compressionUncompressed") : "非圧縮 / 可逆 (Uncompressed)";
     case "WebP":
-      return "非可逆 / 可逆両対応 (WebP)";
+      return t ? t("metadata.compressionWebP") : "非可逆 / 可逆両対応 (WebP)";
     case "AVIF":
-      return "非可逆 / 可逆両対応 (AVIF)";
+      return t ? t("metadata.compressionAvif") : "非可逆 / 可逆両対応 (AVIF)";
     case "TIFF":
-      return "可逆 / 非圧縮 (TIFF)";
+      return t ? t("metadata.compressionTiff") : "可逆 / 非圧縮 (TIFF)";
     case "SVG":
-      return "ベクター形式 (Vector)";
+      return t ? t("metadata.compressionVector") : "ベクター形式 (Vector)";
     default:
-      return "不明";
+      return t ? t("metadata.compressionUnknown") : "不明";
   }
 }
 
 /**
  * 画像の詳細情報からフォーマット、可逆/非可逆、圧縮率情報を包括的に解析・算出
  *
+ * 変更理由: 多言語対応。「削減」「生データ比」「可逆圧縮」等の文言を言語設定に応じて動的切り替え。
+ *
  * @param detail 画像詳細情報（幅、高さ、ファイルサイズ、フォーマット、パス）
+ * @param t 翻訳関数（省略時は日本語表記をフォールバックとして保持）
  * @returns 解析結果オブジェクト
  */
-export function analyzeImageMetadata(detail: {
-  width?: number | null;
-  height?: number | null;
-  fileSize: number;
-  format?: string | null;
-  filePath?: string;
-}): FormattedImageMetadata {
-  const formatName = getImageFormatName(detail.format, detail.filePath);
-  const compressionType = getCompressionType(formatName);
+export function analyzeImageMetadata(
+  detail: {
+    width?: number | null;
+    height?: number | null;
+    fileSize: number;
+    format?: string | null;
+    filePath?: string;
+  },
+  t?: TranslationFunction
+): FormattedImageMetadata {
+  const rawFormat = getImageFormatName(detail.format, detail.filePath);
+  const formatName = rawFormat === "UNKNOWN" && t ? t("metadata.formatUnknown") : rawFormat;
+  const compressionType = getCompressionType(rawFormat, t);
 
   // ファイルサイズ表記: 例 "3.45 MB (3,617,592 B)"
   const formattedSize = formatBytes(detail.fileSize);
@@ -140,15 +154,21 @@ export function analyzeImageMetadata(detail: {
     const bppDisplay = `${bpp.toFixed(2)} bpp`;
 
     let compressionRatioDisplay = "";
-    if (formatName === "BMP") {
-      compressionRatioDisplay = `非圧縮 (生データ比 100%)`;
+    if (rawFormat === "BMP") {
+      compressionRatioDisplay = t
+        ? t("metadata.ratioUncompressedBmp")
+        : "非圧縮 (生データ比 100%)";
     } else if (detail.fileSize < rawBytes) {
       const reduction = ((1 - detail.fileSize / rawBytes) * 100).toFixed(1);
       const ratio = ((detail.fileSize / rawBytes) * 100).toFixed(1);
-      compressionRatioDisplay = `${reduction}% 削減 (生データ比 ${ratio}% / ${bppDisplay})`;
+      compressionRatioDisplay = t
+        ? t("metadata.ratioReduction", { reduction, ratio, bpp: bppDisplay })
+        : `${reduction}% 削減 (生データ比 ${ratio}% / ${bppDisplay})`;
     } else {
       const ratio = ((detail.fileSize / rawBytes) * 100).toFixed(1);
-      compressionRatioDisplay = `生データ比 ${ratio}% (${bppDisplay})`;
+      compressionRatioDisplay = t
+        ? t("metadata.ratioOverRaw", { ratio, bpp: bppDisplay })
+        : `生データ比 ${ratio}% (${bppDisplay})`;
     }
 
     return {
@@ -166,7 +186,9 @@ export function analyzeImageMetadata(detail: {
     compressionType,
     fileSizeDisplay,
     rawSizeDisplay: null,
-    compressionRatioDisplay: "解像度未取得のため計算不可",
+    compressionRatioDisplay: t
+      ? t("metadata.ratioResolutionUnknown")
+      : "解像度未取得のため計算不可",
     bppDisplay: null,
   };
 }

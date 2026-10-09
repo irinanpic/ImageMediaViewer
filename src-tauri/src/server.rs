@@ -851,6 +851,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                     (Method::Post, "/api/logs/open") => {
                         if let Some(lm) = crate::logger::get_log_manager() {
                             let dir = lm.log_dir();
+                            #[cfg(not(any(target_os = "android", target_os = "ios")))]
                             let _ = opener::reveal(&dir);
                             json_response(&serde_json::json!({
                                 "success": true,
@@ -915,9 +916,13 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                             .args(["/select,", &orig_path])
                                             .spawn();
                                     }
-                                    #[cfg(not(target_os = "windows"))]
+                                    #[cfg(all(not(target_os = "windows"), not(any(target_os = "android", target_os = "ios"))))]
                                     {
                                         let _ = opener::reveal(&orig_path);
+                                    }
+                                    #[cfg(any(target_os = "android", target_os = "ios"))]
+                                    {
+                                        let _ = &orig_path;
                                     }
                                     json_response(&serde_json::json!({ "success": true }), 200)
                                 } else {

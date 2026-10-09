@@ -8,7 +8,7 @@ use crate::models::{
     Board, BoardItem, BoardNote, BookmarkRecord, CreateBoardNotePayload, CreateBoardPayload,
     CreateBookmarkPayload, GetImagesPayload, ImageDetail, ImageRecord, ThumbProgress,
     TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload, UpdateBoardPayload,
-    WatchedFolder, WindowState,
+    WatchedFolder, WindowState, PlatformInfo, PresetFolder,
 };
 use crate::pipeline::JobPriority;
 use crate::scanner::walker::{is_sub_directory, normalize_path};
@@ -568,9 +568,81 @@ pub async fn set_locale(
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     crate::tray::update_tray_locale(&app, &locale);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = &app;
 
     info!("Language updated: locale = {}", locale);
     Ok(locale)
+}
+
+/// プラットフォーム情報および端末内の推奨画像フォルダ候補を取得する
+///
+/// 変更理由: モバイル（Android）環境におけるフォルダ選択ダイアログ非対応（Folder picker is not implemented on mobile）への対策。
+/// OSに応じたプリセットフォルダ（DCIM/Camera, Pictures等）をフロントエンドへ提示し、ワンタップで監視対象に追加可能にする。
+///
+/// @return プラットフォーム情報とプリセットフォルダ候補のリスト
+#[command]
+pub async fn get_platform_info() -> Result<PlatformInfo, AppError> {
+    #[cfg(target_os = "android")]
+    let os = "android".to_string();
+    #[cfg(target_os = "windows")]
+    let os = "windows".to_string();
+    #[cfg(target_os = "macos")]
+    let os = "macos".to_string();
+    #[cfg(target_os = "linux")]
+    let os = "linux".to_string();
+    #[cfg(not(any(target_os = "android", target_os = "windows", target_os = "macos", target_os = "linux")))]
+    let os = "unknown".to_string();
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let is_mobile = true;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let is_mobile = false;
+
+    let mut presets = Vec::new();
+
+    #[cfg(target_os = "android")]
+    {
+        let candidates = [
+            ("📷 カメラ (Camera)", "/storage/emulated/0/DCIM/Camera"),
+            ("📁 DCIM 全体", "/storage/emulated/0/DCIM"),
+            ("🖼️ ピクチャ (Pictures)", "/storage/emulated/0/Pictures"),
+            ("📥 ダウンロード (Download)", "/storage/emulated/0/Download"),
+            ("💾 内部ストレージ", "/storage/emulated/0"),
+        ];
+        for (name, path) in candidates {
+            let exists = Path::new(path).exists();
+            presets.push(PresetFolder {
+                name: name.to_string(),
+                path: path.to_string(),
+                exists,
+            });
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(pic_dir) = dirs::picture_dir() {
+            presets.push(PresetFolder {
+                name: "ピクチャ (Pictures)".to_string(),
+                path: pic_dir.to_string_lossy().to_string(),
+                exists: pic_dir.exists(),
+            });
+        }
+        if let Some(down_dir) = dirs::download_dir() {
+            presets.push(PresetFolder {
+                name: "ダウンロード (Download)".to_string(),
+                path: down_dir.to_string_lossy().to_string(),
+                exists: down_dir.exists(),
+            });
+        }
+    }
+
+    Ok(PlatformInfo {
+        os,
+        is_mobile,
+        presets,
+    })
 }
 
 

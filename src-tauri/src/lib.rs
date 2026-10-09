@@ -13,7 +13,9 @@ pub mod state;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod tray;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[allow(unused_imports)]
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tauri::Manager;
 use tracing::info;
@@ -65,6 +67,7 @@ fn resolve_app_directories() -> (std::path::PathBuf, std::path::PathBuf) {
 /// Tauri Native IPC とカスタムプロトコル（thumb://, original://）により、
 /// ポート競合ゼロ、ファイアウォール警告ゼロの安定したネイティブデスクトップアプリを実現する。
 /// メインウィンドウのクローズ時は常駐設定（stay_in_tray）に応じてトレイ常駐または完全終了を行う。
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (app_data_dir, app_cache_dir) = resolve_app_directories();
 
@@ -145,6 +148,7 @@ pub fn run() {
     let stay_for_window = Arc::clone(&stay_in_tray);
     let app_data_dir_clone = app_data_dir.clone();
 
+    #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
@@ -195,12 +199,13 @@ pub fn run() {
 
             #[cfg(any(target_os = "android", target_os = "ios"))]
             {
-                let _ = (&state_for_tray, &stay_for_tray, &app_data_dir_clone);
+                let _ = (&state_for_tray, &stay_for_tray, &app_data_dir_clone, &initial_locale);
             }
 
             // メインウィンドウを表示
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
@@ -244,6 +249,7 @@ pub fn run() {
             commands::heartbeat,
             commands::get_locale,
             commands::set_locale,
+            commands::get_platform_info,
         ]);
 
     builder

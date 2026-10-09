@@ -261,6 +261,26 @@ impl Default for WindowState {
     }
 }
 
+/// プラットフォームごとのプリセットフォルダ候補
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct PresetFolder {
+    pub name: String,
+    pub path: String,
+    pub exists: bool,
+}
+
+/// プラットフォーム情報および推奨プリセット
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct PlatformInfo {
+    pub os: String,
+    pub is_mobile: bool,
+    pub presets: Vec<PresetFolder>,
+}
+
 /// ムードボード（グループ）情報
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -504,6 +524,12 @@ mod tests {
     fn export_bindings_bookmark() {
         BookmarkRecord::export().expect("Failed to export BookmarkRecord bindings");
         CreateBookmarkPayload::export().expect("Failed to export CreateBookmarkPayload bindings");
+    }
+
+    #[test]
+    fn export_bindings_platform_info() {
+        PresetFolder::export().expect("Failed to export PresetFolder bindings");
+        PlatformInfo::export().expect("Failed to export PlatformInfo bindings");
     }
 }
 

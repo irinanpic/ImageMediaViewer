@@ -10,6 +10,19 @@ export function isTauriEnvironment(): boolean {
 }
 
 /**
+ * モバイル（Android / iOS）環境で実行されているかどうかを判定
+ *
+ * 変更理由: モバイルではネイティブファイルピッカー（Folder picker）がサポートされていないため、
+ * 専用のプリセットフォルダ追加モーダルを表示する等のUI分岐を行うため。
+ *
+ * @returns モバイル環境であれば true
+ */
+export function isMobileEnvironment(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+/**
  * 画像IDとリビジョンからサムネイルURLを生成する
  *
  * 変更理由: 仕様書§5.5および完全ポートレス一体型アーキテクチャ。

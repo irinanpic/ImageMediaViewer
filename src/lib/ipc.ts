@@ -7,6 +7,7 @@ import type { TimelineSort } from "../types/generated/TimelineSort";
 import type { TimelineSummary } from "../types/generated/TimelineSummary";
 import type { WatchedFolder } from "../types/generated/WatchedFolder";
 import type { WindowState } from "../types/generated/WindowState";
+import type { PlatformInfo } from "../types/generated/PlatformInfo";
 import type { FailedImageRecord } from "../types/generated/FailedImageRecord";
 import type { LogEntry } from "../types/generated/LogEntry";
 import type {
@@ -317,5 +318,11 @@ export const backendApi = {
    */
   setLocale: (locale: string): Promise<string> =>
     callIpc<string>("set_locale", { locale }),
+
+  /**
+   * プラットフォーム情報および端末の推奨画像フォルダ候補を取得
+   */
+  getPlatformInfo: (): Promise<PlatformInfo> =>
+    callIpc<PlatformInfo>("get_platform_info"),
 };
 

@@ -29,7 +29,7 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
   className = "",
 }) => {
   const { t } = useTranslation();
-  const meta = analyzeImageMetadata(detail);
+  const meta = analyzeImageMetadata(detail, t);
   const fileName = detail.filePath.split(/[\\/]/).pop() || "";
   const displayTitle = title || t("metadata.title");
 
