@@ -96,32 +96,47 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
     [containerRef]
   );
 
-  // つまみ・バーのマウスダウン（ドラッグ開始）
-  const handleMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+  // つまみ・バーのポインターダウン（マウスまたはタッチによるドラッグ開始）
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
+
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // 一部環境用フォールバック
+      }
 
       isDraggingRef.current = true;
       setIsDragging(true);
       scrollToClientY(e.clientY);
-
-      const handleMouseMove = (moveEvent: MouseEvent) => {
-        if (!isDraggingRef.current) return;
-        scrollToClientY(moveEvent.clientY);
-      };
-
-      const handleMouseUp = () => {
-        isDraggingRef.current = false;
-        setIsDragging(false);
-        window.removeEventListener("mousemove", handleMouseMove);
-        window.removeEventListener("mouseup", handleMouseUp);
-      };
-
-      window.addEventListener("mousemove", handleMouseMove);
-      window.addEventListener("mouseup", handleMouseUp);
     },
     [scrollToClientY]
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isDraggingRef.current) return;
+      e.preventDefault();
+      scrollToClientY(e.clientY);
+    },
+    [scrollToClientY]
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isDraggingRef.current) return;
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
+      isDraggingRef.current = false;
+      setIsDragging(false);
+    },
+    []
   );
 
   if (totalImages === 0) return null;
@@ -134,9 +149,14 @@ export const TimelineScrubber: React.FC<TimelineScrubberProps> = ({
   return (
     <div
       ref={barRef}
-      onMouseDown={handleMouseDown}
+      data-scrubber="true"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => !isDragging && setIsHovered(false)}
+      style={{ touchAction: "none" }}
       className="absolute top-0 right-0 bottom-0 w-6 z-20 flex justify-center cursor-pointer select-none group bg-background/20 hover:bg-surface/50 backdrop-blur-xs transition-colors"
       title={t("timeline.scrubberTooltip")}
     >

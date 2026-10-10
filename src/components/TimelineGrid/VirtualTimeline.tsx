@@ -9,6 +9,7 @@ import { DateHeader } from "./DateHeader";
 import { GridCell } from "./GridCell";
 import { CheckSquare, Image, LayoutGrid, X } from "lucide-react";
 import { TimelineScrubber } from "./TimelineScrubber";
+import { isMobileEnvironment } from "../../lib/thumbUrl";
 
 /**
  * タイムライングリッドの仮想スクロール表示コンポーネント
@@ -205,6 +206,8 @@ export const VirtualTimeline: React.FC = () => {
   // マウスドラッグ矩形選択（ラバーバンド選択）
   const handleTimelineMouseDown = useCallback(
     (e: React.MouseEvent) => {
+      // モバイル環境やタッチ操作ではタイムラインの上下スクロールを最優先とし、誤った矩形選択を抑止
+      if (isMobileEnvironment() || (e as any).nativeEvent?.pointerType === "touch") return;
       if (e.button !== 0 || isViewerOpen) return;
       const target = e.target as HTMLElement;
       // スクラブバーやボタンなどのクリックはドラッグ矩形選択から除外

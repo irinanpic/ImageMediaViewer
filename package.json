@@ -8,6 +8,9 @@
     "build": "tsc && vite build",
     "build:installer": "tauri build",
     "tauri:build": "tauri build",
+    "build:android": "node scripts/build-android.mjs",
+    "build:android:release": "node scripts/build-android.mjs --release",
+    "build:android:x86_64": "node scripts/build-android.mjs --target x86_64",
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri"

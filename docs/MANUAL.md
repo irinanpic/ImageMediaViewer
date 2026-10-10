@@ -416,5 +416,71 @@ ImageMediaViewer は完全な読み取り専用（Read-Only）設計です。フ
 4. 起動後、画面が自動的に再接続を試行し、数秒で元の閲覧状態に復帰します。
 ※ 他のOS（macOS / Linux）をご利用の場合や手動で起動したい場合も、同パネルにOSに合わせた起動コマンド（`.\run-server.bat` または `./run-server.sh`）が表示されますので、コピーしてターミナルで実行するだけで回復できます。
 
+---
+
+## 10. モバイル版（Android）のビルドと操作ガイド
+
+ImageMediaViewer は、Android 実機および Android Studio エミュレータに対応しています。
+
+### 10.1 npm コマンドによる簡単ビルド
+
+プロジェクトルートのターミナルから以下の npm コマンドを実行するだけで、環境変数（Android SDK, NDK, Java）が自動検出され、APKファイルが生成されます。
+
+```bash
+# 1. 実機・ARMエミュレータ用 APK のビルド（推奨）
+npm run build:android
+
+# 2. リリース用 APK のビルド
+npm run build:android:release
+
+# 3. x86_64 エミュレータ用 APK のビルド
+npm run build:android:x86_64
+```
+
+#### 生成される APK の出力先
+- **デバッグ版 (`npm run build:android`)**:
+  ```text
+  src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+  ```
+- **リリース版 (`npm run build:android:release`)**:
+  ```text
+  src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
+  ```
+  *(最適化済みにより約24MBと非常に軽量です)*
+
+#### 端末へのインストール方法 (adb)
+PCとAndroid端末をUSBデバッグ接続するか、エミュレータを起動した状態で以下を実行します:
+```bash
+# デバッグ版のインストール
+adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk"
+
+# リリース版のインストール
+adb install -r "src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
+```
+
+---
+
+### 10.2 Android Studio を使った実行・デバッグ
+
+1. Android Studio を起動し、**`src-tauri/gen/android`** フォルダを開きます。
+2. Gradle の同期が完了したら、ツールバーで対象デバイス（実機またはエミュレータ）を選択し、**「Run」（▶ボタン）** を押すだけで自動的にビルド＆起動します。
+
+> [!WARNING]
+> **Android Studio 起動時の注意**:
+> Android Studio が開いている間は、Android Studio の内部プロセスがビルドフォルダをロックするため、ターミナルからの `npm run build:android` でファイル競合（`AccessDeniedException`）が起きる場合があります。
+> その場合は **Android Studio 上の「Run」(▶) ボタン** で実行するか、一度 Android Studio を終了してから npm コマンドを実行してください。
+
+---
+
+### 10.3 モバイル版でのタッチ操作一覧
+
+| 機能 | モバイルでのタッチジェスチャー |
+|---|---|
+| **タイムライン** | 1本指で上下にフリックして滑らかに慣性スクロール。<br>右端のスクラバーを指で上下になぞると年月ジャンプ。 |
+| **画像ビューア** | **2本指ピンチイン/アウト**: 自由に拡大縮小 & パン。<br>**1本指ドラッグ**: 拡大中の自由なスクロール。<br>**等倍時左右スワイプ**: 前後の画像へサクサク切り替え。<br>**ダブルタップ**: 原寸ピクセル等倍（1:1）と画面フィットのトグル。 |
+| **ムードボード** | **2本指ピンチ**: キャンバス全体のズーム & パン。<br>**1本指ドラッグ**: アイテム移動、回転ハンドル、リサイズハンドル、メモ移動。 |
+| **サイドバー** | フォルダ行の **「▲」「▼」ボタン** をタップしてワンタッチで並び替え。 |
+
+
 
 

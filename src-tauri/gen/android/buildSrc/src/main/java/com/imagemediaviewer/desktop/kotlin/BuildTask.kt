@@ -23,16 +23,16 @@ abstract class BuildTask : DefaultTask() {
 
     @TaskAction
     fun assemble() {
-        val executable = """npm""";
+        val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npm.cmd" else "npm"
         try {
             runTauriCli(executable)
         } catch (e: Exception) {
             if (Os.isFamily(Os.FAMILY_WINDOWS)) {
-                // Try different Windows-specific extensions
+                // Try different Windows-specific extensions as fallback
                 val fallbacks = listOf(
-                    "$executable.exe",
-                    "$executable.cmd",
-                    "$executable.bat",
+                    "npm.exe",
+                    "npm.bat",
+                    "npm",
                 )
 
                 var lastException: Exception = e
@@ -46,7 +46,7 @@ abstract class BuildTask : DefaultTask() {
                 }
                 throw lastException
             } else {
-                throw e;
+                throw e
             }
         }
     }
@@ -59,8 +59,13 @@ abstract class BuildTask : DefaultTask() {
 
         execOperations.exec {
             workingDir(File(projectDir, rootDirRel))
-            executable(executable)
-            args(args)
+            if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+                executable("cmd.exe")
+                args(listOf("/c", executable) + args)
+            } else {
+                executable(executable)
+                args(args)
+            }
             if (logger.isEnabled(LogLevel.DEBUG)) {
                 args("-vv")
             } else if (logger.isEnabled(LogLevel.INFO)) {

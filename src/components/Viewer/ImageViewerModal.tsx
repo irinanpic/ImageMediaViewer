@@ -44,7 +44,32 @@ export const ImageViewerModal: React.FC = () => {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  useViewerGestures(containerRef, imgRef);
+
+  // 前後への移動処理
+  const handlePrev = async () => {
+    if (activeImageIndex !== null && activeImageIndex > 0) {
+      const nextIndex = activeImageIndex - 1;
+      const rec = await ensureIndex(nextIndex);
+      if (rec) {
+        setViewerIndex(rec.id, nextIndex);
+      }
+    }
+  };
+
+  const handleNext = async () => {
+    if (activeImageIndex !== null && activeImageIndex < totalImages - 1) {
+      const nextIndex = activeImageIndex + 1;
+      const rec = await ensureIndex(nextIndex);
+      if (rec) {
+        setViewerIndex(rec.id, nextIndex);
+      }
+    }
+  };
+
+  useViewerGestures(containerRef, imgRef, {
+    onNext: handleNext,
+    onPrev: handlePrev,
+  });
 
   // 回転後の元画像解像度とコンテナ寸法から真の100%原寸ピクセル等倍（1:1）ズーム率を算出
   // 変更理由: フィット表示（縮小）から元画像の本来のピクセル解像度で細部をクリアに確認できるようにするため
@@ -98,26 +123,7 @@ export const ImageViewerModal: React.FC = () => {
     }
   }, [activeImageIndex, totalImages, getImageByIndex]);
 
-  // 前後への移動処理
-  const handlePrev = async () => {
-    if (activeImageIndex !== null && activeImageIndex > 0) {
-      const nextIndex = activeImageIndex - 1;
-      const rec = await ensureIndex(nextIndex);
-      if (rec) {
-        setViewerIndex(rec.id, nextIndex);
-      }
-    }
-  };
 
-  const handleNext = async () => {
-    if (activeImageIndex !== null && activeImageIndex < totalImages - 1) {
-      const nextIndex = activeImageIndex + 1;
-      const rec = await ensureIndex(nextIndex);
-      if (rec) {
-        setViewerIndex(rec.id, nextIndex);
-      }
-    }
-  };
 
   // キーボードショートカット (§8.4)
   useEffect(() => {
@@ -296,6 +302,7 @@ export const ImageViewerModal: React.FC = () => {
       {/* メイン画像領域 */}
       <div
         ref={containerRef}
+        style={{ touchAction: "none" }}
         className="flex-1 relative overflow-hidden flex items-center justify-center cursor-grab"
       >
         {/* サムネイル（即時表示プレビュー：原寸ロード完了まで、または原寸取得失敗時に表示） */}

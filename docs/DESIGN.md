@@ -691,4 +691,80 @@ flowchart LR
 * **設定の自動同期永続化**:
   * 言語設定は `AppSettings` の `locale` フィールドにシリアライズされ、次回起動時もトレイメニューおよびUIが前回の言語で復元。
 
+---
+
+## 10. モバイル & タッチジェスチャー設計 (Mobile & Touch Gesture Architecture)
+
+Android 実機および Android Studio エミュレータ環境におけるドラッグ・ピンチ・スワイプ等のタッチ操作を完全保証するため、フロントエンドのイベントパイプラインを最新の Web 標準（Pointer Events & Touch Events）へ刷新し、Windows デスクトップ版の操作性を一切損なうことなくマルチプラットフォーム展開を実現しています。
+
+```mermaid
+flowchart TD
+    subgraph Input ["入力イベントソース"]
+        Mouse["マウス (PC)"]
+        Touch1["1本指タッチ (モバイル)"]
+        Touch2["2本指マルチタッチ (ピンチ)"]
+        Pen["スタイラスペン"]
+    end
+
+    subgraph Pipeline ["統一イベントハンドラ (Pointer & Touch)"]
+        PE["Pointer Events (onPointerDown / Move / Up)\nsetPointerCapture()"]
+        TE["Touch Events (passive: false)\ntouch-action: none"]
+        MathUtil["gestureMath ユーティリティ\n(クランプ・比率・スワイプ判定)"]
+    end
+
+    subgraph Actions ["各画面のジェスチャー動作"]
+        ViewerAction["画像ビューア\n・2本指ピンチズーム&パン\n・等倍時左右スワイプ送り\n・ダブルタップ等倍トグル\n・ズーム時ドラッグパン"]
+        BoardAction["ムードボード\n・2本指キャンバスピンチズーム&パン\n・アイテム/メモ/ハンドルの追従ドラッグ\n・任意角度回転/リサイズ/クロップ"]
+        TimelineAction["タイムライン & スクラバー\n・指スクラバー高速スクロール\n・縦スクロール保護 (矩形選択誤発火防止)"]
+        SidebarAction["サイドバー\n・上下移動ボタン(▲/▼)による並び替え"]
+    end
+
+    Mouse --> PE
+    Pen --> PE
+    Touch1 --> PE
+    Touch1 --> TE
+    Touch2 --> TE
+
+    PE --> MathUtil
+    TE --> MathUtil
+
+    MathUtil --> ViewerAction
+    MathUtil --> BoardAction
+    MathUtil --> TimelineAction
+    MathUtil --> SidebarAction
+```
+
+### 10.1 Pointer Events API への統一と PointerCapture
+* **マウス・タッチ・ペンの統一パイプライン**:
+  * `MouseEvent`（`onMouseDown`, `onMouseMove`, `onMouseUp`）のみに依存していた旧実装から、最新の `PointerEvent` へ統一。
+  * `e.currentTarget.setPointerCapture(e.pointerId)` を呼ぶことで、移動中にポインターが要素の枠外へ飛び出しても確実にイベントを追従させ、画面外で指を離した際も確実に完了・位置永続化を実行。
+* **`touch-action: none` の徹底**:
+  * ビューア画像領域、ムードボードキャンバス、スクラバー等のドラッグ操作要素に CSS `touch-action: none` を適用。
+  * Android WebView 標準のオーバースクロールやジェスチャーナビゲーション（戻る・進む）によるイベント中断（`pointercancel`）を完全に遮断。
+
+### 10.2 画像ビューアのタッチジェスチャー (`useViewerGestures.ts`, `gestureMath.ts`)
+* **2本指ピンチズーム＆中心点パン**:
+  * `calculateDistance` および `calculatePinchZoom` により、2本指の距離変化から直感的な拡大縮小倍率（0.5〜16倍）を算出。
+  * `calculateZoomCenterPan` により、ピンチ中心点の移動に合わせたスムーズなパン追従を実現。
+* **等倍時の左右フリック／スワイプ送り**:
+  * 等倍（`zoom <= 1.05`）表示時は、横スワイプ移動量（`detectSwipeDirection`）を判定し、左右へのフリックで前後の画像へ即座にページ送り。
+* **ダブルタップ等倍トグル**:
+  * 300ms 以内の連続タップを検知し、元画像の解像度に基づいた真の 100% 等倍（1:1 ピクセル）と画面フィットをワンアクションで切り替え。
+
+### 10.3 ムードボードキャンバスのマルチタッチ対応 (`MoodboardCanvas.tsx`)
+* **2本指ピンチによるキャンバスズーム＆パン**:
+  * キャンバス全体に対して 2本指タッチを監視し、キャンバスのピンチイン/ピンチアウトズームおよび2本指パン移動をサポート。
+* **アイテム・メモ・ハンドルのドラッグ操作**:
+  * アイテム移動、回転ハンドル、リサイズハンドル、メモ移動・リサイズ、クリッピング矩形選択のすべてを PointerEvent 化。
+  * ポインターキャプチャにより、指でハンドルを隠してしまうような小さなUIでも外れることなく快適に操作可能。
+
+### 10.4 タイムラインとサイドバーのモバイル最適化 (`VirtualTimeline.tsx`, `Sidebar.tsx`, `TimelineScrubber.tsx`)
+* **スクラバーのポインタードラッグ**:
+  * タイムライン右端の高速スクロールバーを PointerEvent 化し、指でなぞるだけで数万枚のライブラリを瞬時にスクロール可能に。
+* **タイムライン縦スクロールの保護**:
+  * モバイル環境（`isMobileEnvironment`）およびタッチ操作時（`pointerType === "touch"`）は、デスクトップ用のドラッグ矩形選択（ラバーバンド選択）を抑止し、指による上下フリックスクロールを最優先。
+* **サイドバーのフォルダ並び替え**:
+  * モバイル WebView で動作しない HTML5 Drag and Drop の制限を克服するため、フォルダ行に上下移動ボタン（▲ / ▼）を追加。タップ操作でフォルダの並び順を自在に変更可能。
+
+
 

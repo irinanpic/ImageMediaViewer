@@ -28,6 +28,11 @@ import { useAppStore } from "../../store";
 import type { Board, BoardItem, BoardNote } from "../../types/board";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { ImageDetailPanel } from "../Common/ImageDetailPanel";
+import {
+  calculateCenter,
+  calculateDistance,
+  calculatePinchZoom,
+} from "../../utils/gestureMath";
 
 /** 付箋メモのカラーパレット定義 */
 const NOTE_COLORS = [
@@ -126,6 +131,13 @@ export const MoodboardCanvas: React.FC = () => {
   } | null>(null);
   const isDraggingCropRef = useRef(false);
   const cropImageRectRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
+
+  // タッチデバイスでの2本指キャンバスピンチズーム・パン用Ref
+  const isCanvasPinchingRef = useRef(false);
+  const pinchStartDistRef = useRef(0);
+  const pinchStartZoomRef = useRef(1);
+  const pinchStartCenterRef = useRef({ x: 0, y: 0 });
+  const pinchStartPanRef = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     panRef.current = pan;
@@ -295,11 +307,19 @@ export const MoodboardCanvas: React.FC = () => {
   );
 
   // キャンバス全体のドラッグ（パン）開始
-  const handleCanvasMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+  const handleCanvasPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      // 2本指ピンチ中は単一ポインターのキャンバスパンをスキップ
+      if (isCanvasPinchingRef.current) return;
+
       // 中ボタンクリック、またはSpaceキー押下中、または余白クリックでパン開始
       if (e.button === 1 || e.button === 0 || isSpacePressedRef.current) {
         if (e.target === containerRef.current || (e.target as HTMLElement).dataset.canvasBg) {
+          try {
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          } catch {
+            // フォールバック
+          }
           isDraggingCanvasRef.current = true;
           dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
           setSelectedItemId(null);
@@ -314,15 +334,21 @@ export const MoodboardCanvas: React.FC = () => {
   );
 
   // アイテムのドラッグ移動開始
-  const handleItemMouseDown = useCallback(
-    (e: React.MouseEvent, item: BoardItem) => {
-      if (e.button !== 0 || isCropping) return;
+  const handleItemPointerDown = useCallback(
+    (e: React.PointerEvent, item: BoardItem) => {
+      if (e.button !== 0 || isCropping || isCanvasPinchingRef.current) return;
       e.stopPropagation();
 
       flushSaveEditingNote();
       setSelectedItemId(item.id);
       setSelectedNoteId(null);
       if (item.isLocked) return;
+
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
 
       isDraggingItemRef.current = true;
       draggingItemIdRef.current = item.id;
@@ -340,11 +366,17 @@ export const MoodboardCanvas: React.FC = () => {
   );
 
   // アイテムのリサイズ（角ハンドル）開始
-  const handleResizeHandleMouseDown = useCallback(
-    (e: React.MouseEvent, item: BoardItem) => {
+  const handleResizeHandlePointerDown = useCallback(
+    (e: React.PointerEvent, item: BoardItem) => {
       if (e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
+
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
 
       isResizingItemRef.current = true;
       draggingItemIdRef.current = item.id;
@@ -363,9 +395,9 @@ export const MoodboardCanvas: React.FC = () => {
   /**
    * メモのドラッグ移動開始
    */
-  const handleNoteMouseDown = useCallback(
-    (e: React.MouseEvent, note: BoardNote) => {
-      if (e.button !== 0) return;
+  const handleNotePointerDown = useCallback(
+    (e: React.PointerEvent, note: BoardNote) => {
+      if (e.button !== 0 || isCanvasPinchingRef.current) return;
       e.stopPropagation();
 
       if (editingNoteId !== null && editingNoteId !== note.id) {
@@ -385,6 +417,12 @@ export const MoodboardCanvas: React.FC = () => {
       // ブラウザ標準の要素ドラッグ・テキスト選択の競合を抑止
       e.preventDefault();
 
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
+
       isDraggingNoteRef.current = true;
       draggingNoteIdRef.current = note.id;
       dragStartRef.current = { x: e.clientX, y: e.clientY };
@@ -402,11 +440,17 @@ export const MoodboardCanvas: React.FC = () => {
   /**
    * メモのリサイズ開始
    */
-  const handleNoteResizeMouseDown = useCallback(
-    (e: React.MouseEvent, note: BoardNote) => {
+  const handleNoteResizePointerDown = useCallback(
+    (e: React.PointerEvent, note: BoardNote) => {
       if (e.button !== 0 || note.isLocked) return;
       e.stopPropagation();
       e.preventDefault();
+
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
 
       isResizingNoteRef.current = true;
       resizingNoteIdRef.current = note.id;
@@ -474,10 +518,27 @@ export const MoodboardCanvas: React.FC = () => {
    * @param e マウスイベント
    * @param item 対象ボードアイテム
    */
-  const handleRotateHandleMouseDown = useCallback(
-    (e: React.MouseEvent, item: BoardItem) => {
+  /**
+   * アイテムのドラッグ回転開始
+   *
+   * 変更理由: ユーザー要求に基づき、アイテムをクリック選択後にハンドルをドラッグして
+   * 直感的に0〜360度の任意角度へ無段階回転（Shiftキーで15度スナップ）できるようにするため。
+   * タッチ環境でも追従するようPointerEventおよびPointerCaptureに対応。
+   *
+   * @param e ポインターイベント
+   * @param item 対象ボードアイテム
+   */
+  const handleRotateHandlePointerDown = useCallback(
+    (e: React.PointerEvent, item: BoardItem) => {
       if (e.button !== 0 || item.isLocked || isCropping) return;
       e.stopPropagation();
+      e.preventDefault();
+
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
 
       isRotatingItemRef.current = true;
       rotatingItemIdRef.current = item.id;
@@ -511,11 +572,19 @@ export const MoodboardCanvas: React.FC = () => {
    * クリッピングモード中の画像上ドラッグ開始
    *
    * 変更理由: ユーザー要求「ドラッグで矩形を作って切り取れるようにして」に基づき、
-   * 画像上をマウスドラッグして直感的に切り取り枠を定義できるようにするため。
+   * 画像上をドラッグして直感的に切り取り枠を定義できるようにするため。
+   * タッチ操作でも追従するようPointerEventに対応。
    */
-  const handleCropMouseDown = useCallback((e: React.MouseEvent) => {
+  const handleCropPointerDown = useCallback((e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
+
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // フォールバック
+    }
+
     const target = e.currentTarget as HTMLElement;
     const rect = target.getBoundingClientRect();
     cropImageRectRef.current = rect;
@@ -532,9 +601,9 @@ export const MoodboardCanvas: React.FC = () => {
     });
   }, []);
 
-  // マウス移動（ドラッグ処理）
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent) => {
+  // ポインター・マウス移動（ドラッグ処理）
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent | React.MouseEvent) => {
       // 0. クリッピング矩形ドラッグ中
       if (isDraggingCropRef.current && cropImageRectRef.current && selectedItemId !== null) {
         const rect = cropImageRectRef.current;
@@ -649,8 +718,16 @@ export const MoodboardCanvas: React.FC = () => {
     [zoom, scheduleSaveCamera]
   );
 
-  // マウスアップ（変更確定）
-  const handleMouseUp = useCallback(() => {
+  // ポインター・マウスアップ（変更確定）
+  const handlePointerUp = useCallback((e?: React.PointerEvent | React.MouseEvent) => {
+    if (e && "pointerId" in e) {
+      try {
+        (e.currentTarget as HTMLElement)?.releasePointerCapture(e.pointerId);
+      } catch {
+        // フォールバック
+      }
+    }
+
     if (isDraggingCanvasRef.current) {
       isDraggingCanvasRef.current = false;
     }
@@ -764,6 +841,86 @@ export const MoodboardCanvas: React.FC = () => {
       setCropBoxDrag(null);
     }
   }, [selectedItemId, cropBoxDrag]);
+
+  // タッチデバイスでの2本指キャンバスピンチズーム＆パン操作
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        isCanvasPinchingRef.current = true;
+        isDraggingCanvasRef.current = false;
+        isDraggingItemRef.current = false;
+        isResizingItemRef.current = false;
+        isRotatingItemRef.current = false;
+        isDraggingNoteRef.current = false;
+        isResizingNoteRef.current = false;
+
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        pinchStartDistRef.current = calculateDistance(t1.clientX, t1.clientY, t2.clientX, t2.clientY);
+        pinchStartZoomRef.current = zoomRef.current;
+        pinchStartCenterRef.current = calculateCenter(t1.clientX, t1.clientY, t2.clientX, t2.clientY);
+        pinchStartPanRef.current = { ...panRef.current };
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (!isCanvasPinchingRef.current || e.touches.length < 2) return;
+      e.preventDefault(); // モバイルブラウザ標準の拡大やスクロールを阻止
+
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const currentDist = calculateDistance(t1.clientX, t1.clientY, t2.clientX, t2.clientY);
+      const newZoom = calculatePinchZoom(
+        pinchStartDistRef.current,
+        currentDist,
+        pinchStartZoomRef.current,
+        0.08,
+        6.0
+      );
+
+      const currentCenter = calculateCenter(t1.clientX, t1.clientY, t2.clientX, t2.clientY);
+      const centerDiffX = currentCenter.x - pinchStartCenterRef.current.x;
+      const centerDiffY = currentCenter.y - pinchStartCenterRef.current.y;
+
+      const rect = el.getBoundingClientRect();
+      const focusX = pinchStartCenterRef.current.x - rect.left;
+      const focusY = pinchStartCenterRef.current.y - rect.top;
+
+      const newPanX =
+        focusX -
+        (focusX - pinchStartPanRef.current.x) * (newZoom / pinchStartZoomRef.current) +
+        centerDiffX;
+      const newPanY =
+        focusY -
+        (focusY - pinchStartPanRef.current.y) * (newZoom / pinchStartZoomRef.current) +
+        centerDiffY;
+
+      setZoom(newZoom);
+      setPan({ x: newPanX, y: newPanY });
+      scheduleSaveCamera({ x: newPanX, y: newPanY }, newZoom);
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (isCanvasPinchingRef.current && e.touches.length < 2) {
+        isCanvasPinchingRef.current = false;
+      }
+    };
+
+    el.addEventListener("touchstart", handleTouchStart, { passive: false });
+    window.addEventListener("touchmove", handleTouchMove, { passive: false });
+    window.addEventListener("touchend", handleTouchEnd, { passive: false });
+    window.addEventListener("touchcancel", handleTouchEnd, { passive: false });
+
+    return () => {
+      el.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+      window.removeEventListener("touchcancel", handleTouchEnd);
+    };
+  }, [scheduleSaveCamera]);
 
   /**
    * 選択アイテムを最前面へ移動
@@ -1262,13 +1419,13 @@ export const MoodboardCanvas: React.FC = () => {
   ]);
 
   /**
-   * グローバルなマウスアップ・安全ガードリスナー
+   * グローバルなポインターアップ・安全ガードリスナー
    *
-   * 変更理由: マウスをコンテナ外で離したり、他UI要素上で離した場合でも
+   * 変更理由: マウスや指をコンテナ外で離したり、他UI要素上で離した場合でも
    * 確実にドラッグ状態を終了し位置を保存するため。
    */
   useEffect(() => {
-    const handleGlobalMouseUp = () => {
+    const handleGlobalPointerUp = () => {
       if (
         isDraggingCanvasRef.current ||
         isDraggingItemRef.current ||
@@ -1278,15 +1435,19 @@ export const MoodboardCanvas: React.FC = () => {
         isResizingNoteRef.current ||
         isDraggingCropRef.current
       ) {
-        handleMouseUp();
+        handlePointerUp();
       }
     };
 
-    window.addEventListener("mouseup", handleGlobalMouseUp);
+    window.addEventListener("pointerup", handleGlobalPointerUp);
+    window.addEventListener("pointercancel", handleGlobalPointerUp);
+    window.addEventListener("mouseup", handleGlobalPointerUp);
     return () => {
-      window.removeEventListener("mouseup", handleGlobalMouseUp);
+      window.removeEventListener("pointerup", handleGlobalPointerUp);
+      window.removeEventListener("pointercancel", handleGlobalPointerUp);
+      window.removeEventListener("mouseup", handleGlobalPointerUp);
     };
-  }, [handleMouseUp]);
+  }, [handlePointerUp]);
 
   const selectedItem = items.find((it) => it.id === selectedItemId);
   const selectedNote = notes.find((n) => n.id === selectedNoteId);
@@ -1295,13 +1456,15 @@ export const MoodboardCanvas: React.FC = () => {
     <div
       ref={containerRef}
       onWheel={handleWheel}
-      onMouseDown={handleCanvasMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
+      onPointerDown={handleCanvasPointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
       data-canvas-bg="true"
       style={{
         backgroundColor: board?.backgroundColor || "#1a1a20",
         cursor: isDraggingCanvasRef.current ? "grabbing" : "grab",
+        touchAction: "none",
       }}
       className="relative w-full h-full overflow-hidden select-none"
     >
@@ -1703,7 +1866,7 @@ export const MoodboardCanvas: React.FC = () => {
           return (
             <div
               key={item.id}
-              onMouseDown={(e) => handleItemMouseDown(e, item)}
+              onPointerDown={(e) => handleItemPointerDown(e, item)}
               onDoubleClick={() => {
                 setSelectedItemId(item.id);
                 setIsCropping(true);
@@ -1718,6 +1881,7 @@ export const MoodboardCanvas: React.FC = () => {
                 transform: `rotate(${item.rotation}deg)`,
                 opacity: item.opacity,
                 cursor: item.isLocked ? "default" : "move",
+                touchAction: "none",
               }}
               className={`pointer-events-auto group select-none transition-shadow ${
                 isSelected
@@ -1753,7 +1917,8 @@ export const MoodboardCanvas: React.FC = () => {
               {/* クリッピング編集モード時のドラッグ矩形選択オーバーレイ */}
               {isCropping && isSelected && (
                 <div
-                  onMouseDown={handleCropMouseDown}
+                  onPointerDown={handleCropPointerDown}
+                  style={{ touchAction: "none" }}
                   className="absolute inset-0 pointer-events-auto cursor-crosshair bg-black/30"
                   title={t("moodboard.cropAreaTooltip")}
                 >
@@ -1815,7 +1980,8 @@ export const MoodboardCanvas: React.FC = () => {
                   )}
                   {/* 回転ハンドルボタン */}
                   <div
-                    onMouseDown={(e) => handleRotateHandleMouseDown(e, item)}
+                    onPointerDown={(e) => handleRotateHandlePointerDown(e, item)}
+                    style={{ touchAction: "none" }}
                     className="w-5 h-5 bg-white text-accent hover:bg-accent hover:text-white border-2 border-accent rounded-full shadow-md flex items-center justify-center cursor-grab active:cursor-grabbing hover:scale-110 transition-transform"
                   >
                     <RotateCw className="w-3 h-3" />
@@ -1828,7 +1994,8 @@ export const MoodboardCanvas: React.FC = () => {
               {/* リサイズハンドル（右下） */}
               {isSelected && !item.isLocked && !isCropping && (
                 <div
-                  onMouseDown={(e) => handleResizeHandleMouseDown(e, item)}
+                  onPointerDown={(e) => handleResizeHandlePointerDown(e, item)}
+                  style={{ touchAction: "none" }}
                   className="absolute -bottom-2 -right-2 w-4 h-4 bg-accent border-2 border-white rounded-full cursor-se-resize shadow-md hover:scale-125 transition-transform"
                 />
               )}
@@ -1850,7 +2017,7 @@ export const MoodboardCanvas: React.FC = () => {
           return (
             <div
               key={`note-${note.id}`}
-              onMouseDown={(e) => handleNoteMouseDown(e, note)}
+              onPointerDown={(e) => handleNotePointerDown(e, note)}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 if (editingNoteId !== null && editingNoteId !== note.id) {
@@ -1872,6 +2039,7 @@ export const MoodboardCanvas: React.FC = () => {
                 transform: `rotate(${note.rotation}deg)`,
                 backgroundColor: note.color,
                 color: colorDef.text,
+                touchAction: "none",
                 cursor: note.isLocked
                   ? "default"
                   : isEditing
@@ -1941,7 +2109,8 @@ export const MoodboardCanvas: React.FC = () => {
               {/* リサイズハンドル（右下） */}
               {isSelected && !note.isLocked && (
                 <div
-                  onMouseDown={(e) => handleNoteResizeMouseDown(e, note)}
+                  onPointerDown={(e) => handleNoteResizePointerDown(e, note)}
+                  style={{ touchAction: "none" }}
                   className="absolute -bottom-2 -right-2 w-4 h-4 bg-accent border-2 border-white rounded-full cursor-se-resize shadow-md hover:scale-125 transition-transform"
                 />
               )}

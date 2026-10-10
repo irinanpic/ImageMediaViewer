@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  ChevronDown,
+  ChevronUp,
   Folder,
   FolderPlus,
   FolderSync,
@@ -349,26 +351,50 @@ export const Sidebar: React.FC = () => {
                 </span>
               </div>
 
-              {/* アクションボタン */}
-              <div className="hidden group-hover:flex items-center gap-1 shrink-0 ml-2">
+              {/* アクションボタン（モバイル環境または選択中は常時表示、PCホバー時も表示） */}
+              <div className={`${isMobileEnvironment() || isSelected ? "flex" : "hidden group-hover:flex"} items-center gap-0.5 shrink-0 ml-1.5`}>
+                {index > 0 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      reorderFolders(index, index - 1);
+                    }}
+                    title="上へ移動"
+                    className="p-1 hover:text-accent transition text-textSecondary"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {index < folders.length - 1 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      reorderFolders(index, index + 1);
+                    }}
+                    title="下へ移動"
+                    className="p-1 hover:text-accent transition text-textSecondary"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button
                   onClick={handleRescanMissing}
                   title={t("sidebar.recreateThumbsTooltip")}
-                  className="p-1 hover:text-amber-400 transition"
+                  className="p-1 hover:text-amber-400 transition text-textSecondary"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={(e) => handleRescanFolder(e, folder.id)}
                   title={t("sidebar.rescanFolderTooltip")}
-                  className="p-1 hover:text-accent transition"
+                  className="p-1 hover:text-accent transition text-textSecondary"
                 >
                   <FolderSync className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={(e) => handleRemoveFolder(e, folder.id)}
                   title={t("sidebar.removeFolderTooltip")}
-                  className="p-1 hover:text-red-400 transition"
+                  className="p-1 hover:text-red-400 transition text-textSecondary"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
