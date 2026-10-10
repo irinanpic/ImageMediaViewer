@@ -39,6 +39,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
                enable = true
             }

@@ -2,6 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 
+ * Safe Area Insets (ノッチ、パンチホール、システムナビゲーションバー対策)
+ * 変更理由: Android 15等のEdge-to-Edge有効時に、システムバー真下へのコンテンツ潜り込みを防止するため。
+ */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
 /* スクロールバーのカスタマイズ */
 ::-webkit-scrollbar {
   width: 8px;

@@ -15,9 +15,11 @@ import {
   Trash2,
   Upload,
   WifiOff,
+  X,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { isTauriEnvironment, isMobileEnvironment } from "../../lib/thumbUrl";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { WatchedFolder } from "../../types/generated/WatchedFolder";
@@ -25,11 +27,13 @@ import { AddFolderModal } from "./AddFolderModal";
 
 export const Sidebar: React.FC = () => {
   const { t, locale, setLocale } = useTranslation();
+  const { isCompact } = useResponsiveLayout();
   const folders = useAppStore((state) => state.folders);
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const setSelectedFolderId = useAppStore((state) => state.setSelectedFolderId);
   const reorderFolders = useAppStore((state) => state.reorderFolders);
   const isSidebarOpen = useAppStore((state) => state.isSidebarOpen);
+  const setSidebarOpen = useAppStore((state) => state.setSidebarOpen);
   const currentView = useAppStore((state) => state.currentView);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const boards = useAppStore((state) => state.boards);
@@ -93,6 +97,24 @@ export const Sidebar: React.FC = () => {
   const [draggedFolderIndex, setDraggedFolderIndex] = useState<number | null>(null);
   const [dragOverFolderIndex, setDragOverFolderIndex] = useState<number | null>(null);
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
+  // フォルダ選択処理（モバイル時はドロワーを自動で閉じる）
+  const handleSelectFolder = (id: number | null) => {
+    setSelectedFolderId(id);
+    setCurrentView("timeline");
+    if (isCompact) {
+      setSidebarOpen(false);
+    }
+  };
+
+  // ボード選択処理（モバイル時はドロワーを自動で閉じる）
+  const handleSelectBoard = (id: number) => {
+    setActiveBoardId(id);
+    setCurrentView("board");
+    if (isCompact) {
+      setSidebarOpen(false);
+    }
+  };
+
   // モバイル向けフォルダ追加モーダルの表示状態
   const [isAddFolderModalOpen, setIsAddFolderModalOpen] = useState(false);
 
@@ -216,27 +238,48 @@ export const Sidebar: React.FC = () => {
 
   if (!isSidebarOpen) return null;
 
-  return (
-    <>
-    <aside className="w-64 bg-surface border-r border-border flex flex-col h-full select-none z-10">
+  const sidebarContent = (
+    <aside
+      className={`${
+        isCompact
+          ? "fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-surface z-50 flex flex-col shadow-2xl border-r border-border animate-in slide-in-from-left duration-200"
+          : "w-64 bg-surface border-r border-border flex flex-col h-full select-none z-10"
+      }`}
+      style={{
+        paddingLeft: isCompact ? "calc(0.5rem + var(--sal))" : undefined,
+        paddingTop: isCompact ? "var(--sat)" : undefined,
+        paddingBottom: isCompact ? "var(--sab)" : undefined,
+      }}
+    >
       {/* ヘッダ */}
       <div className="p-4 border-b border-border flex items-center justify-between">
         <h2 className="text-sm font-bold text-textPrimary tracking-wide">{t("sidebar.folders")}</h2>
-        <button
-          onClick={handleAddFolder}
-          title={t("sidebar.addFolder")}
-          className="flex items-center gap-1 text-xs bg-accent hover:bg-accentHover text-white px-2.5 py-1.5 rounded transition font-medium"
-        >
-          <FolderPlus className="w-4 h-4" />
-          <span>{t("sidebar.addFolderBtn")}</span>
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleAddFolder}
+            title={t("sidebar.addFolder")}
+            className="flex items-center gap-1 text-xs bg-accent hover:bg-accentHover text-white px-2.5 py-1.5 rounded transition font-medium cursor-pointer"
+          >
+            <FolderPlus className="w-4 h-4" />
+            <span>{t("sidebar.addFolderBtn")}</span>
+          </button>
+          {isCompact && (
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="p-1.5 text-textSecondary hover:text-textPrimary hover:bg-surfaceLight rounded-md transition ml-1 cursor-pointer"
+              title="閉じる"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* フォルダ一覧リスト */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {/* すべての写真 */}
         <button
-          onClick={() => setSelectedFolderId(null)}
+          onClick={() => handleSelectFolder(null)}
           className={`w-full flex items-center justify-between px-3 py-2 rounded text-sm transition ${
             selectedFolderId === null
               ? "bg-accent/20 text-accent font-medium border border-accent/40"
@@ -307,7 +350,7 @@ export const Sidebar: React.FC = () => {
                 setDraggedFolderIndex(null);
                 setDragOverFolderIndex(null);
               }}
-              onClick={() => setSelectedFolderId(folder.id)}
+              onClick={() => handleSelectFolder(folder.id)}
               className={`group flex items-center justify-between px-2.5 py-2 rounded text-sm cursor-pointer transition relative ${
                 isSelected
                   ? "bg-accent/20 text-accent font-medium border border-accent/40"
@@ -464,10 +507,7 @@ export const Sidebar: React.FC = () => {
                 return (
                   <div
                     key={b.id}
-                    onClick={() => {
-                      setActiveBoardId(b.id);
-                      setCurrentView("board");
-                    }}
+                    onClick={() => handleSelectBoard(b.id)}
                     className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer group transition ${
                       isSelected
                         ? "bg-accent/20 text-accent font-medium border border-accent/40"
@@ -536,11 +576,23 @@ export const Sidebar: React.FC = () => {
         </div>
       </div>
     </aside>
-    <AddFolderModal
-      isOpen={isAddFolderModalOpen}
-      onClose={() => setIsAddFolderModalOpen(false)}
-      onSelectPath={addFolderByPath}
-    />
+  );
+
+  return (
+    <>
+      {/* モバイル時のドロワー背景オーバーレイ（タップでドロワーを閉じる） */}
+      {isCompact && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-40 transition-opacity animate-in fade-in duration-200"
+        />
+      )}
+      {sidebarContent}
+      <AddFolderModal
+        isOpen={isAddFolderModalOpen}
+        onClose={() => setIsAddFolderModalOpen(false)}
+        onSelectPath={addFolderByPath}
+      />
     </>
   );
 };

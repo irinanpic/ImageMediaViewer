@@ -238,7 +238,14 @@ export const ImageViewerModal: React.FC = () => {
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex flex-col select-none">
       {/* 上部ツールバー */}
-      <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/80 to-transparent z-10 text-white">
+      <div
+        className="flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/80 to-transparent z-10 text-white"
+        style={{
+          paddingTop: "calc(0.75rem + var(--sat))",
+          paddingLeft: "calc(1rem + var(--sal))",
+          paddingRight: "calc(1rem + var(--sar))",
+        }}
+      >
         <div className="flex items-center gap-2 text-sm text-textSecondary">
           <span>{activeImageIndex !== null ? `${activeImageIndex + 1} / ${totalImages}` : ""}</span>
           {detail && <span className="text-textPrimary font-medium truncate max-w-xs">{detail.filePath.split("\\").pop()}</span>}
@@ -338,7 +345,8 @@ export const ImageViewerModal: React.FC = () => {
         {activeImageIndex !== null && activeImageIndex > 0 && (
           <button
             onClick={handlePrev}
-            className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
+            style={{ left: "calc(1rem + var(--sal))" }}
+            className="absolute top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
           >
             <ChevronLeft className="w-6 h-6" />
           </button>
@@ -346,7 +354,8 @@ export const ImageViewerModal: React.FC = () => {
         {activeImageIndex !== null && activeImageIndex < totalImages - 1 && (
           <button
             onClick={handleNext}
-            className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
+            style={{ right: "calc(1rem + var(--sar))" }}
+            className="absolute top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
           >
             <ChevronRight className="w-6 h-6" />
           </button>
@@ -355,11 +364,19 @@ export const ImageViewerModal: React.FC = () => {
 
       {/* 詳細情報パネル (フォーマット・可逆/非可逆・圧縮率対応) */}
       {showInfo && detail && (
-        <ImageDetailPanel
-          detail={detail}
-          onClose={() => setShowInfo(false)}
-          className="absolute right-4 bottom-4 w-84 z-20 max-h-[85vh] overflow-y-auto"
-        />
+        <div
+          style={{
+            right: "calc(1rem + var(--sar))",
+            bottom: "calc(1rem + var(--sab))",
+          }}
+          className="absolute z-20"
+        >
+          <ImageDetailPanel
+            detail={detail}
+            onClose={() => setShowInfo(false)}
+            className="w-84 max-w-[90vw] max-h-[85vh] overflow-y-auto"
+          />
+        </div>
       )}
     </div>
   );

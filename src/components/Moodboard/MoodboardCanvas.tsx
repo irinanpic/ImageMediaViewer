@@ -25,6 +25,7 @@ import { backendApi } from "../../lib/ipc";
 import { getOriginalImageUrl } from "../../lib/thumbUrl";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import type { Board, BoardItem, BoardNote } from "../../types/board";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { ImageDetailPanel } from "../Common/ImageDetailPanel";
@@ -53,6 +54,7 @@ const NOTE_COLORS = [
  */
 export const MoodboardCanvas: React.FC = () => {
   const { t, locale } = useTranslation();
+  const { isCompact } = useResponsiveLayout();
   const activeBoardId = useAppStore((state) => state.activeBoardId);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setBoards = useAppStore((state) => state.setBoards);
@@ -1468,98 +1470,184 @@ export const MoodboardCanvas: React.FC = () => {
       }}
       className="relative w-full h-full overflow-hidden select-none"
     >
-      {/* 1. 上部コントロールバー */}
-      <div className="absolute top-4 left-4 z-50 flex items-center gap-3 bg-surface/90 backdrop-blur-md px-4 py-2 rounded-lg border border-border/40 shadow-xl">
-        <button
-          onClick={() => setCurrentView("timeline")}
-          className="flex items-center gap-1.5 text-xs text-textSecondary hover:text-textPrimary bg-surfaceLight/30 hover:bg-surfaceLight/60 px-3 py-1.5 rounded transition"
+      {/* 上部ツールバー: モバイル時はスリム一体型、大画面時は独立デュアル配置 */}
+      {isCompact ? (
+        <div
+          className="absolute z-50 flex items-center justify-between gap-2 bg-surface/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-border/50 shadow-xl text-xs"
+          style={{
+            top: "calc(0.5rem + var(--sat))",
+            left: "calc(0.5rem + var(--sal))",
+            right: "calc(0.5rem + var(--sar))",
+          }}
         >
-          <ArrowLeft className="w-4 h-4" />
-          {t("moodboard.backToTimeline")}
-        </button>
+          {/* 左側: タイムラインに戻る & ボード名 */}
+          <div className="flex items-center gap-2 min-w-0 truncate">
+            <button
+              onClick={() => setCurrentView("timeline")}
+              className="flex items-center gap-1 text-xs text-textSecondary hover:text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight px-2 py-1 rounded transition shrink-0 active:scale-95"
+              title={t("moodboard.backToTimeline")}
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <span className="font-semibold text-xs text-textPrimary truncate">
+              {board?.name || t("moodboard.defaultBoardName")}
+            </span>
+            <span className="text-[10px] text-textSecondary shrink-0">
+              ({items.length})
+            </span>
+          </div>
 
-        <div className="h-4 w-px bg-border/40" />
+          {/* 右側: メモ追加、自動整列、ズーム倍率＆リセット */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={handleCreateNote}
+              className="flex items-center gap-1 text-xs text-white bg-accent hover:bg-accent/90 px-2 py-1 rounded shadow-sm transition active:scale-95 font-medium shrink-0"
+              title={t("moodboard.addNoteTooltip")}
+            >
+              <StickyNote className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{t("moodboard.addNoteBtn")}</span>
+            </button>
 
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-sm text-textPrimary">
-            {board?.name || t("moodboard.defaultBoardName")}
-          </span>
-          <span className="text-xs text-textSecondary">
-            {t("moodboard.itemCountSummary", {
-              images: items.length,
-              notes: notes.length > 0 ? t("moodboard.notesCountSuffix", { count: notes.length }) : "",
-            })}
-          </span>
+            {(items.length > 0 || notes.length > 0) && (
+              <button
+                onClick={handleAutoArrange}
+                className="p-1.5 text-textPrimary bg-surfaceLight/60 hover:bg-surfaceLight border border-border/60 rounded transition active:scale-95 shrink-0"
+                title={t("moodboard.autoArrangeTooltip")}
+              >
+                <LayoutGrid className="w-3.5 h-3.5 text-accent" />
+              </button>
+            )}
+
+            {/* ズーム倍率ボタン（タップで100%・中央へリセット） */}
+            <button
+              onClick={() => {
+                setZoom(1);
+                setPan({ x: 0, y: 0 });
+                scheduleSaveCamera({ x: 0, y: 0 }, 1);
+              }}
+              title={t("moodboard.zoomResetTooltip")}
+              className="flex items-center gap-1 px-2 py-1 bg-surfaceLight/60 hover:bg-surfaceLight rounded text-textSecondary hover:text-textPrimary font-mono text-[11px] transition active:scale-95 shrink-0 border border-border/40"
+            >
+              <span>{Math.round(zoom * 100)}%</span>
+              <span className="text-[9px] text-textSecondary/70 font-sans">{t("moodboard.zoomResetBtn")}</span>
+            </button>
+          </div>
         </div>
-
-        <div className="h-4 w-px bg-border/40" />
-
-        {/* メモ追加ボタン */}
-        <button
-          onClick={handleCreateNote}
-          className="flex items-center gap-1.5 text-xs text-white bg-accent hover:bg-accent/90 px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
-          title={t("moodboard.addNoteTooltip")}
-        >
-          <StickyNote className="w-3.5 h-3.5" />
-          {t("moodboard.addNoteBtn")}
-        </button>
-
-        {/* 自動並び替えボタン（被り解消・タイル整列） */}
-        {(items.length > 0 || notes.length > 0) && (
-          <button
-            onClick={handleAutoArrange}
-            className="flex items-center gap-1.5 text-xs text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight/80 border border-border/60 hover:border-accent px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
-            title={t("moodboard.autoArrangeTooltip")}
+      ) : (
+        <>
+          {/* 1. デスクトップ用上部コントロールバー */}
+          <div
+            className="absolute z-50 flex items-center gap-3 bg-surface/90 backdrop-blur-md px-4 py-2 rounded-lg border border-border/40 shadow-xl"
+            style={{
+              top: "calc(1rem + var(--sat))",
+              left: "calc(1rem + var(--sal))",
+            }}
           >
-            <LayoutGrid className="w-3.5 h-3.5 text-accent" />
-            {t("moodboard.autoArrangeBtn")}
-          </button>
-        )}
-      </div>
+            <button
+              onClick={() => setCurrentView("timeline")}
+              className="flex items-center gap-1.5 text-xs text-textSecondary hover:text-textPrimary bg-surfaceLight/30 hover:bg-surfaceLight/60 px-3 py-1.5 rounded transition"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              {t("moodboard.backToTimeline")}
+            </button>
 
-      {/* 2. ズーム & ツールバー（右上） */}
-      <div className="absolute top-4 right-4 z-50 flex items-center gap-2 bg-surface/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-border/40 shadow-xl text-xs">
-        <button
-          onClick={() => {
-            const nextZoom = Math.max(0.1, zoom * 0.85);
-            setZoom(nextZoom);
-            scheduleSaveCamera(pan, nextZoom);
-          }}
-          title={t("moodboard.zoomOutTooltip")}
-          className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <span className="w-12 text-center text-textSecondary font-mono">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => {
-            const nextZoom = Math.min(5.0, zoom * 1.15);
-            setZoom(nextZoom);
-            scheduleSaveCamera(pan, nextZoom);
-          }}
-          title={t("moodboard.zoomInTooltip")}
-          className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={() => {
-            setZoom(1);
-            setPan({ x: 0, y: 0 });
-            scheduleSaveCamera({ x: 0, y: 0 }, 1);
-          }}
-          title={t("moodboard.zoomResetTooltip")}
-          className="px-2 py-0.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition ml-1"
-        >
-          {t("moodboard.zoomResetBtn")}
-        </button>
-      </div>
+            <div className="h-4 w-px bg-border/40" />
+
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-sm text-textPrimary">
+                {board?.name || t("moodboard.defaultBoardName")}
+              </span>
+              <span className="text-xs text-textSecondary">
+                {t("moodboard.itemCountSummary", {
+                  images: items.length,
+                  notes: notes.length > 0 ? t("moodboard.notesCountSuffix", { count: notes.length }) : "",
+                })}
+              </span>
+            </div>
+
+            <div className="h-4 w-px bg-border/40" />
+
+            {/* メモ追加ボタン */}
+            <button
+              onClick={handleCreateNote}
+              className="flex items-center gap-1.5 text-xs text-white bg-accent hover:bg-accent/90 px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
+              title={t("moodboard.addNoteTooltip")}
+            >
+              <StickyNote className="w-3.5 h-3.5" />
+              {t("moodboard.addNoteBtn")}
+            </button>
+
+            {/* 自動並び替えボタン（被り解消・タイル整列） */}
+            {(items.length > 0 || notes.length > 0) && (
+              <button
+                onClick={handleAutoArrange}
+                className="flex items-center gap-1.5 text-xs text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight/80 border border-border/60 hover:border-accent px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
+                title={t("moodboard.autoArrangeTooltip")}
+              >
+                <LayoutGrid className="w-3.5 h-3.5 text-accent" />
+                {t("moodboard.autoArrangeBtn")}
+              </button>
+            )}
+          </div>
+
+          {/* 2. デスクトップ用ズーム & ツールバー（右上） */}
+          <div
+            className="absolute z-50 flex items-center gap-2 bg-surface/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-border/40 shadow-xl text-xs"
+            style={{
+              top: "calc(1rem + var(--sat))",
+              right: "calc(1rem + var(--sar))",
+            }}
+          >
+            <button
+              onClick={() => {
+                const nextZoom = Math.max(0.1, zoom * 0.85);
+                setZoom(nextZoom);
+                scheduleSaveCamera(pan, nextZoom);
+              }}
+              title={t("moodboard.zoomOutTooltip")}
+              className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <span className="w-12 text-center text-textSecondary font-mono">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => {
+                const nextZoom = Math.min(5.0, zoom * 1.15);
+                setZoom(nextZoom);
+                scheduleSaveCamera(pan, nextZoom);
+              }}
+              title={t("moodboard.zoomInTooltip")}
+              className="p-1 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => {
+                setZoom(1);
+                setPan({ x: 0, y: 0 });
+                scheduleSaveCamera({ x: 0, y: 0 }, 1);
+              }}
+              title={t("moodboard.zoomResetTooltip")}
+              className="px-2 py-0.5 hover:bg-surfaceLight/50 rounded text-textSecondary hover:text-textPrimary transition ml-1"
+            >
+              {t("moodboard.zoomResetBtn")}
+            </button>
+          </div>
+        </>
+      )}
 
       {/* 3-A. 選択画像アイテム用アクションバー（画面下中央） */}
       {selectedItem && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border/60 shadow-2xl">
+        <div
+          className="absolute z-50 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-border/60 shadow-2xl"
+          style={{
+            bottom: "calc(1.5rem + var(--sab))",
+            left: "50%",
+            transform: "translateX(-50%)",
+          }}
+        >
           <button
             onClick={() => setIsCropping((c) => !c)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition ${

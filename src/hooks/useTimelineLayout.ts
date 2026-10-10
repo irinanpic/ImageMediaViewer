@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildRows, calculateColumns, DEFAULT_LAYOUT_OPTIONS, type TimelineRow } from "../lib/buildRows";
 import { useAppStore } from "../store";
+import { useResponsiveLayout } from "./useResponsiveLayout";
 
 /**
  * タイムラインの行レイアウトを管理するカスタムフック
  *
  * 変更理由: 仕様書§8.1「コンテナ幅から列数を決定し、日別バケットから全行の高さとインデックス範囲を確定する」
+ * モバイル（コンパクト）表示時はサイドバーがドロワー化するため、全画面幅をベースにグリッド列数を算出する。
  *
  * @param containerRef スクロールコンテナのRef
  * @returns { rows, columns, containerWidth }
  */
 export function useTimelineLayout(containerRef: React.RefObject<HTMLElement | null>) {
+  const { isCompact } = useResponsiveLayout();
   const [containerWidth, setContainerWidth] = useState(
-    typeof window !== "undefined" ? window.innerWidth - 260 : 1000
+    typeof window !== "undefined" ? window.innerWidth - (isCompact ? 0 : 260) : 1000
   );
   const buckets = useAppStore((state) => state.buckets);
   const cellSize = useAppStore((state) => state.cellSize);
@@ -26,8 +29,9 @@ export function useTimelineLayout(containerRef: React.RefObject<HTMLElement | nu
       if (el && el.clientWidth > 0) {
         setContainerWidth(el.clientWidth);
       } else if (typeof window !== "undefined") {
-        // フォールバック: サイドバー幅(約240px〜260px)を引いたウィンドウ幅
-        const sidebarWidth = useAppStore.getState().isSidebarOpen ? 260 : 0;
+        // フォールバック: デスクトップ表示かつサイドバー開時のみサイドバー幅(260px)を差し引く
+        const isSidebarOpen = useAppStore.getState().isSidebarOpen;
+        const sidebarWidth = !isCompact && isSidebarOpen ? 260 : 0;
         setContainerWidth(Math.max(300, window.innerWidth - sidebarWidth));
       }
     };

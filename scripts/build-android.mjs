@@ -236,15 +236,58 @@ async function main() {
           return results;
         }
 
-        const apks = findApks(apkBaseDir);
+        let apks = findApks(apkBaseDir);
         if (apks.length > 0) {
-          console.log("生成された APK ファイル:");
-          for (const apk of apks) {
+          // 未署名 (unsigned) APK がある場合、debug.keystore で自動署名
+          const debugKeystore = path.join(
+            process.env.USERPROFILE || process.env.HOME || "",
+            ".android",
+            "debug.keystore"
+          );
+          const buildToolsDir = path.join(androidHome, "build-tools");
+          let apksigner = null;
+          if (fs.existsSync(buildToolsDir)) {
+            const versions = fs.readdirSync(buildToolsDir).sort().reverse();
+            for (const ver of versions) {
+              const candidate = path.join(
+                buildToolsDir,
+                ver,
+                process.platform === "win32" ? "apksigner.bat" : "apksigner"
+              );
+              if (fs.existsSync(candidate)) {
+                apksigner = candidate;
+                break;
+              }
+            }
+          }
+
+          if (apksigner && fs.existsSync(debugKeystore)) {
+            for (const apk of apks) {
+              if (apk.endsWith("-unsigned.apk")) {
+                const signedApk = apk.replace("-unsigned.apk", ".apk");
+                try {
+                  console.log(`[署名] 未署名 APK を自動署名しています: ${path.basename(signedApk)}`);
+                  execSync(
+                    `"${apksigner}" sign --ks "${debugKeystore}" --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android --out "${signedApk}" "${apk}"`,
+                    { stdio: "ignore" }
+                  );
+                } catch (_) {}
+              }
+            }
+          }
+
+          // 署名後の APK 一覧を再取得
+          apks = findApks(apkBaseDir);
+          const signedApks = apks.filter((a) => !a.includes("-unsigned"));
+          const candidates = signedApks.length > 0 ? signedApks : apks;
+
+          console.log("\n生成された APK ファイル:");
+          for (const apk of candidates) {
             console.log(`  - ${apk}`);
           }
           const preferredApk =
-            apks.find((a) => (isRelease ? a.includes("release") : a.includes("debug"))) ||
-            apks[0];
+            candidates.find((a) => (isRelease ? a.includes("release") : a.includes("debug"))) ||
+            candidates[0];
           console.log("\n【インストール手順】");
           console.log("実機またはエミュレータが接続された状態で以下のコマンドを実行してください:");
           console.log(`  adb install -r "${preferredApk}"\n`);

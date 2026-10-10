@@ -7,6 +7,7 @@ import type { WatchedFolder } from "../types/generated/WatchedFolder";
 import type { Board } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
 import { backendApi } from "../lib/ipc";
+import { isMobileEnvironment } from "../lib/thumbUrl";
 
 export interface ViewerTransformState {
   rotation: 0 | 90 | 180 | 270;
@@ -90,6 +91,7 @@ interface AppStoreState {
   clearSelectedImageIds: () => void;
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
+  setSidebarOpen: (isOpen: boolean) => void;
   timelineRefreshTick: number;
   refreshTimeline: () => void;
   isLogModalOpen: boolean;
@@ -286,8 +288,9 @@ export const useAppStore = create<AppStoreState>((set) => ({
       return { selectedImageIds: next };
     }),
   clearSelectedImageIds: () => set({ selectedImageIds: [] }),
-  isSidebarOpen: true,
+  isSidebarOpen: !isMobileEnvironment(),
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
+  setSidebarOpen: (isSidebarOpen) => set({ isSidebarOpen }),
   timelineRefreshTick: 0,
   refreshTimeline: () =>
     set((state) => ({ timelineRefreshTick: state.timelineRefreshTick + 1 })),

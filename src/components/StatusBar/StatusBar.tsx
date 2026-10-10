@@ -11,9 +11,11 @@ import {
 } from "lucide-react";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
+import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 
 export const StatusBar: React.FC = () => {
   const { t } = useTranslation();
+  const { isCompact } = useResponsiveLayout();
   const totalImages = useAppStore((state) => state.totalImages);
   const scanProgress = useAppStore((state) => state.scanProgress);
   const thumbProgress = useAppStore((state) => state.thumbProgress);
@@ -36,7 +38,14 @@ export const StatusBar: React.FC = () => {
     thumbProgress && totalCount > 0 && processedCount >= totalCount;
 
   return (
-    <footer className="h-8 bg-surface border-t border-border px-3 flex items-center justify-between text-xs text-textSecondary select-none z-10">
+    <footer
+      className="min-h-8 bg-surface border-t border-border px-3 flex items-center justify-between text-xs text-textSecondary select-none z-10 shrink-0"
+      style={{
+        paddingBottom: "max(0.25rem, var(--sab))",
+        paddingLeft: "calc(0.75rem + var(--sal))",
+        paddingRight: "calc(0.75rem + var(--sar))",
+      }}
+    >
       <div className="flex items-center gap-3">
         <button
           onClick={toggleSidebar}
@@ -123,44 +132,48 @@ export const StatusBar: React.FC = () => {
           )}
         </button>
 
-        <div className="h-3.5 w-px bg-border" />
+        {!isCompact && (
+          <>
+            <div className="h-3.5 w-px bg-border" />
 
-        {/* サムネイルサイズスライダー（唯一の拡大縮小バーとして集約） */}
-        <div
-          className="flex items-center gap-1.5 py-0.5 px-2 rounded hover:bg-surfaceLight/50 transition cursor-pointer"
-          onWheel={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const delta = e.deltaY < 0 ? 10 : -10;
-            setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
-          }}
-          title={t("statusBar.zoomSliderTooltip")}
-        >
-          <button
-            onClick={() => setCellSize(Math.max(80, cellSize - 20))}
-            className="p-1 hover:text-textPrimary text-textSecondary transition"
-            title={t("statusBar.zoomOutTooltip")}
-          >
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <input
-            type="range"
-            min="80"
-            max="320"
-            step="10"
-            value={cellSize}
-            onChange={(e) => setCellSize(Number(e.target.value))}
-            className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
-          />
-          <button
-            onClick={() => setCellSize(Math.min(320, cellSize + 20))}
-            className="p-1 hover:text-textPrimary text-textSecondary transition"
-            title={t("statusBar.zoomInTooltip")}
-          >
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <span className="w-10 text-right tabular-nums font-mono text-[11px]">{cellSize}px</span>
-        </div>
+            {/* サムネイルサイズスライダー（大画面デスクトップ表示時に表示） */}
+            <div
+              className="flex items-center gap-1.5 py-0.5 px-2 rounded hover:bg-surfaceLight/50 transition cursor-pointer"
+              onWheel={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const delta = e.deltaY < 0 ? 10 : -10;
+                setCellSize(Math.max(80, Math.min(320, cellSize + delta)));
+              }}
+              title={t("statusBar.zoomSliderTooltip")}
+            >
+              <button
+                onClick={() => setCellSize(Math.max(80, cellSize - 20))}
+                className="p-1 hover:text-textPrimary text-textSecondary transition"
+                title={t("statusBar.zoomOutTooltip")}
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <input
+                type="range"
+                min="80"
+                max="320"
+                step="10"
+                value={cellSize}
+                onChange={(e) => setCellSize(Number(e.target.value))}
+                className="w-24 h-1.5 bg-surfaceLight rounded-lg appearance-none cursor-pointer accent-accent"
+              />
+              <button
+                onClick={() => setCellSize(Math.min(320, cellSize + 20))}
+                className="p-1 hover:text-textPrimary text-textSecondary transition"
+                title={t("statusBar.zoomInTooltip")}
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+              <span className="w-10 text-right tabular-nums font-mono text-[11px]">{cellSize}px</span>
+            </div>
+          </>
+        )}
       </div>
     </footer>
   );
