@@ -413,7 +413,7 @@ CREATE TABLE thumbnails (
 | `GET` | `/api/watch_folders` | 登録フォルダ一覧取得 | `WatchedFolder[]` (登録数、サムネ完了数、オンライン状態) |
 | `POST` | `/api/watch_folders` | 新規フォルダ登録 | `{ path: string }` |
 | `DELETE` | `/api/watch_folders/:id` | フォルダ登録解除 | レコードのみ削除（元ファイル保護） |
-| `POST` | `/api/rescan` | フォルダ再走査実行 | `{ folder_id?: number }` |
+| `POST` | `/api/rescan` | フォルダ再走査実行（全フォルダを単一ワーカースレッド内で順次直列走査し、DBロック競合・CPU過熱を防止） | `{ folder_id?: number }` |
 | `GET` | `/api/timeline/summary` | タイムライン日別サマリ | `{ total: number, buckets: DayBucket[], version: number }` |
 | `GET` | `/api/timeline/images` | タイムライン画像一覧取得 | `GetImagesPayload` に応じた `ImageRecord[]` |
 | `GET` | `/api/images/:id` | 画像メタデータ詳細取得 | `ImageDetail` (EXIF情報含む) |

@@ -94,14 +94,11 @@ pub async fn handle_thumb_protocol(
         }
     };
 
-    // DBから画像情報を取得
-    let info = {
-        let conn = state.db.reader()?;
-        crate::db::repo::get_image_file_info(&conn, image_id)?
-    };
-
-    let (file_path_str, quick_hash, _, _) = match info {
-        Some(item) => item,
+    // 変更理由: state.get_thumb_source_cached によりインメモリキャッシュまたは単一クエリで一括取得。
+    // DBクエリの重複（get_image_file_info + get_image_detail）を排除し、
+    // images テーブルに保持されている正確な EXIF orientation（1〜8）をパイプラインへ渡す。
+    let source = match state.get_thumb_source_cached(image_id) {
+        Some(s) => s,
         None => {
             warn!("Thumbnail target image record not found: id={}", image_id);
             return Ok(cors_response_builder(StatusCode::NOT_FOUND)
@@ -110,7 +107,7 @@ pub async fn handle_thumb_protocol(
     };
 
     // 1. メモリキャッシュチェック
-    if let Some(cached_bytes) = state.get_thumbnail_bytes(&quick_hash) {
+    if let Some(cached_bytes) = state.get_thumbnail_bytes(&source.quick_hash) {
         return Ok(cors_response_builder(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/webp")
             .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
@@ -118,9 +115,9 @@ pub async fn handle_thumb_protocol(
     }
 
     // 2. サムネイル専用DB (thumbnails.db) から BLOB 取得
-    if let Ok(Some(bytes)) = state.thumb_store.get(&quick_hash) {
+    if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
         let arc_bytes = Arc::new(bytes.clone());
-        state.put_thumbnail_bytes(quick_hash, arc_bytes);
+        state.put_thumbnail_bytes(source.quick_hash.clone(), arc_bytes);
         return Ok(cors_response_builder(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/webp")
             .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
@@ -128,12 +125,12 @@ pub async fn handle_thumb_protocol(
     }
 
     // 3. 旧ディスクキャッシュ (thumbs/v1/{hash[0..2]}/{hash}.webp) があれば読み込んでDB移行＆返却
-    let thumb_path = get_thumbnail_path(&state.cache_dir, &quick_hash);
+    let thumb_path = get_thumbnail_path(&state.cache_dir, &source.quick_hash);
     if thumb_path.exists() {
         if let Ok(bytes) = fs::read(&thumb_path) {
-            state.thumb_store.put(&quick_hash, &bytes).ok();
+            state.thumb_store.put(&source.quick_hash, &bytes).ok();
             let arc_bytes = Arc::new(bytes.clone());
-            state.put_thumbnail_bytes(quick_hash, arc_bytes);
+            state.put_thumbnail_bytes(source.quick_hash.clone(), arc_bytes);
             return Ok(cors_response_builder(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/webp")
                 .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
@@ -142,39 +139,29 @@ pub async fn handle_thumb_protocol(
     }
 
     // 4. キャッシュ未存在の場合、原寸画像ファイルからオンデマンド生成
-    let file_path = Path::new(&file_path_str);
+    let file_path = Path::new(&source.file_path);
     if !file_path.exists() {
-        warn!("Thumbnail original file not found: path={}", file_path_str);
+        warn!("Thumbnail original file not found: path={}", source.file_path);
         return Ok(cors_response_builder(StatusCode::NOT_FOUND)
             .body(b"Original file not found".to_vec())?);
     }
-
-    // メタ情報取得 (Orientation, 寸法)
-    let meta = {
-        let conn = state.db.reader()?;
-        crate::db::repo::get_image_detail(&conn, image_id)?
-    };
-    let (orientation, width, height) = match meta {
-        Some(d) => (1u32, d.width, d.height),
-        None => (1u32, None, None),
-    };
 
     let success = state
         .thumb_pipeline
         .request_and_wait(
             image_id,
             file_path.to_path_buf(),
-            quick_hash.clone(),
-            orientation,
-            width,
-            height,
+            source.quick_hash.clone(),
+            source.orientation,
+            source.width,
+            source.height,
         )
         .await;
 
     if success {
-        if let Ok(Some(bytes)) = state.thumb_store.get(&quick_hash) {
+        if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
             let arc_bytes = Arc::new(bytes.clone());
-            state.put_thumbnail_bytes(quick_hash, arc_bytes);
+            state.put_thumbnail_bytes(source.quick_hash, arc_bytes);
             return Ok(cors_response_builder(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/webp")
                 .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
@@ -182,7 +169,7 @@ pub async fn handle_thumb_protocol(
         }
     }
 
-    warn!("Failed to generate thumbnail: id={}, path={}", image_id, file_path_str);
+    warn!("Failed to generate thumbnail: id={}, path={}", image_id, source.file_path);
     Ok(cors_response_builder(StatusCode::NOT_FOUND)
         .body(b"Failed to generate thumbnail".to_vec())?)
 }
@@ -311,6 +298,25 @@ mod tests {
         assert_eq!(extract_image_id("/42?v=123"), Some(42));
         assert_eq!(extract_image_id("/42"), Some(42));
         assert_eq!(extract_image_id("42"), Some(42));
+    }
+
+    #[test]
+    fn test_handle_thumb_protocol_not_found() {
+        tauri::async_runtime::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("catalog.db");
+            let cache_dir = dir.path().join("cache");
+            std::fs::create_dir_all(&cache_dir).unwrap();
+
+            let db = crate::db::Database::open(&db_path).unwrap();
+            let thumb_store = Arc::new(crate::db::ThumbnailStore::open(&cache_dir).unwrap());
+            let thumb_pipeline = crate::pipeline::ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), cache_dir.clone());
+            let app_state = Arc::new(AppState::new(db, thumb_store, dir.path().to_path_buf(), cache_dir, thumb_pipeline));
+
+            // 存在しない画像ID 9999 に対するリクエスト
+            let resp = handle_thumb_protocol(app_state, "thumb://localhost/9999".to_string()).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        });
     }
 }
 

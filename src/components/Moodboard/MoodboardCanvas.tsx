@@ -1947,8 +1947,9 @@ export const MoodboardCanvas: React.FC = () => {
           const clipBottom = ((1.0 - (item.cropY + item.cropH)) * 100).toFixed(2);
 
           // 変更理由: ムードボードは資料・デザイン参照用途のため、サムネイルではなく
-          // 常時実ファイル（rawSrc）ベースで表示し、imageRendering: high-quality を適用して高品位に拡縮する
-          const rawSrc = getOriginalImageUrl(item.imageId);
+          // 常時実ファイル（rawSrc）ベースで表示し、imageRendering: high-quality を適用して高品位に拡縮する。
+          // 元画像ファイル更新時（rev更新時）に古いブラウザキャッシュが表示されるのを防ぐため、item.rev を渡す。
+          const rawSrc = getOriginalImageUrl(item.imageId, item.rev);
           const imgSrc = rawSrc;
 
           return (

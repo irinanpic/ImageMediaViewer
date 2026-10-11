@@ -157,14 +157,13 @@ pub fn setup_system_tray(
                     info!("Rescan requested from tray menu");
                     if let Ok(conn) = state_clone.db.reader() {
                         if let Ok(folders) = crate::db::repo::get_watched_folders(&conn) {
-                            for folder in folders {
-                                let s = Arc::clone(&state_clone);
-                                let f_id = folder.id;
-                                let f_path = folder.path;
-                                std::thread::spawn(move || {
-                                    let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path, false);
-                                });
-                            }
+                            // 変更理由: 1つのワーカースレッドで全フォルダを順次走査し、DBロック競合とCPU過熱を防ぐ
+                            let s = Arc::clone(&state_clone);
+                            std::thread::spawn(move || {
+                                for folder in folders {
+                                    let _ = crate::scanner::scan_folder_core(None, Arc::clone(&s), folder.id, folder.path, false);
+                                }
+                            });
                         }
                     }
                 }

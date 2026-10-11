@@ -4,6 +4,7 @@ import { backendApi } from "../../lib/ipc";
 import { useTranslation } from "../../locales";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { analyzeImageMetadata } from "../../utils/imageMetadata";
+import { getFileName } from "../../utils/path";
 
 export interface ImageDetailPanelProps {
   /** 表示対象の画像詳細データ */
@@ -30,7 +31,7 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
 }) => {
   const { t } = useTranslation();
   const meta = analyzeImageMetadata(detail, t);
-  const fileName = detail.filePath.split(/[\\/]/).pop() || "";
+  const fileName = getFileName(detail.filePath);
   const displayTitle = title || t("metadata.title");
 
   // アスペクト比の計算

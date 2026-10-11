@@ -16,6 +16,7 @@ import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { ImageDetailPanel } from "../Common/ImageDetailPanel";
+import { getFileName } from "../../utils/path";
 import { useViewerGestures } from "./useViewerGestures";
 
 export const ImageViewerModal: React.FC = () => {
@@ -248,7 +249,8 @@ export const ImageViewerModal: React.FC = () => {
       >
         <div className="flex items-center gap-2 text-sm text-textSecondary">
           <span>{activeImageIndex !== null ? `${activeImageIndex + 1} / ${totalImages}` : ""}</span>
-          {detail && <span className="text-textPrimary font-medium truncate max-w-xs">{detail.filePath.split("\\").pop()}</span>}
+          {/* 変更理由: WindowsのバックスラッシュだけでなくUnix/macOS/Android等のスラッシュ区切りパスにも対応 */}
+          {detail && <span className="text-textPrimary font-medium truncate max-w-xs">{getFileName(detail.filePath)}</span>}
         </div>
 
         <div className="flex items-center gap-3">

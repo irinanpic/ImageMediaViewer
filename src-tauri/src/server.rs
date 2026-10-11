@@ -652,16 +652,19 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
 
                         if let Ok(conn) = state.db.reader() {
                             if let Ok(folders) = crate::db::repo::get_watched_folders(&conn) {
-                                for folder in folders {
-                                    if req.folder_id.is_none() || req.folder_id == Some(folder.id) {
-                                        let s = state.clone();
-                                        let f_id = folder.id;
-                                        let f_path = folder.path;
-                                        thread::spawn(move || {
-                                            let _ = crate::scanner::scan_folder_core(None, s, f_id, f_path, false);
-                                        });
+                                let target_folders: Vec<_> = folders
+                                    .into_iter()
+                                    .filter(|f| req.folder_id.is_none() || req.folder_id == Some(f.id))
+                                    .collect();
+
+                                // 変更理由: フォルダごとにスレッドを乱立させると SQLite ライターロック競合や CPU 負荷の急増、
+                                // およびキャンセルフラグの競合を招くため、1つのワーカースレッド内で順次走査（直列処理）を行う。
+                                let s = Arc::clone(&state);
+                                thread::spawn(move || {
+                                    for folder in target_folders {
+                                        let _ = crate::scanner::scan_folder_core(None, Arc::clone(&s), folder.id, folder.path, false);
                                     }
-                                }
+                                });
                             }
                         }
                         json_response(&serde_json::json!({ "success": true }), 200)
