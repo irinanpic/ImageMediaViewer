@@ -17,6 +17,7 @@ export function useScrollVelocity(containerRef: React.RefObject<HTMLElement | nu
   const [isScrollingFast, setIsScrollingFast] = useState(false);
   const lastScrollTop = useRef(0);
   const lastTime = useRef(performance.now());
+  const lastClearQueueTime = useRef(0);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -34,8 +35,11 @@ export function useScrollVelocity(containerRef: React.RefObject<HTMLElement | nu
 
         if (velocity > SPEED_THRESHOLD) {
           setIsScrollingFast(true);
-          // 急激な移動時はバックエンドに滞留している古い生成キューを即座にパージ
-          backendApi.clearQueue().catch(() => {});
+          // 急激な移動時はバックエンドに滞留している古い生成キューをパージ（400msスロットリングでIPC氾濫防止）
+          if (now - lastClearQueueTime.current > 400) {
+            lastClearQueueTime.current = now;
+            backendApi.clearQueue().catch(() => {});
+          }
         }
 
         lastScrollTop.current = currentScrollTop;

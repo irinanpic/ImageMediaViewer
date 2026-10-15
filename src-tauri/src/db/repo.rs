@@ -58,7 +58,7 @@ pub fn remove_watched_folder(conn: &Connection, id: i64) -> Result<()> {
 /// @param conn DB接続
 /// @return フォルダ一覧
 pub fn get_watched_folders(conn: &Connection) -> Result<Vec<WatchedFolder>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT f.id, f.path, COUNT(i.id) AS cnt,
                 COALESCE(SUM(CASE WHEN i.thumb_status = 1 THEN 1 ELSE 0 END), 0) AS thumb_cnt
          FROM watched_folders f
@@ -199,7 +199,7 @@ pub fn get_timeline_images(
              LIMIT ?2 OFFSET ?3;",
             order_sql
         );
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![fid, limit, offset], |row| {
             Ok(ImageRecord {
                 id: row.get(0)?,
@@ -220,7 +220,7 @@ pub fn get_timeline_images(
              LIMIT ?1 OFFSET ?2;",
             order_sql
         );
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let rows = stmt.query_map(params![limit, offset], |row| {
             Ok(ImageRecord {
                 id: row.get(0)?,
@@ -266,34 +266,41 @@ pub fn get_timeline_summary(
                 conn.query_row("SELECT COUNT(*) FROM images;", [], |row| row.get(0))?
             };
 
-            let sql = if let Some(fid) = folder_id {
-                format!(
+            if let Some(fid) = folder_id {
+                let mut stmt = conn.prepare_cached(
                     "SELECT f.path, COUNT(i.id) AS cnt
                      FROM watched_folders f
                      INNER JOIN images i ON f.id = i.folder_id
-                     WHERE f.id = {}
+                     WHERE f.id = ?1
                      GROUP BY f.id, f.path
                      HAVING cnt > 0
                      ORDER BY f.id ASC;",
-                    fid
-                )
+                )?;
+                let rows = stmt.query_map(params![fid], |row| {
+                    let path: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    Ok(DayBucket { day: path, count })
+                })?;
+                for b in rows {
+                    buckets.push(b?);
+                }
             } else {
-                "SELECT f.path, COUNT(i.id) AS cnt
-                 FROM watched_folders f
-                 INNER JOIN images i ON f.id = i.folder_id
-                 GROUP BY f.id, f.path
-                 HAVING cnt > 0
-                 ORDER BY f.id ASC;".to_string()
-            };
-
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map([], |row| {
-                let path: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok(DayBucket { day: path, count })
-            })?;
-            for b in rows {
-                buckets.push(b?);
+                let mut stmt = conn.prepare_cached(
+                    "SELECT f.path, COUNT(i.id) AS cnt
+                     FROM watched_folders f
+                     INNER JOIN images i ON f.id = i.folder_id
+                     GROUP BY f.id, f.path
+                     HAVING cnt > 0
+                     ORDER BY f.id ASC;",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    let path: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    Ok(DayBucket { day: path, count })
+                })?;
+                for b in rows {
+                    buckets.push(b?);
+                }
             }
         }
         TimelineSort::TakenAtAsc => {
@@ -595,12 +602,63 @@ pub fn reset_failed_thumbnails(conn: &Connection) -> Result<usize> {
 }
 
 /// サムネイル生成ステータスを更新
-pub fn update_thumb_status(conn: &Connection, id: i64, status: i32) -> Result<()> {
-    conn.execute(
-        "UPDATE images SET thumb_status = ?1 WHERE id = ?2;",
+/// サムネイル生成ステータスを更新する（実際に値が変更された場合のみ true を返す）
+///
+/// 変更理由: 既に thumb_status = 1 の画像に対して viewport 表示時などで再更新が
+/// 走った際に、無駄な進捗カウンタ二重加算（thumb_done の不整合な肥大化）を防止するため。
+///
+/// @param conn DB接続
+/// @param id 画像ID
+/// @param status 新ステータス（0: 未生成, 1: 成功, 2: 失敗）
+/// @return 実際にステータスが変更された場合は true
+pub fn update_thumb_status(conn: &Connection, id: i64, status: i32) -> Result<bool> {
+    let affected = conn.execute(
+        "UPDATE images SET thumb_status = ?1 WHERE id = ?2 AND thumb_status != ?1;",
         params![status, id],
     )?;
-    Ok(())
+    Ok(affected > 0)
+}
+
+/// サムネイル生成ステータスを一括更新する（実際に変更された件数を返す）
+///
+/// 変更理由: バックグラウンド生成（Low優先度）時にトランザクションを1回に集約し、
+/// SQLiteの排他ロック時間とWAL書き込み回数を最小化するため。
+///
+/// @param conn DB書き込み接続
+/// @param success_ids 生成成功した画像IDリスト
+/// @param failed_ids 生成失敗した画像IDリスト
+/// @return (実成功遷移数, 実失敗遷移数)
+pub fn update_thumb_status_batch(
+    conn: &mut Connection,
+    success_ids: &[i64],
+    failed_ids: &[i64],
+) -> Result<(usize, usize)> {
+    if success_ids.is_empty() && failed_ids.is_empty() {
+        return Ok((0, 0));
+    }
+    let tx = conn.transaction()?;
+    let mut actual_success = 0;
+    let mut actual_failed = 0;
+    {
+        if !success_ids.is_empty() {
+            let mut stmt = tx.prepare_cached("UPDATE images SET thumb_status = 1 WHERE id = ?1 AND thumb_status != 1;")?;
+            for &id in success_ids {
+                if stmt.execute(params![id])? > 0 {
+                    actual_success += 1;
+                }
+            }
+        }
+        if !failed_ids.is_empty() {
+            let mut stmt = tx.prepare_cached("UPDATE images SET thumb_status = 2 WHERE id = ?1 AND thumb_status != 2;")?;
+            for &id in failed_ids {
+                if stmt.execute(params![id])? > 0 {
+                    actual_failed += 1;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok((actual_success, actual_failed))
 }
 
 /// サムネイル生成完了・失敗・全体数を集計
@@ -665,7 +723,7 @@ pub fn increment_catalog_version(conn: &Connection) -> Result<i64> {
 
 /// 全ボード一覧を取得（所属アイテム数も併せて集計）
 pub fn get_boards(conn: &Connection) -> Result<Vec<crate::models::Board>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT b.id, b.name, b.background_color, b.pan_x, b.pan_y, b.zoom,
                 COUNT(bi.id) AS item_count, b.created_at, b.updated_at
          FROM boards b
@@ -752,7 +810,7 @@ pub fn delete_board(conn: &Connection, id: i64) -> Result<()> {
 
 /// 指定ボード上のアイテム一覧を取得
 pub fn get_board_items(conn: &Connection, board_id: i64) -> Result<Vec<crate::models::BoardItem>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT bi.id, bi.board_id, bi.image_id, bi.x, bi.y, bi.width, bi.height,
                 bi.scale, bi.rotation, bi.z_index, bi.crop_x, bi.crop_y, bi.crop_w, bi.crop_h,
                 bi.opacity, bi.is_locked, bi.flip_h, bi.flip_v, i.file_mtime
@@ -953,7 +1011,7 @@ pub fn delete_board_item(conn: &Connection, id: i64) -> Result<()> {
 /// @param board_id ボードID
 /// @return メモ一覧 (z_index 順)
 pub fn get_board_notes(conn: &Connection, board_id: i64) -> Result<Vec<crate::models::BoardNote>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT id, board_id, text, x, y, width, height, scale, rotation, z_index,
                 color, font_size, is_locked, created_at, updated_at
          FROM board_notes

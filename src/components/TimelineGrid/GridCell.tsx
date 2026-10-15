@@ -33,11 +33,8 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
     const isFocused = selectedCellIndex === globalIndex;
-    const isMultiSelected = useAppStore(
-      React.useCallback(
-        (state) => (record ? state.selectedImageIds.includes(record.id) : false),
-        [record?.id]
-      )
+    const isMultiSelected = useAppStore((state) =>
+      record ? state.selectedImageIds.includes(record.id) : false
     );
     const thumbUrl = record ? getThumbnailUrl(record.id, record.rev) : "";
     const isCached = thumbUrl ? loadedThumbUrls.has(thumbUrl) : false;
@@ -83,6 +80,21 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       prevScrollingFast.current = isScrollingFast;
     }, [isScrollingFast, isLoaded, isCached]);
 
+    // タッチデバイス向け長押し（500ms）複数選択用のRef
+    // 変更理由: Rules of Hooks違反（React error #310）を防止するため、早期returnの前にすべてのフックを呼び出す
+    const longPressTimerRef = React.useRef<number | null>(null);
+    const touchStartPosRef = React.useRef<{ x: number; y: number } | null>(null);
+    const isLongPressTriggeredRef = React.useRef(false);
+
+    // セルアンマウント時に長押しタイマーを安全に解除
+    React.useEffect(() => {
+      return () => {
+        if (longPressTimerRef.current) {
+          window.clearTimeout(longPressTimerRef.current);
+        }
+      };
+    }, []);
+
     // 読込失敗時の自動リトライ
     const handleError = React.useCallback(() => {
       if (isScrollingFast) {
@@ -100,27 +112,66 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       }
     }, [retryCount, isScrollingFast]);
 
-    // 未ロードかつ高速スクロール中の場合、またはレコード取得中の場合のみスケルトン表示
-    if (!record || (isScrollingFast && !isLoaded && !isCached)) {
-      return (
-        <div
-          style={{ width: size, height: size }}
-          className={`bg-surface rounded overflow-hidden flex items-center justify-center border ${
-            isFocused ? "border-accent ring-2 ring-accent" : "border-border/30"
-          }`}
-        >
-          <div className="w-8 h-8 rounded-full bg-surfaceLight/30 animate-pulse" />
-        </div>
+    const handleTouchStart = (e: React.TouchEvent) => {
+      if (!record || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
+      isLongPressTriggeredRef.current = false;
+
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+
+      longPressTimerRef.current = window.setTimeout(() => {
+        isLongPressTriggeredRef.current = true;
+        setSelectedCellIndex(globalIndex);
+        toggleSelectImageId(record.id);
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          try {
+            navigator.vibrate(40);
+          } catch {}
+        }
+      }, 500);
+    };
+
+    const handleTouchMove = (e: React.TouchEvent) => {
+      if (!touchStartPosRef.current || e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      const dist = Math.hypot(
+        touch.clientX - touchStartPosRef.current.x,
+        touch.clientY - touchStartPosRef.current.y
       );
-    }
+      if (dist > 10) {
+        if (longPressTimerRef.current) {
+          window.clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+      }
+    };
+
+    const handleTouchEnd = () => {
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+    };
 
     const handleClick = (e: React.MouseEvent) => {
+      if (isLongPressTriggeredRef.current) {
+        isLongPressTriggeredRef.current = false;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
       if (hasError) {
         setHasError(false);
         setRetryCount(0);
         setIsLoaded(false);
         return;
       }
+
+      if (!record) return;
 
       // Ctrl + クリック（または Cmd + クリック）、または既に複数選択モード中の場合は選択トグル
       if (e.ctrlKey || e.metaKey || useAppStore.getState().selectedImageIds.length > 0) {
@@ -137,7 +188,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     };
 
     const handleDoubleClick = (e: React.MouseEvent) => {
-      if (hasError) return;
+      if (hasError || !record) return;
       e.preventDefault();
       e.stopPropagation();
       setSelectedCellIndex(globalIndex);
@@ -145,11 +196,27 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     };
 
     const handleCheckboxClick = (e: React.MouseEvent) => {
+      if (!record) return;
       e.preventDefault();
       e.stopPropagation();
       setSelectedCellIndex(globalIndex);
       toggleSelectImageId(record.id);
     };
+
+    // 未ロードかつ高速スクロール中の場合、またはレコード取得中の場合のみスケルトン表示
+    // 変更理由: すべてのReactフックが評価された後に早期returnを行うことで、フックの呼び出し数・順序が毎レンダリングで完全に不変であることを保証する
+    if (!record || (isScrollingFast && !isLoaded && !isCached)) {
+      return (
+        <div
+          style={{ width: size, height: size }}
+          className={`bg-surface rounded overflow-hidden flex items-center justify-center border ${
+            isFocused ? "border-accent ring-2 ring-accent" : "border-border/30"
+          }`}
+        >
+          <div className="w-8 h-8 rounded-full bg-surfaceLight/30 animate-pulse" />
+        </div>
+      );
+    }
 
     // リフレッシュ回数やリトライ回数をクエリに付与してブラウザの画像エラーキャッシュをバイパス
     const queryParts: string[] = [];
@@ -170,6 +237,10 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
         style={{ width: size, height: size }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
         title={hasError ? t("timeline.cellErrorTooltip") : record ? t("timeline.cellImageTooltip", { id: record.id }) : ""}
         className={`relative bg-surface rounded overflow-hidden cursor-pointer group transition-all duration-150 select-none ${
           isMultiSelected

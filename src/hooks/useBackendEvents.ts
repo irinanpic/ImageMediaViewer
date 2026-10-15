@@ -47,30 +47,6 @@ export function useBackendEvents() {
     refreshSummary();
   }, [selectedFolderId, timelineSort]);
 
-  // サムネイル生成中または走査中の定期ポーリング（環境を問わず確実に動作）
-  useEffect(() => {
-    let interval: number | null = null;
-
-    const poll = async () => {
-      try {
-        const thumbInfo = await backendApi.getThumbProgress();
-        setThumbProgress({ done: thumbInfo.done, failed: thumbInfo.failed, total: thumbInfo.total });
-        // 生成が進行中であればフォルダの生成数表示も同期
-        if (thumbInfo.isGenerating || thumbInfo.done + thumbInfo.failed < thumbInfo.total) {
-          const folders = await backendApi.getWatchFolders();
-          setFolders(folders);
-        }
-      } catch {
-        // バックグラウンドエラーは無視
-      }
-    };
-
-    interval = window.setInterval(poll, 1200);
-    return () => {
-      if (interval !== null) clearInterval(interval);
-    };
-  }, [setThumbProgress, setFolders]);
-
   useEffect(() => {
     if (!isTauriEnvironment()) {
       // 非Tauri環境（Electron / Webブラウザ）では定期ポーリングでサマリを更新
@@ -93,6 +69,10 @@ export function useBackendEvents() {
 
         unlistenThumb = await listen<ThumbProgress>("thumb-progress", (event) => {
           setThumbProgress(event.payload);
+          // 全件完了時にフォルダの生成数表示も同期
+          if (event.payload.total > 0 && event.payload.done + event.payload.failed >= event.payload.total) {
+            backendApi.getWatchFolders().then(setFolders).catch(() => {});
+          }
         });
 
         unlistenCatalog = await listen<CatalogChangedPayload>("catalog-changed", (_event) => {

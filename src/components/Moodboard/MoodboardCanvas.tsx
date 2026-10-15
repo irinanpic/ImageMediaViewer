@@ -22,7 +22,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
-import { getOriginalImageUrl } from "../../lib/thumbUrl";
+import { getOriginalImageUrl, getThumbnailUrl } from "../../lib/thumbUrl";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
@@ -1946,11 +1946,17 @@ export const MoodboardCanvas: React.FC = () => {
           const clipRight = ((1.0 - (item.cropX + item.cropW)) * 100).toFixed(2);
           const clipBottom = ((1.0 - (item.cropY + item.cropH)) * 100).toFixed(2);
 
-          // 変更理由: ムードボードは資料・デザイン参照用途のため、サムネイルではなく
-          // 常時実ファイル（rawSrc）ベースで表示し、imageRendering: high-quality を適用して高品位に拡縮する。
-          // 元画像ファイル更新時（rev更新時）に古いブラウザキャッシュが表示されるのを防ぐため、item.rev を渡す。
-          const rawSrc = getOriginalImageUrl(item.imageId, item.rev);
-          const imgSrc = rawSrc;
+          // LOD (Level of Detail) 最適化:
+          // 選択中、クロップ中、またはキャンバスズーム・実効表示サイズが大きい場合は高精細な元画像（rawSrc）をロード。
+          // 多数の画像を俯瞰配置している通常時は高速・軽量なサムネイル（thumbUrl）を表示し、メモリ枯渇と描画遅延を防止。
+          const shouldLoadFullRes =
+            isSelected ||
+            (isCropping && isSelected) ||
+            zoom * item.scale >= 1.2 ||
+            displayWidth * zoom >= 512;
+          const imgSrc = shouldLoadFullRes
+            ? getOriginalImageUrl(item.imageId, item.rev)
+            : getThumbnailUrl(item.imageId, item.rev);
 
           return (
             <div

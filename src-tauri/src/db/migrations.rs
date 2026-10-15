@@ -260,5 +260,20 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("Completed migration v6 (user_version = 6)");
     }
 
+    if current_version < 7 {
+        info!("Applying migration v7...");
+        let tx = conn.transaction()?;
+
+        // フォルダ内ファイル名順ソートおよびタイムライン走査の高速化用複合インデックス
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_images_folder_filepath ON images (folder_id, file_path ASC);",
+            [],
+        )?;
+
+        tx.pragma_update(None, "user_version", 7)?;
+        tx.commit()?;
+        info!("Completed migration v7 (user_version = 7)");
+    }
+
     Ok(())
 }

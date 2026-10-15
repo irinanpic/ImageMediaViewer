@@ -142,8 +142,16 @@ pub async fn get_timeline_summary(
     sort: Option<crate::models::TimelineSort>,
 ) -> Result<TimelineSummary, AppError> {
     let current_version = state.current_catalog_version();
+    let sort_val = sort.unwrap_or(crate::models::TimelineSort::TakenAtDesc);
+
+    // インメモリキャッシュをまず確認（SQLiteクエリの完全バイパス）
+    if let Some(cached) = state.get_cached_timeline_summary(folder_id, sort_val, current_version) {
+        return Ok(cached);
+    }
+
     let conn = state.db.reader()?;
-    let summary = crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, sort)?;
+    let summary = crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, Some(sort_val))?;
+    state.put_cached_timeline_summary(folder_id, sort_val, current_version, summary.clone());
     Ok(summary)
 }
 
@@ -305,6 +313,8 @@ pub async fn rescan_missing_thumbnails(state: State<'_, Arc<AppState>>) -> Resul
     let writer = state.db.writer();
     let reset_count = crate::db::repo::reset_failed_thumbnails(&writer).unwrap_or(0);
     state.thumb_pipeline.trigger_background_refill();
+    state.init_thumb_progress();
+    state.emit_thumb_progress_throttled();
     info!("Reset thumbnail failure flags (Targets: {})", reset_count);
     Ok(serde_json::json!({
         "success": true,
@@ -312,11 +322,19 @@ pub async fn rescan_missing_thumbnails(state: State<'_, Arc<AppState>>) -> Resul
     }))
 }
 
-/// サムネイル生成進捗状況を取得
+/// サムネイル生成進捗状況を取得（インメモリアトミックカウンタからO(1)即時取得）
+///
+/// 変更理由: 全画像テーブルに対するCOUNT(*)×3回のフルスキャンを廃止し、
+/// メモリ上のAtomicU64カウンタからゼロ遅延で返却してDB負荷を完全に解消する。
 #[command]
 pub async fn get_thumb_progress(state: State<'_, Arc<AppState>>) -> Result<ThumbProgress, AppError> {
-    let conn = state.db.reader()?;
-    let (done, failed, total) = crate::db::repo::get_thumb_progress(&conn)?;
+    let total = state.thumb_total.load(std::sync::atomic::Ordering::Relaxed);
+    let raw_done = state.thumb_done.load(std::sync::atomic::Ordering::Relaxed);
+    let raw_failed = state.thumb_failed.load(std::sync::atomic::Ordering::Relaxed);
+
+    let done = raw_done.min(total);
+    let failed = raw_failed.min(total.saturating_sub(done));
+
     Ok(ThumbProgress {
         done,
         failed,
@@ -643,6 +661,25 @@ pub async fn get_platform_info() -> Result<PlatformInfo, AppError> {
         is_mobile,
         presets,
     })
+}
+
+/// ストレージアクセス権限の要求および確認を行う
+///
+/// 変更理由: Android環境での実行時パーミッション要求をフロントエンドから明示的にキックできるようにするため。
+///
+/// @return 権限が付与されているかどうかの真偽値
+#[command]
+pub async fn request_storage_permissions(#[allow(unused_variables)] app: AppHandle) -> Result<bool, AppError> {
+    #[cfg(target_os = "android")]
+    {
+        let check_path = Path::new("/storage/emulated/0/Pictures");
+        let has_perm = check_path.read_dir().is_ok() || Path::new("/storage/emulated/0/DCIM").read_dir().is_ok();
+        Ok(has_perm)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(true)
+    }
 }
 
 

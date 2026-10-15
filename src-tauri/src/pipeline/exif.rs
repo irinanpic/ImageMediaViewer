@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
 use exif::{In, Reader, Tag};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
 use tracing::warn;
 
@@ -34,18 +34,23 @@ fn parse_exif_date_string(s: &str) -> Option<i64> {
     Some(Utc.from_utc_datetime(&naive).timestamp())
 }
 
-/// ファイルのメタデータを抽出する
+/// オープン済みファイルハンドルからメタデータを抽出する（File::open 1回集約用）
+///
+/// 変更理由: 走査処理中に calculate_quick_hash と extract_metadata で重複オープンされていた
+/// ファイルシステムI/Oを集約し、単一ハンドルからシーク操作でExifおよび寸法を高速抽出する。
 ///
 /// @param path 画像ファイルパス
+/// @param file オープン済みファイルハンドル
 /// @param mtime_secs ファイル更新日時のUNIX秒
 /// @return ExtractedMetadata
-pub fn extract_metadata(path: &Path, mtime_secs: i64) -> ExtractedMetadata {
+pub fn extract_metadata_from_file(path: &Path, file: &mut File, mtime_secs: i64) -> ExtractedMetadata {
     let mut orientation = 1u32;
     let mut exif_taken_at: Option<i64> = None;
 
     // 1. Exif解析 (kamadak-exif)
-    if let Ok(file) = File::open(path) {
-        let mut buf_reader = BufReader::new(file);
+    let _ = file.seek(SeekFrom::Start(0));
+    {
+        let mut buf_reader = BufReader::new(&mut *file);
         if let Ok(reader) = Reader::new().read_from_container(&mut buf_reader) {
             // Orientation
             if let Some(field) = reader.get_field(Tag::Orientation, In::PRIMARY) {
@@ -81,12 +86,17 @@ pub fn extract_metadata(path: &Path, mtime_secs: i64) -> ExtractedMetadata {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase());
 
-    let (mut raw_w, mut raw_h) = match imagesize::size(path) {
+    let _ = file.seek(SeekFrom::Start(0));
+    let mut buf_reader = std::io::BufReader::new(&mut *file);
+    let (mut raw_w, mut raw_h) = match imagesize::reader_size(&mut buf_reader) {
         Ok(dim) => (Some(dim.width as u32), Some(dim.height as u32)),
-        Err(e) => {
-            warn!("Failed to parse image header: {:?}, error: {:?}", path, e);
-            (None, None)
-        }
+        Err(_) => match imagesize::size(path) {
+            Ok(dim) => (Some(dim.width as u32), Some(dim.height as u32)),
+            Err(e) => {
+                warn!("Failed to parse image header: {:?}, error: {:?}", path, e);
+                (None, None)
+            }
+        },
     };
 
     // 3. Orientation に応じた幅・高さの入れ替え (Orientation 5-8 は入替)
@@ -114,6 +124,31 @@ pub fn extract_metadata(path: &Path, mtime_secs: i64) -> ExtractedMetadata {
         height: raw_h,
         orientation,
         format,
+    }
+}
+
+/// ファイルのメタデータを抽出する
+///
+/// @param path 画像ファイルパス
+/// @param mtime_secs ファイル更新日時のUNIX秒
+/// @return ExtractedMetadata
+pub fn extract_metadata(path: &Path, mtime_secs: i64) -> ExtractedMetadata {
+    if let Ok(mut file) = File::open(path) {
+        extract_metadata_from_file(path, &mut file, mtime_secs)
+    } else {
+        let local_dt: DateTime<Local> = DateTime::from_timestamp(mtime_secs, 0)
+            .map(|utc| utc.with_timezone(&Local))
+            .unwrap_or_else(Local::now);
+        let naive = local_dt.naive_local();
+        let normalized_epoch = Utc.from_utc_datetime(&naive).timestamp();
+        ExtractedMetadata {
+            taken_at: normalized_epoch,
+            taken_at_source: 1,
+            width: None,
+            height: None,
+            orientation: 1,
+            format: path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.to_ascii_lowercase()),
+        }
     }
 }
 

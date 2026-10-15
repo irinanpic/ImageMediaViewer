@@ -324,5 +324,11 @@ export const backendApi = {
    */
   getPlatformInfo: (): Promise<PlatformInfo> =>
     callIpc<PlatformInfo>("get_platform_info"),
+
+  /**
+   * ストレージアクセス権限の要求および確認を行う（Android環境用）
+   */
+  requestStoragePermissions: (): Promise<boolean> =>
+    callIpc<boolean>("request_storage_permissions"),
 };
 

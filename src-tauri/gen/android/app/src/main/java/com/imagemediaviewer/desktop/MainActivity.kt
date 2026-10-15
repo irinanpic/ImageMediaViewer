@@ -24,35 +24,33 @@ class MainActivity : TauriActivity() {
    *
    * 変更理由: Android 端末内の画像ファイル（DCIM/Camera, Pictures等）を
    * Rust の走査エンジン（walkdir）およびサムネイルパイプラインから直接読み込めるようにするため。
+   * Android 13（TIRAMISU, API 33）以降は READ_MEDIA_IMAGES を要求し、
+   * Android 12以前は READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE を要求する。
+   * 起動時に全ファイルアクセス設定画面へ強制リダイレクトする挙動を排除し、
+   * 標準的なシステムランタイムダイアログを表示する。
    */
   private fun requestStoragePermissions() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-      if (!Environment.isExternalStorageManager()) {
-        try {
-          val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-          intent.data = Uri.parse("package:$packageName")
-          startActivity(intent)
-        } catch (_: Exception) {
-          try {
-            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-            startActivity(intent)
-          } catch (_: Exception) {}
-        }
+    val neededPermissions = mutableListOf<String>()
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)
+          != PackageManager.PERMISSION_GRANTED) {
+        neededPermissions.add(Manifest.permission.READ_MEDIA_IMAGES)
       }
     } else {
-      val permissions = mutableListOf(
-        Manifest.permission.READ_EXTERNAL_STORAGE,
-        Manifest.permission.WRITE_EXTERNAL_STORAGE
-      )
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
+      if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
+          != PackageManager.PERMISSION_GRANTED) {
+        neededPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
       }
-      val needed = permissions.filter {
-        ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R &&
+          ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+          != PackageManager.PERMISSION_GRANTED) {
+        neededPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
       }
-      if (needed.isNotEmpty()) {
-        ActivityCompat.requestPermissions(this, needed.toTypedArray(), 1001)
-      }
+    }
+
+    if (neededPermissions.isNotEmpty()) {
+      ActivityCompat.requestPermissions(this, neededPermissions.toTypedArray(), 1001)
     }
   }
 }

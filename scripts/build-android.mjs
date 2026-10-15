@@ -1,6 +1,7 @@
 import { spawn, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
+import { cleanAllTargetReadOnly } from "./clean-target-readonly.mjs";
 
 /**
  * モバイル版（Android）APK ビルド自動化スクリプト
@@ -78,27 +79,18 @@ function findJavaHome() {
 }
 
 /**
- * Windows 環境において build ディレクトリ内のファイル/フォルダから ReadOnly 属性を再帰的に解除する
- * (AccessDeniedException 対策)
- *
- * @param {string} dir 解除対象ディレクトリ
+ * Windows 環境において Cargo target および Android build ディレクトリ内のファイル/フォルダから
+ * ReadOnly 属性を再帰的かつ高速に解除する（AccessDeniedException / autocfg パニック対策）
  */
-function clearReadOnlyAttributes(dir) {
-  if (process.platform !== "win32" || !fs.existsSync(dir)) return;
-  try {
-    execSync(
-      `powershell -NoProfile -Command "Get-ChildItem -Path '${dir}' -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { if ($_.Attributes -band [System.IO.FileAttributes]::ReadOnly) { $_.Attributes = $_.Attributes -bxor [System.IO.FileAttributes]::ReadOnly } }"`,
-      { stdio: "ignore" }
-    );
-  } catch (_) {}
+function runReadOnlyCleanup() {
+  cleanAllTargetReadOnly();
 }
 
 /**
  * メインビルド処理
  */
 async function main() {
-  const buildDir = path.join(process.cwd(), "src-tauri", "gen", "android", "app", "build");
-  clearReadOnlyAttributes(buildDir);
+  runReadOnlyCleanup();
   console.log("=========================================");
   console.log("  ImageMediaViewer Android APK Build");
   console.log("=========================================\n");
@@ -140,6 +132,7 @@ async function main() {
   if (localAppData && !env.CARGO_TARGET_DIR) {
     env.CARGO_TARGET_DIR = path.join(localAppData, "ImageMediaViewer", "target");
   }
+  runReadOnlyCleanup();
 
   // PATH に Java と Android ツールを追加
   const pathParts = [];

@@ -4,15 +4,16 @@ use std::path::Path;
 
 const CHUNK_SIZE: usize = 64 * 1024; // 64KiB
 
-/// quick_hash を算出する
+/// ファイルハンドルから直接 quick_hash を算出する（File::open 1回集約用）
 ///
-/// 変更理由: 仕様書§5.3「BLAKE3( file_size(u64 LE) || 先頭64KiB || 中央64KiB || 末尾64KiB )」に準拠
+/// 変更理由: 走査時およびメタデータ抽出時の重複した File::open システムコールを排除し、
+/// 単一のオープンハンドルからシーク操作でハッシュを高速算出するため。
 ///
-/// @param path 対象ファイルパス
+/// @param file オープン済みファイルハンドル
 /// @param file_size ファイルサイズ（バイト）
 /// @return BLAKE3ハッシュの16進数文字列
-pub fn calculate_quick_hash(path: &Path, file_size: u64) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
+pub fn calculate_quick_hash_from_file(file: &mut File, file_size: u64) -> std::io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
     let mut hasher = blake3::Hasher::new();
 
     // ファイルサイズをu64リトルエンディアンで書き込み
@@ -46,6 +47,18 @@ pub fn calculate_quick_hash(path: &Path, file_size: u64) -> std::io::Result<Stri
     }
 
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// quick_hash を算出する
+///
+/// 変更理由: 仕様書§5.3「BLAKE3( file_size(u64 LE) || 先頭64KiB || 中央64KiB || 末尾64KiB )」に準拠
+///
+/// @param path 対象ファイルパス
+/// @param file_size ファイルサイズ（バイト）
+/// @return BLAKE3ハッシュの16進数文字列
+pub fn calculate_quick_hash(path: &Path, file_size: u64) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    calculate_quick_hash_from_file(&mut file, file_size)
 }
 
 #[cfg(test)]

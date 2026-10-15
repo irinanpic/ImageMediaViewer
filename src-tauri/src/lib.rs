@@ -138,11 +138,14 @@ pub fn run() {
 
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), app_cache_dir.clone());
     let app_state = Arc::new(AppState::new(db, thumb_store, app_data_dir.clone(), app_cache_dir, thumb_pipeline));
+    app_state.thumb_pipeline.set_app_state(Arc::downgrade(&app_state));
+    app_state.init_thumb_progress();
 
     // アイドルウォッチャーをバックグラウンド起動
     crate::scanner::start_idle_watcher(app_state.clone());
 
     let initial_locale = app_settings.locale.clone();
+    let state_for_setup = Arc::clone(&app_state);
     let state_for_tray = Arc::clone(&app_state);
     let stay_for_tray = Arc::clone(&stay_in_tray);
     let stay_for_window = Arc::clone(&stay_in_tray);
@@ -189,6 +192,7 @@ pub fn run() {
 
     let builder = builder
         .setup(move |app| {
+            state_for_setup.set_app_handle(app.handle().clone());
             app.manage(app_state);
 
             // デスクトップ環境のみ: システムトレイアイコンおよび右クリックメニューの登録
@@ -250,6 +254,7 @@ pub fn run() {
             commands::get_locale,
             commands::set_locale,
             commands::get_platform_info,
+            commands::request_storage_permissions,
         ]);
 
     builder

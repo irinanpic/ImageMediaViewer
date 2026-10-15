@@ -9,6 +9,7 @@ import { AddToBoardModal } from "./components/Moodboard/AddToBoardModal";
 import { LogViewerModal } from "./components/Common/LogViewerModal";
 import { useBackendEvents } from "./hooks/useBackendEvents";
 import { useWindowState } from "./hooks/useWindowState";
+import { useBackNavigation } from "./hooks/useBackNavigation";
 import { useAppStore } from "./store";
 
 export const App: React.FC = () => {
@@ -16,6 +17,8 @@ export const App: React.FC = () => {
   useBackendEvents();
   // ウィンドウ状態（サイズ・位置・最大化）の自動保存
   useWindowState();
+  // Android戻るボタン・スワイプジェスチャーの階層的ハンドリング
+  useBackNavigation();
 
   const currentView = useAppStore((state) => state.currentView);
 

@@ -48,21 +48,9 @@ export function useWindowState() {
     // 初期マウント時の保存（初期サイズを記録）
     const initialTimer = window.setTimeout(persistWindowState, 1000);
 
-    // バックエンド終了同期用: 2.5秒ごとの定期ハートビート送信
-    const getBaseUrl = () => {
-      if (typeof window !== "undefined" && window.location && window.location.origin && window.location.origin.startsWith("http")) {
-        return window.location.origin;
-      }
-      return "http://127.0.0.1:14201";
-    };
-
-    const heartbeatInterval = window.setInterval(() => {
-      fetch(`${getBaseUrl()}/api/heartbeat`, { method: "POST" }).catch(() => {});
-    }, 2500);
-
     // ウィンドウ状態の保存（アンロード時）
     // 変更理由: サーバ常駐化仕様に基づき、クライアント画面が閉じたりOSがスリープに入っても
-    // サーバを勝手に終了させないよう、ウィンドウ状態の保存のみを行いシャットダウン要求は送信しない
+    // サーバを勝手に終了させないよう、ウィンドウ状態の保存のみを行う
     const handleUnload = () => {
       persistWindowState();
     };
@@ -73,7 +61,6 @@ export function useWindowState() {
 
     return () => {
       window.clearTimeout(initialTimer);
-      window.clearInterval(heartbeatInterval);
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
       }

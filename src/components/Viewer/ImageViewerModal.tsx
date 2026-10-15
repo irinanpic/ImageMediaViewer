@@ -119,10 +119,17 @@ export const ImageViewerModal: React.FC = () => {
         if (rec) {
           const img = new Image();
           img.src = getOriginalImageUrl(rec.id, rec.rev);
+        } else {
+          ensureIndex(idx).then((r) => {
+            if (r) {
+              const img = new Image();
+              img.src = getOriginalImageUrl(r.id, r.rev);
+            }
+          });
         }
       }
     }
-  }, [activeImageIndex, totalImages, getImageByIndex]);
+  }, [activeImageIndex, totalImages, getImageByIndex, ensureIndex]);
 
 
 

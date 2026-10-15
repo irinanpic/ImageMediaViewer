@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mergePageRecords } from "../usePagedImages";
+import { describe, expect, it, vi } from "vitest";
+import { mergePageRecords, SharedPageCacheManager } from "../usePagedImages";
 import type { ImageRecord } from "../../types/generated/ImageRecord";
 
 describe("usePagedImages - mergePageRecords (インクリメンタル差分マージ)", () => {
@@ -35,7 +35,6 @@ describe("usePagedImages - mergePageRecords (インクリメンタル差分マ�
 
   it("内容に変化がない場合は既存のオブジェクト参照を100%維持し changed=false とする", () => {
     const oldList = [sample1, sample2];
-    // 同じ値を持つ別のオブジェクトインスタンス
     const newList: ImageRecord[] = [
       { ...sample1 },
       { ...sample2 },
@@ -44,7 +43,6 @@ describe("usePagedImages - mergePageRecords (インクリメンタル差分マ�
     const result = mergePageRecords(oldList, newList);
     expect(result.changed).toBe(false);
     expect(result.merged.length).toBe(2);
-    // オブジェクト参照が oldList のものと同一であること（Reactの再レンダリング防止）
     expect(result.merged[0]).toBe(sample1);
     expect(result.merged[1]).toBe(sample2);
   });
@@ -53,16 +51,14 @@ describe("usePagedImages - mergePageRecords (インクリメンタル差分マ�
     const oldList = [sample1, sample2];
     const updatedSample2: ImageRecord = {
       ...sample2,
-      rev: 2002, // mtime更新
+      rev: 2002,
     };
     const newList = [sample1, updatedSample2];
 
     const result = mergePageRecords(oldList, newList);
     expect(result.changed).toBe(true);
     expect(result.merged.length).toBe(2);
-    // sample1 は変更がないため既存参照を維持
     expect(result.merged[0]).toBe(sample1);
-    // sample2 は更新されたため新レコードに差し替え
     expect(result.merged[1]).toBe(updatedSample2);
     expect(result.merged[1].rev).toBe(2002);
   });
@@ -100,7 +96,82 @@ describe("usePagedImages - mergePageRecords (インクリメンタル差分マ�
     expect(result.changed).toBe(true);
     expect(result.merged.length).toBe(2);
     expect(result.merged[0]).toBe(sample1);
-    // インデックス1は旧sample2からsample3に置き換わる
     expect(result.merged[1]).toBe(sample3);
+  });
+});
+
+describe("SharedPageCacheManager (共有LRUキャッシュマネージャー)", () => {
+  it("ページの保存と取得、存在確認が正しく機能する", () => {
+    const manager = new SharedPageCacheManager();
+    manager.syncScope(null, "folder");
+
+    const page0: ImageRecord[] = [
+      { id: 1, takenAt: 100, width: 100, height: 100, rev: 1 },
+    ];
+    manager.set(0, page0);
+
+    expect(manager.has(0)).toBe(true);
+    expect(manager.has(1)).toBe(false);
+    expect(manager.get(0)).toEqual(page0);
+  });
+
+  it("LRU上限（50ページ）を超えた場合、最も過去に参照されたページが破棄される", () => {
+    const manager = new SharedPageCacheManager();
+    manager.syncScope(null, "folder");
+
+    // 0 から 49 ページを登録
+    for (let i = 0; i < 50; i++) {
+      manager.set(i, [{ id: i, takenAt: i, width: 100, height: 100, rev: 1 }]);
+    }
+    expect(manager.getCachedPageIndices().length).toBe(50);
+    expect(manager.has(0)).toBe(true);
+
+    // ページ 0 を参照（LRUにより最新へ更新）
+    manager.get(0);
+
+    // 新規に 50 ページ目を登録
+    manager.set(50, [{ id: 50, takenAt: 50, width: 100, height: 100, rev: 1 }]);
+
+    expect(manager.getCachedPageIndices().length).toBe(50);
+    // 0 は参照されたため生存し、1 が最古として破棄される
+    expect(manager.has(0)).toBe(true);
+    expect(manager.has(1)).toBe(false);
+    expect(manager.has(50)).toBe(true);
+  });
+
+  it("キャッシュ変更時に購読リスナーへ通知される", () => {
+    const manager = new SharedPageCacheManager();
+    const listener = vi.fn();
+    const unsubscribe = manager.subscribe(listener);
+
+    manager.set(0, []);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    manager.clear();
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    manager.set(1, []);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("syncScope でスコープ（フォルダ・ソート）が変化した時のみキャッシュが無効化される", () => {
+    const manager = new SharedPageCacheManager();
+    manager.syncScope(1, "folder");
+    manager.set(0, []);
+    expect(manager.has(0)).toBe(true);
+
+    // 同一スコープならキャッシュ維持
+    manager.syncScope(1, "folder");
+    expect(manager.has(0)).toBe(true);
+
+    // ソート順変更でクリア
+    manager.syncScope(1, "takenAtDesc");
+    expect(manager.has(0)).toBe(false);
+
+    manager.set(0, []);
+    // フォルダ変更でクリア
+    manager.syncScope(2, "takenAtDesc");
+    expect(manager.has(0)).toBe(false);
   });
 });

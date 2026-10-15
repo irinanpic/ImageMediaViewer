@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { usePagedImages } from "../../hooks/usePagedImages";
 import { useScrollVelocity } from "../../hooks/useScrollVelocity";
@@ -49,11 +49,55 @@ export const VirtualTimeline: React.FC = () => {
   const dragStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const initialSelectedIdsRef = useRef<number[]>([]);
 
+  // 仮想スクロールの最大ピクセル高さ（ブラウザのレイアウト限界突破を防止）
+  const MAX_VIRTUAL_HEIGHT = 8_000_000;
+
+  // 全高の算出（行高さの合計、useMemoで再計算を抑制）
+  const estimatedTotalHeight = useMemo(() => rows.reduce((sum, r) => sum + r.height, 0), [rows]);
+  const isScaled = estimatedTotalHeight > MAX_VIRTUAL_HEIGHT;
+
+  // 実スクロール量と仮想スクロール量の変換比率
+  const getScrollRatio = useCallback(
+    (el: HTMLElement) => {
+      const viewportHeight = el.clientHeight || 800;
+      const maxReal = Math.max(1, MAX_VIRTUAL_HEIGHT - viewportHeight);
+      const maxVirt = Math.max(1, estimatedTotalHeight - viewportHeight);
+      return maxVirt / maxReal;
+    },
+    [estimatedTotalHeight]
+  );
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => containerRef.current,
     estimateSize: (index) => rows[index]?.height ?? cellSize,
-    overscan: 12,
+    overscan: 4,
+    observeElementOffset: (_instance, cb) => {
+      const el = containerRef.current;
+      if (!el) return;
+      const handler = () => {
+        if (!isScaled) {
+          cb(el.scrollTop, false);
+          return;
+        }
+        const ratio = getScrollRatio(el);
+        cb(el.scrollTop * ratio, false);
+      };
+      el.addEventListener("scroll", handler, { passive: true });
+      return () => {
+        el.removeEventListener("scroll", handler);
+      };
+    },
+    scrollToFn: (offset, options) => {
+      const el = containerRef.current;
+      if (!el) return;
+      if (!isScaled) {
+        el.scrollTo({ top: offset, behavior: options?.behavior ?? "auto" });
+        return;
+      }
+      const ratio = getScrollRatio(el);
+      el.scrollTo({ top: offset / ratio, behavior: options?.behavior ?? "auto" });
+    },
   });
 
   const virtualItems = virtualizer.getVirtualItems();
@@ -63,7 +107,7 @@ export const VirtualTimeline: React.FC = () => {
     virtualItems,
     rows,
     getImageByIndex,
-    overscanRows: 12,
+    overscanRows: 4,
     dataVersion: versionTick,
     refreshTick: timelineRefreshTick,
   });
@@ -180,19 +224,10 @@ export const VirtualTimeline: React.FC = () => {
     const row = rows[firstVisibleItem.index];
     if (!row) return;
 
-    let dayLabel = "";
+    let dayLabel = row.day;
     let imageIndex: number | null = null;
-    if (row.kind === "header") {
-      dayLabel = row.day;
-    } else {
+    if (row.kind === "cells") {
       imageIndex = row.startIndex;
-      // 上位の直近ヘッダー行の日付を探す
-      for (let i = firstVisibleItem.index; i >= 0; i--) {
-        if (rows[i]?.kind === "header") {
-          dayLabel = (rows[i] as { day: string }).day;
-          break;
-        }
-      }
     }
 
     setCurrentVisibleInfo({
@@ -482,7 +517,7 @@ export const VirtualTimeline: React.FC = () => {
       >
         <div
           style={{
-            height: `${virtualizer.getTotalSize()}px`,
+            height: `${isScaled ? MAX_VIRTUAL_HEIGHT : virtualizer.getTotalSize()}px`,
             width: "100%",
             position: "relative",
           }}
@@ -490,6 +525,14 @@ export const VirtualTimeline: React.FC = () => {
           {virtualItems.map((virtualRow) => {
             const row = rows[virtualRow.index];
             if (!row) return null;
+
+            const el = containerRef.current;
+            const currentScrollTop = el?.scrollTop ?? 0;
+            const ratio = isScaled && el ? getScrollRatio(el) : 1.0;
+            const virtScrollTop = currentScrollTop * ratio;
+            const translateY = isScaled
+              ? currentScrollTop + (virtualRow.start - virtScrollTop)
+              : virtualRow.start;
 
             return (
               <div
@@ -500,7 +543,7 @@ export const VirtualTimeline: React.FC = () => {
                   left: 0,
                   width: "100%",
                   height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
+                  transform: `translateY(${translateY}px)`,
                 }}
               >
                 {row.kind === "header" ? (

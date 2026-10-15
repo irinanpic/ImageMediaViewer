@@ -97,7 +97,12 @@ pub async fn handle_thumb_protocol(
     // 変更理由: state.get_thumb_source_cached によりインメモリキャッシュまたは単一クエリで一括取得。
     // DBクエリの重複（get_image_file_info + get_image_detail）を排除し、
     // images テーブルに保持されている正確な EXIF orientation（1〜8）をパイプラインへ渡す。
-    let source = match state.get_thumb_source_cached(image_id) {
+    let source = {
+        let state_clone = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || state_clone.get_thumb_source_cached(image_id)).await?
+    };
+
+    let source = match source {
         Some(s) => s,
         None => {
             warn!("Thumbnail target image record not found: id={}", image_id);
@@ -106,7 +111,7 @@ pub async fn handle_thumb_protocol(
         }
     };
 
-    // 1. メモリキャッシュチェック
+    // 1. メモリキャッシュチェック (インメモリのため即時)
     if let Some(cached_bytes) = state.get_thumbnail_bytes(&source.quick_hash) {
         return Ok(cors_response_builder(StatusCode::OK)
             .header(header::CONTENT_TYPE, "image/webp")
@@ -114,8 +119,13 @@ pub async fn handle_thumb_protocol(
             .body((*cached_bytes).clone())?);
     }
 
-    // 2. サムネイル専用DB (thumbnails.db) から BLOB 取得
-    if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
+    // 2. サムネイル専用DB (thumbnails.db) から BLOB 取得 (spawn_blocking)
+    let blob_res = {
+        let thumb_store = Arc::clone(&state.thumb_store);
+        let q_hash = source.quick_hash.clone();
+        tokio::task::spawn_blocking(move || thumb_store.get(&q_hash)).await?
+    };
+    if let Ok(Some(bytes)) = blob_res {
         let arc_bytes = Arc::new(bytes.clone());
         state.put_thumbnail_bytes(source.quick_hash.clone(), arc_bytes);
         return Ok(cors_response_builder(StatusCode::OK)
@@ -124,10 +134,12 @@ pub async fn handle_thumb_protocol(
             .body(bytes)?);
     }
 
-    // 3. 旧ディスクキャッシュ (thumbs/v1/{hash[0..2]}/{hash}.webp) があれば読み込んでDB移行＆返却
+    // 3. 旧ディスクキャッシュ (thumbs/v1/{hash[0..2]}/{hash}.webp) があれば読み込んでDB移行＆返却 (spawn_blocking)
     let thumb_path = get_thumbnail_path(&state.cache_dir, &source.quick_hash);
     if thumb_path.exists() {
-        if let Ok(bytes) = fs::read(&thumb_path) {
+        let tp = thumb_path.clone();
+        let read_res = tokio::task::spawn_blocking(move || fs::read(&tp)).await?;
+        if let Ok(bytes) = read_res {
             state.thumb_store.put(&source.quick_hash, &bytes).ok();
             let arc_bytes = Arc::new(bytes.clone());
             state.put_thumbnail_bytes(source.quick_hash.clone(), arc_bytes);
@@ -159,7 +171,12 @@ pub async fn handle_thumb_protocol(
         .await;
 
     if success {
-        if let Ok(Some(bytes)) = state.thumb_store.get(&source.quick_hash) {
+        let blob_res = {
+            let thumb_store = Arc::clone(&state.thumb_store);
+            let q_hash = source.quick_hash.clone();
+            tokio::task::spawn_blocking(move || thumb_store.get(&q_hash)).await?
+        };
+        if let Ok(Some(bytes)) = blob_res {
             let arc_bytes = Arc::new(bytes.clone());
             state.put_thumbnail_bytes(source.quick_hash, arc_bytes);
             return Ok(cors_response_builder(StatusCode::OK)
@@ -177,6 +194,7 @@ pub async fn handle_thumb_protocol(
 /// `original://` プロトコルの非同期ハンドラ
 ///
 /// 変更理由: 仕様書§5.5「original://localhost/{imageId} 原寸画像を返す」
+/// 同期I/OおよびSQLite読込を spawn_blocking 化し、実アクセス時のmtime更新検知を移植。
 pub async fn handle_original_protocol(
     state: Arc<AppState>,
     uri: String,
@@ -191,11 +209,15 @@ pub async fn handle_original_protocol(
     };
 
     let info = {
-        let conn = state.db.reader()?;
-        crate::db::repo::get_image_file_info(&conn, image_id)?
-    };
+        let state_clone = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            let conn = state_clone.db.reader()?;
+            crate::db::repo::get_image_file_info(&conn, image_id)
+        })
+        .await?
+    }?;
 
-    let (file_path_str, _, _, format) = match info {
+    let (file_path_str, orig_hash, orig_mtime, format) = match info {
         Some(item) => item,
         None => {
             warn!("Original image record not found: id={}", image_id);
@@ -204,16 +226,70 @@ pub async fn handle_original_protocol(
         }
     };
 
-    let file_path = Path::new(&file_path_str);
-    if !file_path.exists() {
-        warn!("Original image file not found: path={}", file_path_str);
-        return Ok(cors_response_builder(StatusCode::NOT_FOUND)
-            .body(b"Original file not found".to_vec())?);
+    let file_path = std::path::PathBuf::from(&file_path_str);
+    let fp_clone = file_path.clone();
+    let meta_res = tokio::task::spawn_blocking(move || fs::metadata(&fp_clone)).await?;
+
+    let meta = match meta_res {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("Original image file not found: {:?}, error: {:?}", file_path, e);
+            return Ok(cors_response_builder(StatusCode::NOT_FOUND)
+                .body(b"Original file not found".to_vec())?);
+        }
+    };
+
+    let cur_mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let cur_size = meta.len();
+
+    // 実アクセス時更新検知: mtime に差分があればメタデータを再抽出してDB・キャッシュを更新
+    if cur_mtime != orig_mtime {
+        let state_clone = Arc::clone(&state);
+        let fp_for_update = file_path.clone();
+        let old_hash = orig_hash.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(mut file) = std::fs::File::open(&fp_for_update) {
+                if let Ok(new_hash) = crate::pipeline::hash::calculate_quick_hash_from_file(&mut file, cur_size) {
+                    let new_meta = crate::pipeline::exif::extract_metadata_from_file(&fp_for_update, &mut file, cur_mtime);
+                    let conn = state_clone.db.writer();
+                    let _ = crate::db::repo::update_image_on_file_changed(
+                        &conn,
+                        image_id,
+                        cur_size,
+                        cur_mtime,
+                        &new_hash,
+                        new_meta.width,
+                        new_meta.height,
+                        new_meta.orientation,
+                    );
+                    state_clone.invalidate_thumbnail_cache(&old_hash);
+                    if let Some(mut updated_src) = state_clone.get_thumb_source_cached(image_id) {
+                        updated_src.file_size = cur_size;
+                        updated_src.file_mtime = cur_mtime;
+                        updated_src.quick_hash = new_hash.clone();
+                        updated_src.width = new_meta.width;
+                        updated_src.height = new_meta.height;
+                        updated_src.orientation = new_meta.orientation;
+                        updated_src.thumb_status = 0;
+                        state_clone.update_cached_thumb_source(updated_src.clone());
+                        state_clone.thumb_pipeline.enqueue_source(&updated_src, crate::pipeline::JobPriority::Low);
+                    }
+                    state_clone.bump_catalog_version();
+                }
+            }
+        });
     }
 
-    match fs::read(file_path) {
+    let fp_for_read = file_path.clone();
+    let read_result = tokio::task::spawn_blocking(move || fs::read(&fp_for_read)).await?;
+    match read_result {
         Ok(bytes) => {
-            let mime = get_mime_type(format.as_deref(), file_path);
+            let mime = get_mime_type(format.as_deref(), &file_path);
             Ok(cors_response_builder(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
                 .body(bytes)?)

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use crate::db::repo::ThumbSource;
@@ -126,6 +126,7 @@ pub struct ThumbnailPipeline {
     active_low: AtomicUsize,
     max_low_concurrency: usize,
     completed_count: AtomicU64,
+    app_state: std::sync::RwLock<Option<std::sync::Weak<crate::state::AppState>>>,
 }
 
 impl ThumbnailPipeline {
@@ -164,6 +165,7 @@ impl ThumbnailPipeline {
             active_low: AtomicUsize::new(0),
             max_low_concurrency: max_low,
             completed_count: AtomicU64::new(0),
+            app_state: std::sync::RwLock::new(None),
         });
 
         info!(
@@ -194,6 +196,13 @@ impl ThumbnailPipeline {
     /// これまでに生成完了したサムネイル数（起動後の累計）
     pub fn completed_count(&self) -> u64 {
         self.completed_count.load(AtomicOrdering::Relaxed)
+    }
+
+    /// AppState への弱参照を設定（進捗イベント通知・アトミックカウンタ用）
+    pub fn set_app_state(&self, state: std::sync::Weak<crate::state::AppState>) {
+        if let Ok(mut g) = self.app_state.write() {
+            *g = Some(state);
+        }
     }
 
     /// ジョブを内部キューに投入する（ロック取得済み前提）
@@ -512,10 +521,13 @@ impl ThumbnailPipeline {
     }
 
     /// 次に処理すべきジョブを取り出す（古い世代・重複・処理中のものは読み飛ばす）
-    fn next_job(&self) -> Option<ThumbnailJob> {
+    fn next_job(&self, low_batch: &mut Vec<(String, Vec<u8>, i64)>) -> Option<ThumbnailJob> {
         let mut idle_rounds = 0u32;
         loop {
             if !self.running.load(AtomicOrdering::SeqCst) {
+                if !low_batch.is_empty() {
+                    self.flush_low_batch(low_batch);
+                }
                 return None;
             }
             let mut state = self.queue_state.lock().unwrap();
@@ -566,6 +578,13 @@ impl ThumbnailPipeline {
                 state = self.queue_state.lock().unwrap();
             }
 
+            // キューが空、または待機に入る直前に、保留中のLowバッチを確実にフラッシュ
+            if !low_batch.is_empty() {
+                drop(state);
+                self.flush_low_batch(low_batch);
+                state = self.queue_state.lock().unwrap();
+            }
+
             // 新しいジョブの到着、またはバックグラウンド枠の空きを待つ
             // ヒープが空で未生成ジョブもない場合は、無駄な定期起床・DB負荷を防ぐため60秒間完全に静止待機
             let timeout = if heap_empty {
@@ -582,52 +601,44 @@ impl ThumbnailPipeline {
         }
     }
 
-    /// ワーカースレッドのメインループ
-    fn worker_loop(&self, worker_id: usize) {
-        while let Some(job) = self.next_job() {
-            let is_already_done = self.thumb_store.exists(&job.quick_hash).unwrap_or(false)
-                || get_thumbnail_path(&self.cache_dir, &job.quick_hash).exists();
-            let is_success = if is_already_done {
-                // 同一ハッシュの別画像で生成済み、または他経路で生成済み
-                let conn = self.db.writer();
-                crate::db::repo::update_thumb_status(&conn, job.image_id, 1).ok();
-                true
-            } else {
-                self.process_job(&job)
-            };
-
-            let was_low = job.priority == JobPriority::Low;
-            if was_low {
-                self.active_low.fetch_sub(1, AtomicOrdering::SeqCst);
-            }
-            self.completed_count.fetch_add(1, AtomicOrdering::Relaxed);
-
-            let mut state = self.queue_state.lock().unwrap();
-            state.in_progress.remove(&job.image_id);
-            if let Some(waiters) = state.waiters.remove(&job.image_id) {
-                for waiter in waiters {
-                    waiter.send(is_success);
+    /// バックグラウンド（Low優先度）で生成されたサムネイルを一括コミットする
+    fn flush_low_batch(&self, batch: &mut Vec<(String, Vec<u8>, i64)>) {
+        if batch.is_empty() {
+            return;
+        }
+        let entries: Vec<(&str, &[u8])> = batch
+            .iter()
+            .map(|(h, b, _)| (h.as_str(), b.as_slice()))
+            .collect();
+        if let Err(e) = self.thumb_store.put_batch(&entries) {
+            warn!("Failed to batch store thumbnail BLOBs: {}", e);
+        }
+        let success_ids: Vec<i64> = batch.iter().map(|(_, _, id)| *id).collect();
+        let mut conn = self.db.writer();
+        if let Ok((actual_success, actual_failed)) =
+            crate::db::repo::update_thumb_status_batch(&mut conn, &success_ids, &[])
+        {
+            if actual_success > 0 || actual_failed > 0 {
+                if let Ok(guard) = self.app_state.read() {
+                    if let Some(weak) = guard.as_ref() {
+                        if let Some(state) = weak.upgrade() {
+                            if actual_success > 0 {
+                                state.thumb_done.fetch_add(actual_success as u64, AtomicOrdering::Relaxed);
+                            }
+                            if actual_failed > 0 {
+                                state.thumb_failed.fetch_add(actual_failed as u64, AtomicOrdering::Relaxed);
+                            }
+                            state.emit_thumb_progress_throttled();
+                        }
+                    }
                 }
             }
-            drop(state);
-            // バックグラウンド枠が空いた可能性があるため他ワーカーを起こす
-            self.condvar.notify_one();
-
-            // 変更理由: ユーザー要求「CPU使用量を少量に抑えるような処理の仕方にして。
-            // 長時間起動させておくことになるソフトなので、CPU仕様率を消費したり、ファンを強く動かし続けるとよくないです」
-            // バックグラウンド生成（Low優先度）処理後は、20msのクーリング休止を挟み、CPUファンが回るのを確実に抑える。
-            // （High/Mid優先度の表示要求は休止なしで最速処理）
-            if was_low {
-                std::thread::sleep(Duration::from_millis(20));
-            }
         }
-        info!("Stopped thumbnail worker {}", worker_id);
+        batch.clear();
     }
 
-    /// 1件のサムネイルを生成しDBのステータスを更新する
-    fn process_job(&self, job: &ThumbnailJob) -> bool {
-        // メモリ予算の見積もり: 幅 × 高さ × 4バイト (RGBA)。
-        // JPEGは縮小デコードされるため実際はこれより大幅に小さい。
+    /// メモリ予算を考慮してサムネイルバイナリを生成する
+    fn generate_thumbnail_bytes_with_budget(&self, job: &ThumbnailJob) -> Result<Vec<u8>, String> {
         let est_bytes = job
             .width
             .unwrap_or(2000)
@@ -657,33 +668,125 @@ impl ThumbnailPipeline {
         }
 
         if !acquired {
-            return false;
+            return Err("Memory budget not acquired".to_string());
         }
 
-        let result = generate_thumbnail_bytes(
-            &job.file_path,
-            job.orientation,
-        );
-
+        let result = generate_thumbnail_bytes(&job.file_path, job.orientation);
         self.memory_budget_bytes.fetch_sub(est_bytes, AtomicOrdering::SeqCst);
+        result.map_err(|e| e.to_string())
+    }
 
-        let conn = self.db.writer();
-        match result {
+    /// ワーカースレッドのメインループ
+    fn worker_loop(&self, worker_id: usize) {
+        let mut low_batch: Vec<(String, Vec<u8>, i64)> = Vec::with_capacity(16);
+        let mut last_flush_time = Instant::now();
+
+        while let Some(job) = self.next_job(&mut low_batch) {
+            let is_already_done = self.thumb_store.exists(&job.quick_hash).unwrap_or(false)
+                || get_thumbnail_path(&self.cache_dir, &job.quick_hash).exists();
+
+            let is_low = job.priority == JobPriority::Low;
+
+            let (is_success, status_transitioned) = if is_low {
+                if is_already_done {
+                    let conn = self.db.writer();
+                    let transitioned = crate::db::repo::update_thumb_status(&conn, job.image_id, 1).unwrap_or(false);
+                    (true, transitioned)
+                } else {
+                    match self.generate_thumbnail_bytes_with_budget(&job) {
+                        Ok(bytes) => {
+                            low_batch.push((job.quick_hash.clone(), bytes, job.image_id));
+                            if low_batch.len() >= 16 || last_flush_time.elapsed() >= Duration::from_millis(1500) {
+                                self.flush_low_batch(&mut low_batch);
+                                last_flush_time = Instant::now();
+                            }
+                            (true, false)
+                        }
+                        Err(e) => {
+                            warn!("Failed to generate thumbnail: id={}, path={}: {}", job.image_id, job.file_path.display(), e);
+                            let conn = self.db.writer();
+                            let transitioned = crate::db::repo::update_thumb_status(&conn, job.image_id, 2).unwrap_or(false);
+                            (false, transitioned)
+                        }
+                    }
+                }
+            } else {
+                // High / Mid の表示優先リクエスト時は保留中のLowバッチを先にフラッシュし、即時処理
+                self.flush_low_batch(&mut low_batch);
+                last_flush_time = Instant::now();
+                if is_already_done {
+                    let conn = self.db.writer();
+                    let transitioned = crate::db::repo::update_thumb_status(&conn, job.image_id, 1).unwrap_or(false);
+                    (true, transitioned)
+                } else {
+                    self.process_job(&job)
+                }
+            };
+
+            if is_low {
+                self.active_low.fetch_sub(1, AtomicOrdering::SeqCst);
+            }
+            self.completed_count.fetch_add(1, AtomicOrdering::Relaxed);
+
+            // 実際にステータスが遷移（0/2 -> 1 または 0/1 -> 2）した場合のみ AppState カウンタに反映
+            if status_transitioned {
+                if let Ok(guard) = self.app_state.read() {
+                    if let Some(weak) = guard.as_ref() {
+                        if let Some(state) = weak.upgrade() {
+                            if is_success {
+                                state.thumb_done.fetch_add(1, AtomicOrdering::Relaxed);
+                            } else {
+                                state.thumb_failed.fetch_add(1, AtomicOrdering::Relaxed);
+                            }
+                            state.emit_thumb_progress_throttled();
+                        }
+                    }
+                }
+            }
+
+            let mut state = self.queue_state.lock().unwrap();
+            state.in_progress.remove(&job.image_id);
+            if let Some(waiters) = state.waiters.remove(&job.image_id) {
+                for waiter in waiters {
+                    waiter.send(is_success);
+                }
+            }
+            drop(state);
+            // バックグラウンド枠が空いた可能性があるため他ワーカーを起こす
+            self.condvar.notify_one();
+
+            // 変更理由: バックグラウンド生成（Low優先度）処理後は、20msのクーリング休止を挟み、CPUファンが回るのを確実に抑える。
+            // （High/Mid優先度の表示要求は休止なしで最速処理）
+            if is_low {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        // スレッド終了時に保留中のバッチを確実にフラッシュ
+        self.flush_low_batch(&mut low_batch);
+        info!("Stopped thumbnail worker {}", worker_id);
+    }
+
+    /// 1件のサムネイルを生成しDBのステータスを更新する（High / Mid 用即時書き込み）
+    /// @return (is_success, status_transitioned)
+    fn process_job(&self, job: &ThumbnailJob) -> (bool, bool) {
+        match self.generate_thumbnail_bytes_with_budget(job) {
             Ok(webp_bytes) => {
-                // サムネイル専用DB（thumbnails.db）へBLOB格納
                 if let Err(e) = self.thumb_store.put(&job.quick_hash, &webp_bytes) {
                     warn!("Failed to store thumbnail BLOB (hash: {}): {}", job.quick_hash, e);
                 }
-                crate::db::repo::update_thumb_status(&conn, job.image_id, 1).ok();
-                true
+                let conn = self.db.writer();
+                let transitioned = crate::db::repo::update_thumb_status(&conn, job.image_id, 1).unwrap_or(false);
+                (true, transitioned)
             }
             Err(e) => {
                 warn!(
                     "Failed to generate thumbnail: id={}, path={}: {}",
                     job.image_id, job.file_path.display(), e
                 );
-                crate::db::repo::update_thumb_status(&conn, job.image_id, 2).ok();
-                false
+                let conn = self.db.writer();
+                let transitioned = crate::db::repo::update_thumb_status(&conn, job.image_id, 2).unwrap_or(false);
+                (false, transitioned)
             }
         }
     }

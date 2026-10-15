@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -12,8 +12,6 @@ use walkdir::WalkDir;
 use crate::db::repo::NewImageRecord;
 use crate::error::AppError;
 use crate::models::{ScanPhase, ScanProgress};
-use crate::pipeline::exif::extract_metadata;
-use crate::pipeline::hash::calculate_quick_hash;
 use crate::pipeline::JobPriority;
 use crate::state::AppState;
 
@@ -144,10 +142,10 @@ pub fn scan_folder_core(
     }
 
     // 既存の (path -> (size, mtime)) キャッシュをDBから取得
-    let existing_map: HashMap<String, (u64, i64)> = {
+    let mut existing_map: HashMap<String, (u64, i64)> = {
         let conn = state.db.reader()?;
         let mut stmt = conn
-            .prepare("SELECT file_path, file_size, file_mtime FROM images WHERE folder_id = ?1;")?;
+            .prepare_cached("SELECT file_path, file_size, file_mtime FROM images WHERE folder_id = ?1;")?;
         let rows = stmt.query_map([folder_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -163,7 +161,6 @@ pub fn scan_folder_core(
     };
 
     let mut discovered_files = Vec::new();
-    let mut current_paths_in_fs = HashSet::new();
     let mut file_count = 0usize;
 
     for entry in WalkDir::new(root)
@@ -199,7 +196,7 @@ pub fn scan_folder_core(
             let path = entry.path();
             if is_supported_image(path) {
                 let norm = normalize_path(&path.to_string_lossy());
-                current_paths_in_fs.insert(norm.clone());
+                let ex = existing_map.remove(&norm);
 
                 if let Ok(meta) = fs::metadata(path) {
                     let size = meta.len();
@@ -211,7 +208,8 @@ pub fn scan_folder_core(
                         .unwrap_or(0);
 
                     // 差分判定: DBに存在し、sizeとmtimeが同一ならスキップ (§6)
-                    if let Some(&(ex_size, ex_mtime)) = existing_map.get(&norm) {
+                    // existing_map から remove することで、探索終了時に残ったキーが削除ファイルとなる（メモリ半減）
+                    if let Some((ex_size, ex_mtime)) = ex {
                         if ex_size == size && ex_mtime == mtime {
                             continue;
                         }
@@ -243,6 +241,7 @@ pub fn scan_folder_core(
     }
 
     let mut processed_count = 0u64;
+    let mut last_catalog_emit = std::time::Instant::now();
 
     let chunk_size = if is_background { 100 } else { BATCH_SIZE };
 
@@ -258,12 +257,13 @@ pub fn scan_folder_core(
             return Ok(());
         }
 
-        // rayon による並列メタデータ抽出
+        // rayon による並列メタデータ抽出（File::open を1回に集約）
         let parsed_records: Vec<NewImageRecord> = chunk
             .par_iter()
             .filter_map(|(path, norm_path, size, mtime)| {
-                let quick_hash = calculate_quick_hash(path, *size).ok()?;
-                let meta = extract_metadata(path, *mtime);
+                let mut file = std::fs::File::open(path).ok()?;
+                let quick_hash = crate::pipeline::hash::calculate_quick_hash_from_file(&mut file, *size).ok()?;
+                let meta = crate::pipeline::exif::extract_metadata_from_file(path, &mut file, *mtime);
                 let now = chrono::Utc::now().timestamp();
 
                 Some(NewImageRecord {
@@ -303,11 +303,15 @@ pub fn scan_folder_core(
                 },
             );
 
-            // カタログ変更通知 (UIへ順次反映)
-            let ver = state.bump_catalog_version();
-            let _ = app.emit("catalog-changed", serde_json::json!({ "version": ver }));
-        } else {
+            // カタログ変更通知 (1.5〜2.0秒間隔でスロットル)
+            if last_catalog_emit.elapsed() >= std::time::Duration::from_millis(1500) {
+                let ver = state.bump_catalog_version();
+                let _ = app.emit("catalog-changed", serde_json::json!({ "version": ver }));
+                last_catalog_emit = std::time::Instant::now();
+            }
+        } else if last_catalog_emit.elapsed() >= std::time::Duration::from_millis(1500) {
             state.bump_catalog_version();
+            last_catalog_emit = std::time::Instant::now();
         }
 
         // バックグラウンド走査時: バッチ毎に30ms休止し、CPUコアの過熱とファンの回転を防止
@@ -316,7 +320,7 @@ pub fn scan_folder_core(
         }
     }
 
-    // 3. Cleanup フェーズ: 削除されたファイルの検知
+    // 3. Cleanup フェーズ: 削除されたファイルの検知（existing_map に残った未検出パス）
     if let Some(app) = app {
         let _ = app.emit(
             "scan-progress",
@@ -329,11 +333,7 @@ pub fn scan_folder_core(
         );
     }
 
-    let deleted_paths: Vec<String> = existing_map
-        .keys()
-        .filter(|p| !current_paths_in_fs.contains(*p))
-        .cloned()
-        .collect();
+    let deleted_paths: Vec<String> = existing_map.into_keys().collect();
 
     if !deleted_paths.is_empty() {
         info!("Removed {} deleted files from database", deleted_paths.len());
@@ -351,10 +351,16 @@ pub fn scan_folder_core(
             }
             conn.execute(&sql, params_vec.as_slice()).ok();
         }
+    }
+
+    // 変更があった場合は最終的なカタログ変更イベントおよびサムネイル進捗カウンタを確定通知
+    if total_discovered > 0 || !deleted_paths.is_empty() {
         let ver = state.bump_catalog_version();
         if let Some(app) = app {
             let _ = app.emit("catalog-changed", serde_json::json!({ "version": ver }));
         }
+        state.init_thumb_progress();
+        state.emit_thumb_progress_throttled();
     }
 
     // 4. 未生成サムネイルをパイプライン（優先度 LOW）に投入

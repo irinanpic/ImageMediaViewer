@@ -63,10 +63,119 @@ export function mergePageRecords(
 }
 
 /**
+ * アプリケーション全体で共有されるタイムライン画像ページキャッシュマネージャー
+ *
+ * 変更理由: VirtualTimeline, TimelineToolbar, ImageViewerModal がそれぞれ個別のキャッシュを持つと、
+ * タイムラインで読み込まれた画像をツールバーやモーダルが取得できず空振りする問題を防ぐため。
+ * シングルトンとしてページキャッシュを統合し、全コンポーネントへリアクティブに通知する。
+ */
+export class SharedPageCacheManager {
+  private cache = new Map<number, ImageRecord[]>();
+  private fetchingPages = new Set<number>();
+  private listeners = new Set<() => void>();
+  private currentFolderId: number | null = null;
+  private currentSort: string | null = null;
+  private isInitialized = false;
+
+  /**
+   * フォルダまたはソート順が切り替わった場合にキャッシュを無効化
+   */
+  public syncScope(folderId: number | null, sort: string) {
+    if (!this.isInitialized || this.currentFolderId !== folderId || this.currentSort !== sort) {
+      this.currentFolderId = folderId;
+      this.currentSort = sort;
+      this.isInitialized = true;
+      this.cache.clear();
+      this.fetchingPages.clear();
+      this.notify();
+    }
+  }
+
+  /**
+   * キャッシュ更新リスナーを購読
+   */
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * 購読リスナーへ更新を通知
+   */
+  public notify() {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+
+  /**
+   * ページを取得（LRU更新）
+   */
+  public get(pageIndex: number): ImageRecord[] | undefined {
+    const records = this.cache.get(pageIndex);
+    if (records) {
+      // アクセスされたページを末尾へ移動
+      this.cache.delete(pageIndex);
+      this.cache.set(pageIndex, records);
+    }
+    return records;
+  }
+
+  public has(pageIndex: number): boolean {
+    return this.cache.has(pageIndex);
+  }
+
+  public isFetching(pageIndex: number): boolean {
+    return this.fetchingPages.has(pageIndex);
+  }
+
+  public setFetching(pageIndex: number, fetching: boolean) {
+    if (fetching) {
+      this.fetchingPages.add(pageIndex);
+    } else {
+      this.fetchingPages.delete(pageIndex);
+    }
+  }
+
+  /**
+   * ページを保存（LRU上限管理）
+   */
+  public set(pageIndex: number, records: ImageRecord[]) {
+    this.cache.delete(pageIndex);
+
+    if (this.cache.size >= MAX_CACHED_PAGES) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.cache.delete(oldestKey);
+      }
+    }
+
+    this.cache.set(pageIndex, records);
+    this.notify();
+  }
+
+  public getCachedPageIndices(): number[] {
+    return Array.from(this.cache.keys());
+  }
+
+  public clear() {
+    this.cache.clear();
+    this.fetchingPages.clear();
+    this.notify();
+  }
+}
+
+// モジュールシングルトンキャッシュ
+export const sharedCache = new SharedPageCacheManager();
+
+/**
  * タイムライン画像のページング取得およびLRUキャッシュを管理するカスタムフック
  *
  * 変更理由: 仕様書§8.2「ページ単位（200件）で取得、重複リクエスト排除、最大50ページのLRUキャッシュ」
- * およびインクリメンタル差分リロード（既存表示の維持、更新画像のインプレース置換、未読込画像の追加）。
+ * およびインクリメンタル差分リロード。コンポーネント間で同一キャッシュを共有し、
+ * TimelineToolbar や ImageViewerModal でも即時に画像情報を参照できるようにする。
  *
  * @returns { getImageByIndex, requestIndices, revalidatePages, ensureIndex, versionTick }
  */
@@ -76,27 +185,27 @@ export function usePagedImages() {
   const timelineSort = useAppStore((state) => state.timelineSort);
   const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
-  // ページ番号 -> ImageRecord[] のキャッシュ
-  const cacheRef = useRef<Map<number, ImageRecord[]>>(new Map());
-  // 取得中のページ番号セット
-  const fetchingPagesRef = useRef<Set<number>>(new Set());
-  // 再レンダリングトリガー
   const [versionTick, setVersionTick] = useState(0);
 
-  // フォルダ切替・ソート順変更時のみ、対象画像が根本から変わるためキャッシュを全消去
+  // 共有キャッシュ更新通知の購読
   useEffect(() => {
-    cacheRef.current.clear();
-    fetchingPagesRef.current.clear();
-    setVersionTick((v) => v + 1);
+    return sharedCache.subscribe(() => {
+      setVersionTick((v) => v + 1);
+    });
+  }, []);
+
+  // フォルダまたはソート順の変更を同期
+  useEffect(() => {
+    sharedCache.syncScope(selectedFolderId ?? null, timelineSort);
   }, [selectedFolderId, timelineSort]);
 
   // 単一ページのフェッチ＆差分マージ処理
   const fetchPage = useCallback(
     async (pageIndex: number, isRevalidate: boolean = false) => {
-      if (fetchingPagesRef.current.has(pageIndex)) return;
-      if (!isRevalidate && cacheRef.current.has(pageIndex)) return;
+      if (sharedCache.isFetching(pageIndex)) return;
+      if (!isRevalidate && sharedCache.has(pageIndex)) return;
 
-      fetchingPagesRef.current.add(pageIndex);
+      sharedCache.setFetching(pageIndex, true);
 
       try {
         const records = await backendApi.getTimelineImages({
@@ -106,36 +215,26 @@ export function usePagedImages() {
           sort: timelineSort,
         });
 
-        const cache = cacheRef.current;
-        const oldRecords = cache.get(pageIndex);
+        const oldRecords = sharedCache.get(pageIndex);
         const { merged, changed } = mergePageRecords(oldRecords, records);
 
-        // キャッシュサイズ上限管理
-        if (!oldRecords && cache.size >= MAX_CACHED_PAGES) {
-          const oldestKey = cache.keys().next().value;
-          if (oldestKey !== undefined) {
-            cache.delete(oldestKey);
-          }
-        }
-
-        // 差分があった場合（または新規取得時）のみキャッシュ更新と再描画トリガーを発行
+        // 差分があった場合または新規取得時のみキャッシュ更新と再描画トリガーを発行
         if (changed || !oldRecords) {
-          cache.set(pageIndex, merged);
-          setVersionTick((v) => v + 1);
+          sharedCache.set(pageIndex, merged);
         }
       } catch (err) {
         console.error(`ページ ${pageIndex} の取得に失敗しました:`, err);
       } finally {
-        fetchingPagesRef.current.delete(pageIndex);
+        sharedCache.setFetching(pageIndex, false);
       }
     },
     [selectedFolderId, timelineSort]
   );
 
   // 手動再読込(timelineRefreshTick)またはカタログバージョン更新(catalogVersion)時:
-  // 既存キャッシュを消去せず、現在保持しているキャッシュ済みページをバックグラウンドで差分更新
+  // 保持しているキャッシュ済みページをバックグラウンドで差分更新
   useEffect(() => {
-    const cachedPageIndices = Array.from(cacheRef.current.keys());
+    const cachedPageIndices = sharedCache.getCachedPageIndices();
     if (cachedPageIndices.length === 0) return;
 
     for (const pageIndex of cachedPageIndices) {
@@ -144,12 +243,12 @@ export function usePagedImages() {
   }, [catalogVersion, timelineRefreshTick, fetchPage]);
 
   /**
-   * 指定したグローバルインデックスの画像レコードを取得（キャッシュにあれば即時返却）
+   * 指定したグローバルインデックスの画像レコードを取得（共有キャッシュにあれば即時返却）
    */
   const getImageByIndex = useCallback((index: number): ImageRecord | null => {
     const pageIndex = Math.floor(index / PAGE_SIZE);
     const offsetInPage = index % PAGE_SIZE;
-    const page = cacheRef.current.get(pageIndex);
+    const page = sharedCache.get(pageIndex);
     if (page && offsetInPage < page.length) {
       return page[offsetInPage];
     }
@@ -177,7 +276,7 @@ export function usePagedImages() {
         const neededPages = new Set<number>();
         for (const idx of indices) {
           const pageIndex = Math.floor(idx / PAGE_SIZE);
-          if (!cacheRef.current.has(pageIndex) && !fetchingPagesRef.current.has(pageIndex)) {
+          if (!sharedCache.has(pageIndex) && !sharedCache.isFetching(pageIndex)) {
             neededPages.add(pageIndex);
           }
         }
@@ -188,7 +287,7 @@ export function usePagedImages() {
         const prefetchPages = new Set<number>();
         for (const p of neededPages) {
           const next = p + 1;
-          if (!cacheRef.current.has(next) && !fetchingPagesRef.current.has(next) && !neededPages.has(next)) {
+          if (!sharedCache.has(next) && !sharedCache.isFetching(next) && !neededPages.has(next)) {
             prefetchPages.add(next);
           }
         }
@@ -231,11 +330,10 @@ export function usePagedImages() {
           folderId: selectedFolderId ?? null,
           sort: timelineSort,
         });
-        const oldRecords = cacheRef.current.get(pageIndex);
+        const oldRecords = sharedCache.get(pageIndex);
         const { merged } = mergePageRecords(oldRecords, records);
-        cacheRef.current.set(pageIndex, merged);
-        setVersionTick((v) => v + 1);
-        return records[offsetInPage] ?? null;
+        sharedCache.set(pageIndex, merged);
+        return merged[offsetInPage] ?? null;
       } catch (err) {
         console.error(`インデックス ${index} の取得に失敗しました:`, err);
         return null;

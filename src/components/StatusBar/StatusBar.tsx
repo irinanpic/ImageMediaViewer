@@ -132,7 +132,25 @@ export const StatusBar: React.FC = () => {
           )}
         </button>
 
-        {!isCompact && (
+        {isCompact ? (
+          <div className="flex items-center gap-0.5 bg-surfaceLight/60 px-1.5 py-0.5 rounded-md border border-border/40">
+            <button
+              onClick={() => setCellSize(Math.max(64, cellSize - 24))}
+              className="p-1 hover:text-textPrimary text-textSecondary transition active:scale-90"
+              title={t("statusBar.zoomOutTooltip")}
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-[10px] font-mono tabular-nums text-textPrimary px-1">{cellSize}px</span>
+            <button
+              onClick={() => setCellSize(Math.min(240, cellSize + 24))}
+              className="p-1 hover:text-textPrimary text-textSecondary transition active:scale-90"
+              title={t("statusBar.zoomInTooltip")}
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
           <>
             <div className="h-3.5 w-px bg-border" />
 

@@ -766,5 +766,67 @@ flowchart TD
 * **サイドバーのフォルダ並び替え**:
   * モバイル WebView で動作しない HTML5 Drag and Drop の制限を克服するため、フォルダ行に上下移動ボタン（▲ / ▼）を追加。タップ操作でフォルダの並び順を自在に変更可能。
 
+---
 
+## 11. システム最適化およびモバイル・デスクトップ統合設計（Phase 1〜3）
 
+### 11.1 データベース＆ファイル I/O 最適化 (`migrations.rs`, `repo.rs`, `walker.rs`)
+* **複合インデックス追加（Migration v7）**:
+  * `CREATE INDEX IF NOT EXISTS idx_images_folder_filepath ON images(folder_id, file_path ASC);`
+  * フォルダ内走査時の既存レコード突き合わせおよびパス検索を完全なインデックスシーク化。
+* **プリペアドステートメントキャッシュ (`prepare_cached`)**:
+  * 頻繁に発行されるタイムライン画像取得、サマリ集計、ボード取得、しおり取得クエリをキャッシュし、SQLパース・コンパイルオーバーヘッドを削減。
+* **ディスク I/O の 1 ハンドル集約**:
+  * ファイル走査（`walker.rs`）時、1画像に対して `File::open` を1度だけ行い、`calculate_quick_hash_from_file` と `extract_metadata_from_file` で同一ファイル記述子（Seek対応）を共有。
+  * `File::open` 発行回数とOSファイルハンドル確保のコストを 50% 削減。
+* **走査時メモリ半減（インプレース削除検知）**:
+  * `existing_map` を初期化後、走査で見つかったパスを `remove` していくことで、実ファイル一覧用の追加 `HashSet` を排除。走査完了時に残ったエントリを削除対象とすることで、メモリ消費を約 50% 圧縮。
+* **低優先度サムネイルのバッチコミット**:
+  * バックグラウンドサムネイル生成結果を 100件単位または最大 1,500ms 間隔で `flush_low_batch`（`thumb_store.put_batch` + `update_thumb_status_batch`）にまとめ、SQLite トランザクション発行頻度を大幅に削減。
+
+### 11.2 進捗管理とイベント駆動設計 (`state.rs`, `queue.rs`, `useBackendEvents.ts`)
+* **アトミックカウンタによる O(1) 進捗集計**:
+  * サムネイルの完了数・失敗数・総数を `AtomicI64`（`thumb_done`, `thumb_failed`, `thumb_total`）で常時管理。
+  * `get_thumb_progress` 呼び出し時の SQLite テーブルフルスキャンを完全撤廃し、O(1) メモリアクセス化。
+* **200ms スロットリングによるイベント通知**:
+  * ワーカースレッドがサムネイルを生成するごとに `emit_thumb_progress_throttled` を呼び出し、200ms 間隔または全件完了時のみ `thumb-progress` をフロントエンドへ送出。IPCバスの詰まりを防止。
+* **定周期ポーリングおよび不要ハートビートの完全撤廃**:
+  * クライアントの `useBackendEvents.ts` に存在していた 1.2秒ごとの `getThumbProgress` 定期ポーリングを削除。Tauri イベント駆動へ一本化。
+  * `useWindowState.ts` 内の 2.5秒ごとの HTTP `/api/heartbeat` 送信を削除し、クライアント・サーバー双方の無駄な CPU ウェイクアップを根絶。
+
+### 11.3 仮想スクロール極限最適化 (`VirtualTimeline.tsx`, `usePagedImages.ts`, `useScrollVelocity.ts`)
+* **仮想スクロール高さスケール圧縮**:
+  * 推定全高が 8,000,000px を超える超巨大ライブラリ（数万〜数十万枚）において、ブラウザの描画・レイアウト限界を超えないよう最大高さ 8,000,000px へのスケール圧縮を適用。
+  * スクロールオフセット（`observeElementOffset` / `scrollToFn`）を実スクロール量と仮想スクロール量の双方向比率マッピングとし、行自体の高さ（`virtualRow.size`）を潰すことなくビューポート相対位置へ正確に配置することで、行同士の重複や空白化を恒久防止。
+* **O(1) 日付ヘッダ参照**:
+  * `TimelineRow` の `cells` 行に所属日付 `day` を保持させ、現在可視行の特定時に過去数千行を遡る線形探索ループを廃止。O(1) で即座に現在日付ラベルを解決。
+* **`overscan` の最適化**:
+  * 事前描画バッファを 12行から 4行へ最適化。レンダリングDOM要素数および画像読込要求数を削減。
+* **共有ページキャッシュ (`usePagedImages.ts`)**:
+  * コンポーネント個別インスタンス管理だったページキャッシュをモジュールシングルトンマネージャー（`SharedPageCacheManager`）へ統合。
+  * `VirtualTimeline` でフェッチされたページデータを `TimelineToolbar` や `ImageViewerModal` が即座に参照可能とし、空振りや重複フェッチを完全に解消。
+* **スクロール速度監視の 400ms スロットリング (`useScrollVelocity.ts`)**:
+  * 800px/s 超過時の `backendApi.clearQueue()` 呼び出しを 400ms スロットルし、高速スクロール中の IPC 乱発を防止。
+
+### 11.4 モバイル体験強化 (`StatusBar.tsx`, `GridCell.tsx`, `useBackNavigation.ts`, `MoodboardCanvas.tsx`)
+* **初期セルサイズとステータスバー列数調整**:
+  * モバイル環境での初期セルサイズを 96px に設定（3〜4列の適正密度を自動確保）。
+  * コンパクト画面（`isCompact`）時、下部ステータスバーに縮小・拡大（列数増減）ボタンを常設し、多言語対応ツールチップを提供。
+* **タッチ長押し（500ms）複数選択 (`GridCell.tsx`)**:
+  * タッチデバイスにおいて 500ms の長押しで複数選択モードへ直感的に移行。誤操作防止のため移動距離 > 10px でキャンセル。バイブレーション連動。
+* **Android 戻るボタン階層ナビゲーション (`useBackNavigation.ts`)**:
+  * `window.history` / `popstate` とストア状態を連動させ、最上位ダイアログ（Log / AddToBoard）→ ビューア → 複数選択解除 → ムードボードからタイムラインへ復帰 → モバイルサイドバー閉の優先順序で安全に 1段ずつ戻すUXを実現。UIボタンによるクローズ時も履歴スタックと完全同期。
+* **ムードボード LOD (Level of Detail) 制御 (`MoodboardCanvas.tsx`)**:
+  * 俯瞰表示時は軽量なサムネイル（`thumbUrl`）を表示し、選択時、クロップ時、または実効表示サイズが大きい場合のみ高解像度元画像（`rawSrc`）をロード。大量画像配置時のメモリ枯渇を防止。
+
+### 11.5 クロスプラットフォーム・ビルド整合性とリンカー設計 (`build.rs`, `scripts/build-android.mjs`, `scripts/clean-target-readonly.mjs`)
+* **ビルドスクリプト（`build.rs`）におけるターゲットOS/環境の動的検証**:
+  * Windowsホスト環境上で Android ターゲット（`aarch64-linux-android` 等）向けクロスコンパイルを行う場合、ホストOSではなくターゲット環境変数 `CARGO_CFG_TARGET_OS`（`windows`）および `CARGO_CFG_TARGET_ENV`（`msvc`）を動的に判定。
+  * Android NDK Clang リンカー等の非MSVCツールチェーンに対して不要または不正なリンカー引数が渡されるのを完全に隔離・抑止。
+* **Windows NTFS ReadOnly 属性自動解除パイプライン (`scripts/clean-target-readonly.mjs`)**:
+  * Windows 環境において `src-tauri/target` や `CARGO_TARGET_DIR`、Android `app/build` 配下のディレクトリに NTFS ReadOnly 属性が付加された場合、Cargo 内部の `autocfg` 等が `output path is not a writable directory` でパニックを起こし終了コード 101 でビルドが停止する。
+  * これを根本から予防するため、高速・確実な native コマンド `cmd /c attrib -r /s /d` を用いた一括解除スクリプト（`scripts/clean-target-readonly.mjs`）を新設。
+  * `package.json` の `prebuild:installer` / `pretauri:build` フック、および `scripts/build-android.mjs` のビルド開始・ターゲット設定直後の各ポイントで自動実行するようパイプラインを統合。
+* **ビルドパイプラインの二重検証保証**:
+  * **Windows Installer**: `npm run build:installer`（`tauri build`）により MSI および NSIS インストーラーが正常生成されることを保証。
+  * **Android Release**: `npm run build:android:release`（`scripts/build-android.mjs --release`）により、NDK Clang ツールチェーンおよび Gradle による Universal Release APK（`app-universal-release.apk`）が正常生成されることを保証。

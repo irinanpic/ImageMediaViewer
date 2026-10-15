@@ -153,7 +153,7 @@ pub struct WatchedFolder {
 }
 
 /// タイムラインの表示ソート順
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../src/types/generated/")]
 pub enum TimelineSort {

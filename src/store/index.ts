@@ -272,8 +272,8 @@ export const useAppStore = create<AppStoreState>((set) => ({
   setScanProgress: (scanProgress) => set({ scanProgress }),
   setThumbProgress: (thumbProgress) => set({ thumbProgress }),
 
-  // UI初期状態
-  cellSize: 160,
+  // UI初期状態（モバイル端末では画面幅に合わせて初期セルサイズを96pxとし、適正な列数を確保）
+  cellSize: isMobileEnvironment() ? 96 : 160,
   setCellSize: (cellSize) => set({ cellSize }),
   selectedCellIndex: null,
   setSelectedCellIndex: (selectedCellIndex) => set({ selectedCellIndex }),
