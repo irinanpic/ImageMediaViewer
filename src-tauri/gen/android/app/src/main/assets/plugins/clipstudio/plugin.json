@@ -1,0 +1,46 @@
+{
+  "id": "format.clipstudio",
+  "name": "CLIP STUDIO PAINT (.clip) Support",
+  "version": "1.0.0",
+  "description": "CLIP STUDIO PAINT形式（.clip）の内蔵プレビュー画像抽出およびアプリ連携プラグイン（本体分離バイナリ）",
+  "extensions": [
+    "clip"
+  ],
+  "magic_header": "CSFCHUNK",
+  "extractor": {
+    "type": "binary",
+    "library": {
+      "windows": "imv_clipstudio.dll",
+      "linux": "libimv_clipstudio.so",
+      "macos": "libimv_clipstudio.dylib",
+      "android": "libimv_clipstudio.so"
+    },
+    "executable": {
+      "windows": "clipstudio_plugin.exe",
+      "default": "clipstudio_plugin"
+    }
+  },
+  "actions": [
+    {
+      "id": "action.open_clip_studio",
+      "name": "CLIP STUDIO PAINTで開く",
+      "name_en": "Open with CLIP STUDIO PAINT",
+      "icon": "Palette",
+      "order": 20,
+      "extensions": [
+        "clip"
+      ],
+      "command": {
+        "windows": [
+          "C:\\Program Files\\CELSYS\\CLIP STUDIO 1.5\\CLIP STUDIO PAINT\\CLIPStudioPaint.exe",
+          "C:\\Program Files\\CELSYS\\CLIP STUDIO 1.5 EN\\CLIP STUDIO PAINT\\CLIPStudioPaint.exe",
+          "C:\\Program Files\\CELSYS\\CLIP STUDIO PAINT\\CLIPStudioPaint.exe"
+        ],
+        "default": "CLIPStudioPaint",
+        "args": [
+          "{path}"
+        ]
+      }
+    }
+  ]
+}

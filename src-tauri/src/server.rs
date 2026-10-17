@@ -245,8 +245,8 @@ fn static_response(path: &str) -> Option<Response<std::io::Cursor<Vec<u8>>>> {
 
 /// バックエンド HTTP サーバーをバックグラウンドスレッドで起動
 ///
-/// 変更理由: Windows環境でのスレッド生成オーバーヘッドを排除する固定スレッドプール（12スレッド）を導入し、
-/// インメモリキャッシュ（メタデータ＋WebPバイナリ）と連携してPicasa同等の極限レスポンスを実現。
+/// 変更理由: Windows環境でのスレッド生成オーバーヘッドを抑える固定スレッドプール（12スレッド）を導入し、
+/// インメモリキャッシュ（メタデータ＋WebPバイナリ）と連携して高速なレスポンスを実現。
 /// また、ユーザー要求「サーバはクライアントによらず常駐することも可能とする」に対応し、
 /// 常駐モードではフロントエンド通信途絶による自動停止を無効化する。
 ///
@@ -335,7 +335,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
     let origin_ref = origin.as_deref();
 
     // CSRF対策: ブラウザからのクロスオリジン通信で Origin がホワイトリストに含まれない場合は即座に拒否 (403 Forbidden)
-    // 悪意のあるWebサイトからの単純リクエスト（<form> POST や fetch）によるシャットダウン・フォルダ改変等を完全遮断
+    // 悪意のあるWebサイトからの単純リクエスト（<form> POST や fetch）によるシャットダウン・フォルダ改変等を遮断・防御
     if let Some(ref orig) = origin {
         if !ALLOWED_ORIGINS.contains(&orig.as_str()) {
             warn!("CSRF Protection: Rejected request from unauthorized Origin: {}", orig);
@@ -446,7 +446,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                 return;
                             }
 
-                            // 既存キャッシュが一切ない場合のみ 503 を返却
+                            // 既存キャッシュが存在しない場合のみ 503 を返却
                             let mut resp = Response::from_string("Thumbnail updating").with_status_code(StatusCode(503));
                             resp.add_header(Header::from_bytes(&b"Retry-After"[..], &b"1"[..]).unwrap());
                             resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store, no-cache, must-revalidate"[..]).unwrap());
@@ -530,6 +530,17 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                                     state.thumb_pipeline.enqueue_source(&updated_src, JobPriority::Low);
                                 }
                             }
+                        }
+                    }
+
+                    let ext = std::path::Path::new(&orig_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("");
+                    if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+                        if let Ok((bytes, mime)) = plugin.extract_original_preview(std::path::Path::new(&orig_path)) {
+                            respond_cors(request, raw_image_response(bytes, &mime), origin_ref);
+                            return;
                         }
                     }
 

@@ -27,7 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "serialize"] }
 walkdir = "2.5"
 rayon = "1.10"
 exif = { package = "kamadak-exif", version = "0.6" }
@@ -55,6 +55,13 @@ dirs = "7.0.0"
 tauri-plugin-single-instance = "2"
 # 選定理由: デスクトップ環境のエクスプローラー等で該当ファイルを選択状態（ハイライト）で開くため
 opener = { version = "0.7", features = ["reveal"] }
+# 選定理由: OS標準のゴミ箱/リサイクルビンへファイルを安全かつ高速に移動するため（Windows SHFileOperationW, macOS, Linux対応）
+trash = "5"
+
+# 選定理由: 外部プラグイン動的ライブラリ（.dll, .so, .dylib）を安全・高速にロードしてC-ABI関数を呼び出すため
+# Android（Bionic dlopen）を含むデスクトップ・モバイル環境でC-ABI動的ライブラリロードを有効化
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+libloading = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

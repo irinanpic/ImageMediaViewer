@@ -3,7 +3,7 @@
  *
  * 変更理由: クロスコンパイル環境（Windowsホスト上でAndroid向けビルドを行う場合など）において、
  * ターゲットがAndroid Clang等の非MSVCツールチェーンである場合にWindows用MSVCリンカー引数が
- * 渡されてビルドエラーとなるのを完全に隔離・抑止する。
+ * 渡されてビルドエラーとなるのを防止・抑止する。
  * `CARGO_CFG_TARGET_OS` および `CARGO_CFG_TARGET_ENV` 環境変数を参照し、
  * ターゲットOSがWindowsかつMSVC環境の場合にのみマニフェスト依存フラグを出力する。
  */

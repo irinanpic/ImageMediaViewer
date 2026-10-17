@@ -77,19 +77,28 @@ pub fn is_sub_directory(parent_candidate: &str, child_candidate: &str) -> bool {
     }
 }
 
-/// 拡張子が対応画像フォーマットであるか判定
-fn is_supported_image(path: &Path) -> bool {
+/// 拡張子が標準対応画像フォーマットであるか判定
+pub fn is_standard_image_extension(ext: &str) -> bool {
+    SUPPORTED_EXTENSIONS.contains(&ext)
+}
+
+/// 拡張子が対応画像フォーマット（標準または有効化プラグイン形式）であるか判定
+fn is_supported_image(path: &Path, plugins: &crate::plugins::FormatPluginRegistry) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {
             let lower = ext.to_ascii_lowercase();
-            SUPPORTED_EXTENSIONS.contains(&lower.as_str())
+            is_standard_image_extension(&lower) || plugins.get_by_extension(&lower).is_some()
         })
         .unwrap_or(false)
 }
 
 /// スキップすべき隠しディレクトリ・ファイルか判定
 fn is_hidden_or_ignored(entry: &walkdir::DirEntry) -> bool {
+    // 監視ルート自身（depth == 0）は、名前がドット（.tmp等）で始まっていてもスキップしない
+    if entry.depth() == 0 {
+        return false;
+    }
     let name = entry.file_name().to_string_lossy();
     if name.starts_with('.') {
         return true;
@@ -194,7 +203,7 @@ pub fn scan_folder_core(
 
         if entry.file_type().is_file() {
             let path = entry.path();
-            if is_supported_image(path) {
+            if is_supported_image(path, &state.format_plugins) {
                 let norm = normalize_path(&path.to_string_lossy());
                 let ex = existing_map.remove(&norm);
 
@@ -263,7 +272,12 @@ pub fn scan_folder_core(
             .filter_map(|(path, norm_path, size, mtime)| {
                 let mut file = std::fs::File::open(path).ok()?;
                 let quick_hash = crate::pipeline::hash::calculate_quick_hash_from_file(&mut file, *size).ok()?;
-                let meta = crate::pipeline::exif::extract_metadata_from_file(path, &mut file, *mtime);
+                let meta = crate::pipeline::exif::extract_metadata_from_file_with_plugins(
+                    path,
+                    &mut file,
+                    *mtime,
+                    Some(&state.format_plugins),
+                );
                 let now = chrono::Utc::now().timestamp();
 
                 Some(NewImageRecord {

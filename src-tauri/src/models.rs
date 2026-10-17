@@ -161,7 +161,7 @@ pub enum TimelineSort {
     TakenAtDesc,
     /// 撮影日時 昇順（古い順）
     TakenAtAsc,
-    /// 登録フォルダ順（Picasaスタイル）
+    /// 登録フォルダ順
     Folder,
     /// ファイル名 昇順（A → Z）
     NameAsc,

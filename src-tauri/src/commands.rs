@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{command, AppHandle, State};
+use tauri::{command, AppHandle, Emitter, State};
 use tracing::{info, warn};
 
 use crate::error::AppError;
@@ -117,6 +117,12 @@ pub async fn rescan(
         None => folders,
     };
 
+    // 再走査前にプラグインディレクトリの最新状態を再読込
+    // 変更理由: アプリ起動中に plugins フォルダへ追加・更新された独自形式プラグイン（.clip等）を
+    // 再走査時に即時認識し、該当ファイルが走査対象から脱落するのを防止するため。
+    let settings = crate::settings::load_settings(&state.data_dir);
+    state.format_plugins.reload(&settings.enabled_plugins, &state.data_dir);
+
     let state_clone = Arc::clone(&state);
     tauri::async_runtime::spawn_blocking(move || {
         for folder in target_folders {
@@ -144,7 +150,7 @@ pub async fn get_timeline_summary(
     let current_version = state.current_catalog_version();
     let sort_val = sort.unwrap_or(crate::models::TimelineSort::TakenAtDesc);
 
-    // インメモリキャッシュをまず確認（SQLiteクエリの完全バイパス）
+    // インメモリキャッシュをまず確認（SQLiteクエリのバイパス）
     if let Some(cached) = state.get_cached_timeline_summary(folder_id, sort_val, current_version) {
         return Ok(cached);
     }
@@ -239,7 +245,7 @@ pub async fn reveal_in_file_manager(
 
 /// 表示範囲（ビューポート）の画像ID群を登録し、優先度付きパイプラインの世代を進める
 ///
-/// 変更理由: Picasa並みの表示速度のため、画面内（High）およびその周辺（Mid）を最優先で生成し、
+/// 変更理由: 高速な表示レスポンスを実現するため、画面内（High）およびその周辺（Mid）を最優先で生成し、
 /// 画面外の古い世代の要求を自動破棄する
 #[command]
 pub async fn set_viewport(
@@ -325,7 +331,7 @@ pub async fn rescan_missing_thumbnails(state: State<'_, Arc<AppState>>) -> Resul
 /// サムネイル生成進捗状況を取得（インメモリアトミックカウンタからO(1)即時取得）
 ///
 /// 変更理由: 全画像テーブルに対するCOUNT(*)×3回のフルスキャンを廃止し、
-/// メモリ上のAtomicU64カウンタからゼロ遅延で返却してDB負荷を完全に解消する。
+/// メモリ上のAtomicU64カウンタから即座に返却してDBクエリ負荷を解消する。
 #[command]
 pub async fn get_thumb_progress(state: State<'_, Arc<AppState>>) -> Result<ThumbProgress, AppError> {
     let total = state.thumb_total.load(std::sync::atomic::Ordering::Relaxed);
@@ -680,6 +686,446 @@ pub async fn request_storage_permissions(#[allow(unused_variables)] app: AppHand
     {
         Ok(true)
     }
+}
+
+/// ファイルをOS既定の関連付けアプリケーションで開く
+///
+/// 変更理由: アクションプラグイン「既定のアプリで開く」のバックエンド処理。
+/// モバイル環境（Android）およびデスクトップ環境でOS標準のファイルオープンAPIを抽象化して実行する。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param id 画像ID（省略可能）
+/// @param path ファイルパス（省略時はIDから検索）
+#[command]
+pub async fn open_file_with_default_app(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: Option<i64>,
+    path: Option<String>,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target_path = if let Some(p) = path {
+        p
+    } else if let Some(img_id) = id {
+        let conn = state.db.reader()?;
+        crate::db::repo::get_image_file_info(&conn, img_id)?
+            .map(|(p, _, _, _)| p)
+            .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
+    } else {
+        return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
+    };
+
+    app.opener()
+        .open_path(target_path, None::<&str>)
+        .map_err(|e| AppError::internal(format!("既定アプリでの起動に失敗: {}", e)))?;
+
+    Ok(())
+}
+
+/// ファイルをOSのファイルマネージャー（エクスプローラー等）で表示しハイライトする
+///
+/// 変更理由: アクションプラグイン「フォルダで表示」のバックエンド処理。
+/// デスクトップ環境では対象ファイルを選択状態でエクスプローラーを開き、
+/// モバイル環境（Android）では親ディレクトリまたはファイルをOS既定アプリ/共有で開く。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param id 画像ID（省略可能）
+/// @param path ファイルパス（省略時はIDから検索）
+#[command]
+pub async fn show_in_folder(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: Option<i64>,
+    path: Option<String>,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target_path = if let Some(p) = path {
+        p
+    } else if let Some(img_id) = id {
+        let conn = state.db.reader()?;
+        crate::db::repo::get_image_file_info(&conn, img_id)?
+            .map(|(p, _, _, _)| p)
+            .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
+    } else {
+        return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
+    };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        app.opener()
+            .reveal_item_in_dir(&target_path)
+            .map_err(|e| AppError::internal(format!("エクスプローラーでの表示に失敗: {}", e)))?;
+        Ok(())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        // モバイルではフォルダ表示（reveal）APIが存在しないため、親フォルダまたはファイルを既定アプリ/共有で開く
+        let res = if let Some(parent) = std::path::Path::new(&target_path).parent() {
+            app.opener().open_path(parent.to_string_lossy().to_string(), None::<&str>)
+        } else {
+            app.opener().open_path(&target_path, None::<&str>)
+        };
+        let _ = res;
+        Ok(())
+    }
+}
+
+/// プラグインが提供するコンテキストメニューアクション一覧を取得する
+///
+/// 変更理由: plugin.json で定義された右クリックメニューアクションを
+/// フロントエンドUIへ動的に提供するため。
+///
+/// @param state アプリケーション状態
+/// @return PluginActionDefinition の配列
+#[command]
+pub async fn get_plugin_actions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::plugins::PluginActionDefinition>, AppError> {
+    Ok(state.format_plugins.get_actions())
+}
+
+/// プラグインマニフェストで定義されたアクションを実行する
+///
+/// 変更理由: 特定アプリ（CLIP STUDIO等）への依存を本体コアから完全に切り離し、
+/// マニフェスト（plugin.json）に記載されたコマンド・引数定義に基づいて
+/// 汎用的に外部ツールを起動できるようにするため。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param action_id アクション識別子 (例: "action.open_clip_studio")
+/// @param id 画像ID（省略可能）
+/// @param path ファイルパス（省略可能）
+#[command]
+pub async fn execute_plugin_action(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    action_id: String,
+    id: Option<i64>,
+    path: Option<String>,
+) -> Result<(), AppError> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let target_path = if let Some(p) = path {
+        p
+    } else if let Some(img_id) = id {
+        let conn = state.db.reader()?;
+        crate::db::repo::get_image_file_info(&conn, img_id)?
+            .map(|(p, _, _, _)| p)
+            .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
+    } else {
+        return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
+    };
+
+    let action_def = state
+        .format_plugins
+        .find_action(&action_id)
+        .ok_or_else(|| AppError::not_found(format!("プラグインアクションが見つかりません: {}", action_id)))?;
+
+    // 1. コマンド定義が存在すれば外部プロセス起動を最優先で試行
+    #[allow(unused_variables)]
+    if let Some(cmd_def) = action_def.command {
+        #[cfg(target_os = "windows")]
+        {
+            let mut candidates = cmd_def.windows.clone();
+            if let Some(def_cmd) = &cmd_def.default {
+                if !candidates.contains(def_cmd) {
+                    candidates.push(def_cmd.clone());
+                }
+            }
+
+            for exe_str in &candidates {
+                let candidate_path = std::path::Path::new(exe_str);
+                // 実行ファイルの存在確認、またはPATH上のコマンド名（パス区切り文字を含まない）の場合に実行
+                if candidate_path.is_file() || !exe_str.contains(std::path::MAIN_SEPARATOR) && !exe_str.contains('/') {
+                    let mut cmd = std::process::Command::new(exe_str);
+                    let mut path_added = false;
+                    for arg in &cmd_def.args {
+                        if arg.contains("{path}") {
+                            cmd.arg(arg.replace("{path}", &target_path));
+                            path_added = true;
+                        } else {
+                            cmd.arg(arg);
+                        }
+                    }
+                    if !path_added {
+                        cmd.arg(&target_path);
+                    }
+                    if cmd.spawn().is_ok() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(any(target_os = "windows", target_os = "android", target_os = "ios")))]
+        {
+            if let Some(default_cmd) = &cmd_def.default {
+                let mut cmd = std::process::Command::new(default_cmd);
+                let mut path_added = false;
+                for arg in &cmd_def.args {
+                    if arg.contains("{path}") {
+                        cmd.arg(arg.replace("{path}", &target_path));
+                        path_added = true;
+                    } else {
+                        cmd.arg(arg);
+                    }
+                }
+                if !path_added {
+                    cmd.arg(&target_path);
+                }
+                if cmd.spawn().is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    // 2. コマンド未指定、またはプロセス起動失敗時はOS標準のファイル関連付け（既定アプリ/共有）でオープン
+    if app.opener().open_path(&target_path, None::<&str>).is_ok() {
+        return Ok(());
+    }
+
+    Err(AppError::internal(format!("アクション [{}] の実行に失敗しました（関連付けまたは実行ファイルが見つかりません）", action_def.name)))
+}
+
+/// CLIP STUDIO PAINT で .clip ファイルを開く（汎用アクションランタイムへの委譲）
+///
+/// 変更理由: 後方互換性を維持しつつ、本体コードからClipStudio固有ハードコードを全廃し、
+/// 汎用プラグインアクションランタイム（execute_plugin_action）へ委譲するため。
+#[command]
+pub async fn open_in_clip_studio(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: Option<i64>,
+    path: Option<String>,
+) -> Result<(), AppError> {
+    execute_plugin_action(app, state, "action.open_clip_studio".to_string(), id, path).await
+}
+
+/// コマンドライン引数文字列を空白・引用符を考慮してトークン分割するヘルパー
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn parse_command_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
+
+    for ch in input.chars() {
+        match ch {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = ch;
+            }
+            c if in_quotes && c == quote_char => {
+                in_quotes = false;
+            }
+            c if c.is_whitespace() && !in_quotes => {
+                if !current.is_empty() {
+                    args.push(current.clone());
+                    current.clear();
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+/// ユーザー登録された外部アプリケーションでファイルを開く
+///
+/// 変更理由: カスタム右クリックメニュー項目から指定のペイントソフト等を起動するため。
+/// 引数テンプレート {path} の正確な置換、二重クォートのエスケープ汚染防止、複数引数のトークン分解に対応する。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param app_path 実行ファイルのパスまたはコマンド
+/// @param args コマンド引数リスト（オプション）
+/// @param id 画像ID（省略可能）
+/// @param file_path 対象ファイルパス（省略時はIDから検索）
+#[command]
+pub async fn open_file_with_app(
+    #[allow(unused_variables)] app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    #[allow(unused_variables)] app_path: String,
+    #[allow(unused_variables)] args: Option<Vec<String>>,
+    id: Option<i64>,
+    file_path: Option<String>,
+) -> Result<(), AppError> {
+    let target_path = if let Some(p) = file_path {
+        p
+    } else if let Some(img_id) = id {
+        let conn = state.db.reader()?;
+        crate::db::repo::get_image_file_info(&conn, img_id)?
+            .map(|(p, _, _, _)| p)
+            .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
+    } else {
+        return Err(AppError::invalid_argument("ファイルパスまたは画像IDを指定してください"));
+    };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let mut cmd = std::process::Command::new(&app_path);
+        let mut path_inserted = false;
+
+        if let Some(extra_args) = args {
+            for raw_arg in extra_args {
+                let tokens = parse_command_args(&raw_arg);
+                for token in tokens {
+                    let mut cleaned = token;
+                    if (cleaned.starts_with('"') && cleaned.ends_with('"') && cleaned.len() >= 2)
+                        || (cleaned.starts_with('\'') && cleaned.ends_with('\'') && cleaned.len() >= 2)
+                    {
+                        cleaned = cleaned[1..cleaned.len() - 1].to_string();
+                    }
+
+                    if cleaned.contains("{path}") {
+                        path_inserted = true;
+                        cmd.arg(cleaned.replace("{path}", &target_path));
+                    } else {
+                        cmd.arg(cleaned);
+                    }
+                }
+            }
+        }
+
+        if !path_inserted {
+            cmd.arg(&target_path);
+        }
+
+        cmd.spawn()
+            .map_err(|e| AppError::internal(format!("アプリケーションの起動に失敗: {}", e)))?;
+        Ok(())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(target_path, None::<&str>)
+            .map_err(|e| AppError::internal(format!("共有アプリでのオープンに失敗: {}", e)))?;
+        Ok(())
+    }
+}
+
+/// ファイルをゴミ箱（リサイクルビン）へ移動し、カタログDBおよびキャッシュから削除する
+///
+/// 変更理由: 仕様書および右クリックメニュー「ゴミ箱へ移動」アクションの実装。
+/// ファイルをOSのゴミ箱へ安全に退避させ、UI表示を即時更新する。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param image_id 対象画像ID
+#[command]
+pub async fn trash_file(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    image_id: i64,
+) -> Result<(), AppError> {
+    // 1. 画像情報の取得
+    let (file_path_str, quick_hash) = {
+        let conn = state.db.reader()?;
+        let (p, h, _, _) = crate::db::repo::get_image_file_info(&conn, image_id)?
+            .ok_or_else(|| AppError::not_found("画像が見つかりません"))?;
+        (p, h)
+    };
+
+    let target_path = std::path::PathBuf::from(&file_path_str);
+
+    // 2. ゴミ箱へ移動（ファイルが存在する場合）
+    if target_path.exists() {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            trash::delete(&target_path)
+                .map_err(|e| AppError::internal(format!("ゴミ箱への移動に失敗: {}", e)))?;
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            std::fs::remove_file(&target_path)
+                .map_err(|e| AppError::internal(format!("ファイルの削除に失敗: {}", e)))?;
+        }
+    }
+
+    // 3. カタログDBから削除
+    {
+        let conn = state.db.writer();
+        crate::db::repo::delete_image(&conn, image_id)?;
+    }
+
+    // 4. メモリキャッシュおよびストアからサムネイルをパージ
+    state.remove_thumb_from_memory(&quick_hash);
+    let _ = state.thumb_store.delete(&quick_hash);
+
+    // 5. カタログバージョン更新およびUI変更通知
+    let new_ver = state.bump_catalog_version();
+    let _ = app.emit("catalog-changed", serde_json::json!({ "version": new_ver }));
+
+    info!("File trashed and removed from catalog: id={}, path={}", image_id, file_path_str);
+    Ok(())
+}
+
+/// アプリケーション全般の設定（常駐設定、言語、有効化プラグイン一覧、カスタムメニュー項目）を取得する
+///
+/// @param state アプリケーション状態
+/// @return AppSettings
+#[command]
+pub async fn get_app_settings(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::settings::AppSettings, AppError> {
+    Ok(crate::settings::load_settings(&state.data_dir))
+}
+
+/// アプリケーション設定を保存する
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param settings 保存する設定データ
+#[command]
+pub async fn save_app_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    settings: crate::settings::AppSettings,
+) -> Result<(), AppError> {
+    crate::settings::save_settings(&state.data_dir, &settings)
+        .map_err(|e| AppError::io(format!("設定の保存に失敗: {}", e)))?;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    crate::tray::update_tray_locale(&app, &settings.locale);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let _ = &app;
+
+    // プラグインの動的リロードおよび新規拡張子検出時の自動再走査
+    let reload_res = state.format_plugins.reload(&settings.enabled_plugins, &state.data_dir);
+    if !reload_res.added_extensions.is_empty() {
+        tracing::info!(
+            "New plugin extensions registered: {:?}. Triggering automatic background rescan.",
+            reload_res.added_extensions
+        );
+        let app_clone = app.clone();
+        let state_clone = Arc::clone(&state);
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(conn) = state_clone.db.reader() {
+                if let Ok(folders) = crate::db::repo::get_watched_folders(&conn) {
+                    for folder in folders {
+                        let _ = crate::scanner::scan_folder(
+                            app_clone.clone(),
+                            Arc::clone(&state_clone),
+                            folder.id,
+                            folder.path,
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    info!("AppSettings saved successfully");
+    Ok(())
 }
 
 

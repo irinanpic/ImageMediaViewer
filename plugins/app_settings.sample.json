@@ -1,0 +1,40 @@
+{
+  "stay_in_tray": true,
+  "locale": "ja",
+  "enabled_plugins": [
+    "format.clipstudio",
+    "format.*",
+    "action.open_default",
+    "action.open_clip_studio",
+    "action.show_in_folder",
+    "action.copy_path",
+    "action.trash_file"
+  ],
+  "custom_context_menu_items": [
+    {
+      "id": "paint_tool_integration",
+      "name": "ペイントツールで開く",
+      "appPath": "C:\\Windows\\system32\\mspaint.exe",
+      "args": "{path}",
+      "targetExtensions": [
+        "png",
+        "jpg",
+        "jpeg",
+        "bmp"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "external_editor_integration",
+      "name": "外部画像エディタで開く",
+      "appPath": "C:\\Program Files\\ExampleEditor\\editor.exe",
+      "args": "{path}",
+      "targetExtensions": [
+        "clip",
+        "png",
+        "webp"
+      ],
+      "enabled": false
+    }
+  ]
+}

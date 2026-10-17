@@ -70,7 +70,7 @@ impl ThumbBinaryLruCache {
 /// アプリケーション全体で共有されるグローバル状態
 ///
 /// 変更理由: DB接続、キャッシュパス、サムネイル生成パイプラインに加え、
-/// Picasa並みのゼロ遅延を実現するためのインメモリメタデータキャッシュ、
+/// 高速なレスポンスを実現するためのインメモリメタデータキャッシュ、
 /// サムネイル進捗カウンタ（アトミック）、およびタイムラインサマリキャッシュを一元管理
 pub struct AppState {
     /// データベース管理
@@ -97,10 +97,12 @@ pub struct AppState {
     last_thumb_progress_emit: Mutex<Option<Instant>>,
     /// タイムラインサマリのインメモリキャッシュ ((folder_id, sort, version) -> TimelineSummary)
     timeline_summary_cache: RwLock<HashMap<(Option<i64>, TimelineSort, i64), TimelineSummary>>,
-    /// 画像ID -> ThumbSource のインメモリハッシュキャッシュ（SQLiteクエリの完全バイパス用）
+    /// 画像ID -> ThumbSource のインメモリハッシュキャッシュ（SQLiteクエリのバイパス用）
     thumb_lookup_cache: RwLock<HashMap<i64, ThumbSource>>,
-    /// サムネイル WebP バイナリの LRU メモリキャッシュ（ディスクI/O完全バイパス用）
+    /// サムネイル WebP バイナリの LRU メモリキャッシュ（ディスクI/Oのバイパス用）
     thumb_binary_cache: Mutex<ThumbBinaryLruCache>,
+    /// 画像フォーマット拡張プラグインレジストリ
+    pub format_plugins: Arc<crate::plugins::FormatPluginRegistry>,
 }
 
 impl AppState {
@@ -110,6 +112,7 @@ impl AppState {
         data_dir: PathBuf,
         cache_dir: PathBuf,
         thumb_pipeline: Arc<ThumbnailPipeline>,
+        format_plugins: Arc<crate::plugins::FormatPluginRegistry>,
     ) -> Self {
         let version = {
             let conn = db.writer();
@@ -139,7 +142,29 @@ impl AppState {
             timeline_summary_cache: RwLock::new(HashMap::new()),
             thumb_lookup_cache: RwLock::new(HashMap::new()),
             thumb_binary_cache: Mutex::new(ThumbBinaryLruCache::new(max_binary_cache_items)),
+            format_plugins,
         }
+    }
+
+    /// インメモリLRUキャッシュから特定のサムネイルを削除する
+    ///
+    /// 変更理由: ゴミ箱移動やファイル削除時に古いキャッシュが残るのを防止するため。
+    pub fn remove_thumb_from_memory(&self, quick_hash: &str) {
+        if let Ok(mut cache) = self.thumb_binary_cache.lock() {
+            cache.remove(quick_hash);
+        }
+    }
+
+    /// 指定パスが現在サポートされている画像フォーマット（標準形式または有効化されたプラグイン）か判定する
+    pub fn is_supported_image(&self, path: &std::path::Path) -> bool {
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e.to_ascii_lowercase(),
+            None => return false,
+        };
+        if crate::scanner::walker::is_standard_image_extension(&ext) {
+            return true;
+        }
+        self.format_plugins.get_by_extension(&ext).is_some()
     }
 
     /// イベント送信用 Tauri AppHandle をセットする

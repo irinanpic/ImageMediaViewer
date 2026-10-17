@@ -29,7 +29,7 @@ const resources: Record<Locale, any> = {
  *
  * 性能最適化:
  * - 大半のキーは "category.key" の2階層であるため、indexOf(".") による直接切り出しを行い、
- *   split(".") による配列ヒープ確保（ガベージコレクション負荷）をホットパスで完全に排除する。
+ *   split(".") による配列ヒープ確保（ガベージコレクション負荷）をホットパスで抑止する。
  *
  * @param obj 探索対象オブジェクト
  * @param path ドット区切りのキーパス (例: "sidebar.folders")

@@ -35,7 +35,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../dist": "dist"
+      "../dist": "dist",
+      "../plugins": "plugins"
     },
     "windows": {
       "nsis": {

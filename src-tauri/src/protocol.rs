@@ -21,11 +21,11 @@ fn cors_response_builder(status: StatusCode) -> tauri::http::response::Builder {
 
 /// URIから画像IDを抽出するヘルパー
 ///
-/// 変更理由: WindowsのWebView2や各種環境下で、URIが完全URL（http://thumb.localhost/42?v=1）、
+/// 変更理由: WindowsのWebView2や各種環境下で、URIが絶対URL（http://thumb.localhost/42?v=1）、
 /// カスタムスキーム（thumb://localhost/42）、あるいは相対パス（/42?v=1）など多様な形式で渡されるため、
 /// いかなる形式からでも確実に画像IDを抽出できるようにする。
 fn extract_image_id(uri: &str) -> Option<i64> {
-    // 1. スキーム付き完全URLとしてパースを試みる
+    // 1. スキーム付き絶対URLとしてパースを試みる
     if let Ok(parsed) = url::Url::parse(uri) {
         let path = parsed.path().trim_matches('/');
         if let Ok(id) = path.parse::<i64>() {
@@ -255,7 +255,12 @@ pub async fn handle_original_protocol(
         tokio::task::spawn_blocking(move || {
             if let Ok(mut file) = std::fs::File::open(&fp_for_update) {
                 if let Ok(new_hash) = crate::pipeline::hash::calculate_quick_hash_from_file(&mut file, cur_size) {
-                    let new_meta = crate::pipeline::exif::extract_metadata_from_file(&fp_for_update, &mut file, cur_mtime);
+                    let new_meta = crate::pipeline::exif::extract_metadata_from_file_with_plugins(
+                        &fp_for_update,
+                        &mut file,
+                        cur_mtime,
+                        Some(&state_clone.format_plugins),
+                    );
                     let conn = state_clone.db.writer();
                     let _ = crate::db::repo::update_image_on_file_changed(
                         &conn,
@@ -286,6 +291,25 @@ pub async fn handle_original_protocol(
     }
 
     let fp_for_read = file_path.clone();
+
+    // 拡張子に対応するプラグインが存在する場合、内蔵プレビュー画像（.clip 内蔵高解像度PNG等）を抽出して返却
+    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+        let plugin_clone = plugin.clone();
+        let fp = file_path.clone();
+        let preview_res = tokio::task::spawn_blocking(move || plugin_clone.extract_original_preview(&fp)).await?;
+        match preview_res {
+            Ok((bytes, mime)) => {
+                return Ok(cors_response_builder(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, mime)
+                    .body(bytes)?);
+            }
+            Err(e) => {
+                warn!("Plugin preview extraction failed: {:?}, error: {}", file_path, e);
+            }
+        }
+    }
+
     let read_result = tokio::task::spawn_blocking(move || fs::read(&fp_for_read)).await?;
     match read_result {
         Ok(bytes) => {
@@ -304,7 +328,7 @@ pub async fn handle_original_protocol(
 
 /// Tauri Builder にサムネイルおよび原寸画像プロトコルを登録する
 ///
-/// 変更理由: TCP/IPポートを一切介さず、WebViewから直接メモリ内IPCハンドラを呼び出し
+/// 変更理由: TCP/IPポートを介さず、WebViewから直接メモリ内IPCハンドラを呼び出し
 /// WebPサムネイルおよび原寸画像バイナリを高速返却するため。
 ///
 /// @param builder Tauri Builder インスタンス
@@ -387,7 +411,8 @@ mod tests {
             let db = crate::db::Database::open(&db_path).unwrap();
             let thumb_store = Arc::new(crate::db::ThumbnailStore::open(&cache_dir).unwrap());
             let thumb_pipeline = crate::pipeline::ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), cache_dir.clone());
-            let app_state = Arc::new(AppState::new(db, thumb_store, dir.path().to_path_buf(), cache_dir, thumb_pipeline));
+            let format_plugins = Arc::new(crate::plugins::FormatPluginRegistry::empty());
+            let app_state = Arc::new(AppState::new(db, thumb_store, dir.path().to_path_buf(), cache_dir, thumb_pipeline, format_plugins));
 
             // 存在しない画像ID 9999 に対するリクエスト
             let resp = handle_thumb_protocol(app_state, "thumb://localhost/9999".to_string()).await.unwrap();

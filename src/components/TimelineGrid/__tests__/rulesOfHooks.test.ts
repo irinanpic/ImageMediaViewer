@@ -261,7 +261,7 @@ describe("Rules of Hooks 静的検証", () => {
     expect(violations).toEqual([]);
   });
 
-  it("src配下の全コンポーネントおよびカスタムフックでフック規約違反が完全にゼロであること", () => {
+  it("src配下の全コンポーネントおよびカスタムフックでフック規約違反が0件であること", () => {
     const srcDir = path.resolve(__dirname, "../../../");
     const allViolations: string[] = [];
 

@@ -1,5 +1,5 @@
-﻿# ImageMediaViewer Desktop Launcher
-# 完全ポートレス一体型ネイティブデスクトップアプリを起動します
+# ImageMediaViewer Desktop Launcher
+# ポートレス一体型ネイティブデスクトップアプリを起動します
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 

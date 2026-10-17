@@ -63,7 +63,7 @@ export const Sidebar: React.FC = () => {
 
   // Tauri ネイティブのドラッグ＆ドロップイベント監視
   // 変更理由: OSエクスプローラーからフォルダがドロップされた際、
-  // セキュリティ制限による空パスを回避し、Tauri API経由で完全な絶対パスをダイレクトに自動登録する
+  // セキュリティ制限による空パスを回避し、Tauri API経由で対象フォルダの絶対パスをダイレクトに自動登録する
   React.useEffect(() => {
     if (!isTauriEnvironment()) return;
 

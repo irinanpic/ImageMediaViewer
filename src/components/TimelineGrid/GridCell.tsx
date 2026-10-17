@@ -18,7 +18,7 @@ const loadedThumbUrls = new Set<string>();
 /**
  * タイムライングリッド内の画像セルコンポーネント
  *
- * 変更理由: 仕様書§8.3およびPicasa並みの快適さ追求。
+ * 変更理由: 仕様書§8.3および高速で快適な画像表示の追求。
  * 一度ロードしたサムネイルはメモリキャッシュ(loadedThumbUrls)により再マウント時でもゼロ遅延で即時表示し、
  * 高速スクロール中であってもロード済み画像はアンマウントせず滑らかに維持する。
  * また、Ctrl+クリックおよびドラッグ複数選択、チェックボックスによる選択をサポート。
@@ -31,6 +31,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
     const setSelectedCellIndex = useAppStore((state) => state.setSelectedCellIndex);
     const toggleSelectImageId = useAppStore((state) => state.toggleSelectImageId);
     const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
+    const openContextMenu = useAppStore((state) => state.openContextMenu);
 
     const isFocused = selectedCellIndex === globalIndex;
     const isMultiSelected = useAppStore((state) =>
@@ -203,8 +204,22 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       toggleSelectImageId(record.id);
     };
 
+    // 右クリック時のコンテキストメニュー起動
+    const handleContextMenu = (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (record) {
+        setSelectedCellIndex(globalIndex);
+        openContextMenu({
+          x: e.clientX,
+          y: e.clientY,
+          record,
+        });
+      }
+    };
+
     // 未ロードかつ高速スクロール中の場合、またはレコード取得中の場合のみスケルトン表示
-    // 変更理由: すべてのReactフックが評価された後に早期returnを行うことで、フックの呼び出し数・順序が毎レンダリングで完全に不変であることを保証する
+    // 変更理由: すべてのReactフックが評価された後に早期returnを行うことで、フックの呼び出し数・順序が毎レンダリングで一定であることを維持する
     if (!record || (isScrollingFast && !isLoaded && !isCached)) {
       return (
         <div
@@ -237,6 +252,7 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
         style={{ width: size, height: size }}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}

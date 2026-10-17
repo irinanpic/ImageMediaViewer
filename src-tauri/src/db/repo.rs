@@ -53,6 +53,18 @@ pub fn remove_watched_folder(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 単一の画像レコードをID指定で削除する
+///
+/// 変更理由: ゴミ箱移動（trash_file）時にDBから該当画像メタデータを確実にパージするため
+///
+/// @param conn DB書き込み接続
+/// @param id 画像ID
+/// @return 成功時Ok(())
+pub fn delete_image(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM images WHERE id = ?1;", params![id])?;
+    Ok(())
+}
+
 /// 登録済み監視フォルダ一覧を取得
 ///
 /// @param conn DB接続
@@ -259,7 +271,7 @@ pub fn get_timeline_summary(
 
     match sort {
         TimelineSort::Folder => {
-            // フォルダ順（Picasaスタイル）: 各フォルダごとにバケットを作成
+            // フォルダ順: 各フォルダごとにバケットを作成
             total = if let Some(fid) = folder_id {
                 conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
             } else {

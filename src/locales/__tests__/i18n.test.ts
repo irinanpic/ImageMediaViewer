@@ -36,7 +36,7 @@ describe("i18n 多言語対応システム", () => {
   it("日本語リソースにキーが存在しない（または未翻訳）場合、英語マスターへ透過的にフォールバックすること", () => {
     useAppStore.setState({ locale: "ja" });
     // 存在しないキーのパスシミュレーション（英語マスターにのみ存在するキーを模したテスト）
-    // 完全に未知のキーはキー名自体が返る
+    // 未定義のキーはキー名自体が返る
     expect(t("unknown.nonexistent.key" as any)).toBe("unknown.nonexistent.key");
   });
 });

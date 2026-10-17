@@ -34,6 +34,34 @@ fn parse_exif_date_string(s: &str) -> Option<i64> {
     Some(Utc.from_utc_datetime(&naive).timestamp())
 }
 
+/// プラグインレジストリを考慮してファイルハンドルからメタデータを抽出する
+///
+/// 変更理由: 特殊な画像形式（ClipStudio .clip 等）のメタデータをプラグインへ委譲し、
+/// 未対応またはフォールバック時は標準のExif / imagesize パイプラインを実行するため。
+///
+/// @param path 画像ファイルパス
+/// @param file オープン済みファイルハンドル
+/// @param mtime_secs ファイル更新日時のUNIX秒
+/// @param plugins フォーマットプラグインレジストリ（オプション）
+/// @return ExtractedMetadata
+pub fn extract_metadata_from_file_with_plugins(
+    path: &Path,
+    file: &mut File,
+    mtime_secs: i64,
+    plugins: Option<&crate::plugins::FormatPluginRegistry>,
+) -> ExtractedMetadata {
+    if let Some(registry) = plugins {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(plugin) = registry.get_by_extension(ext) {
+                if let Ok(meta) = plugin.extract_metadata(path, file, mtime_secs) {
+                    return meta;
+                }
+            }
+        }
+    }
+    extract_metadata_from_file(path, file, mtime_secs)
+}
+
 /// オープン済みファイルハンドルからメタデータを抽出する（File::open 1回集約用）
 ///
 /// 変更理由: 走査処理中に calculate_quick_hash と extract_metadata で重複オープンされていた

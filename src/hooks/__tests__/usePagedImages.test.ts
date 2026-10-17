@@ -33,7 +33,7 @@ describe("usePagedImages - mergePageRecords (インクリメンタル差分マ�
     expect(result.merged).toEqual([sample1, sample2]);
   });
 
-  it("内容に変化がない場合は既存のオブジェクト参照を100%維持し changed=false とする", () => {
+  it("内容に変化がない場合は既存のオブジェクト参照を維持し changed=false とする", () => {
     const oldList = [sample1, sample2];
     const newList: ImageRecord[] = [
       { ...sample1 },

@@ -5,6 +5,7 @@ pub mod locales;
 pub mod logger;
 pub mod models;
 pub mod pipeline;
+pub mod plugins;
 pub mod protocol;
 pub mod scanner;
 pub mod server;
@@ -26,7 +27,7 @@ use crate::state::AppState;
 
 /// プラットフォームに応じたデータディレクトリおよびキャッシュディレクトリを解決する
 ///
-/// 変更理由: Windows 既存の環境変数パス（%APPDATA%, %LOCALAPPDATA%）との100%完全な後方互換性を
+/// 変更理由: Windows 既存の環境変数パス（%APPDATA%, %LOCALAPPDATA%）との後方互換性を
 /// 担保しつつ、Android / Linux / macOS においても最適なアプリ内部ストレージを自動選択するため。
 fn resolve_app_directories() -> (std::path::PathBuf, std::path::PathBuf) {
     #[cfg(windows)]
@@ -44,7 +45,11 @@ fn resolve_app_directories() -> (std::path::PathBuf, std::path::PathBuf) {
     #[cfg(target_os = "android")]
     {
         // Android 環境ではアプリサンドボックス内の内部ストレージを使用
-        let base = std::path::PathBuf::from("/data/data/com.imagemediaviewer.desktop");
+        let base = if std::path::Path::new("/data/user/0/com.imagemediaviewer.desktop").exists() {
+            std::path::PathBuf::from("/data/user/0/com.imagemediaviewer.desktop")
+        } else {
+            std::path::PathBuf::from("/data/data/com.imagemediaviewer.desktop")
+        };
         let data = base.join("files");
         let cache = base.join("cache");
         (data, cache)
@@ -63,10 +68,10 @@ fn resolve_app_directories() -> (std::path::PathBuf, std::path::PathBuf) {
 
 /// Tauri アプリケーションのエントリポイント
 ///
-/// 変更理由: TCP/IPポートを一切使用しない完全ポートレス一体型アーキテクチャへの刷新。
+/// 変更理由: TCP/IPポートを使用しないポートレス一体型アーキテクチャへの刷新。
 /// Tauri Native IPC とカスタムプロトコル（thumb://, original://）により、
 /// ポート競合ゼロ、ファイアウォール警告ゼロの安定したネイティブデスクトップアプリを実現する。
-/// メインウィンドウのクローズ時は常駐設定（stay_in_tray）に応じてトレイ常駐または完全終了を行う。
+/// メインウィンドウのクローズ時は常駐設定（stay_in_tray）に応じてトレイ常駐または終了処理を行う。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let (app_data_dir, app_cache_dir) = resolve_app_directories();
@@ -137,7 +142,8 @@ pub fn run() {
     }
 
     let thumb_pipeline = ThumbnailPipeline::new(db.clone(), Arc::clone(&thumb_store), app_cache_dir.clone());
-    let app_state = Arc::new(AppState::new(db, thumb_store, app_data_dir.clone(), app_cache_dir, thumb_pipeline));
+    let format_plugins = Arc::new(crate::plugins::FormatPluginRegistry::new(&app_settings.enabled_plugins, &app_data_dir));
+    let app_state = Arc::new(AppState::new(db, thumb_store, app_data_dir.clone(), app_cache_dir, thumb_pipeline, format_plugins));
     app_state.thumb_pipeline.set_app_state(Arc::downgrade(&app_state));
     app_state.init_thumb_progress();
 
@@ -180,7 +186,7 @@ pub fn run() {
                 let _ = window.hide();
                 info!("Hidden main window and transitioned to system tray");
             } else {
-                // 常駐 OFF: アプリケーション全体を完全終了する
+                // 常駐 OFF: アプリケーション全体を終了する
                 info!("Resident setting is OFF; Terminating application on window close");
                 window.app_handle().exit(0);
             }
@@ -205,6 +211,27 @@ pub fn run() {
             {
                 let _ = (&state_for_tray, &stay_for_tray, &app_data_dir_clone, &initial_locale);
             }
+
+            // 起動時に登録済み監視フォルダの差分走査を非同期実行
+            // 変更理由: 前回終了後に追加された画像や、プラグインにより新設された拡張子（.clip等）の
+            // ファイルを起動時に確実に検出し、タイムラインへ自動反映させるため。
+            let scan_state = Arc::clone(&state_for_setup);
+            let app_handle_scan = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Ok(conn) = scan_state.db.reader() {
+                    if let Ok(folders) = crate::db::repo::get_watched_folders(&conn) {
+                        for folder in folders {
+                            let _ = crate::scanner::scan_folder(
+                                app_handle_scan.clone(),
+                                Arc::clone(&scan_state),
+                                folder.id,
+                                folder.path,
+                            );
+                        }
+                    }
+                }
+            });
 
             // メインウィンドウを表示
             if let Some(w) = app.get_webview_window("main") {
@@ -255,6 +282,15 @@ pub fn run() {
             commands::set_locale,
             commands::get_platform_info,
             commands::request_storage_permissions,
+            commands::open_file_with_default_app,
+            commands::show_in_folder,
+            commands::open_in_clip_studio,
+            commands::open_file_with_app,
+            commands::trash_file,
+            commands::get_app_settings,
+            commands::save_app_settings,
+            commands::get_plugin_actions,
+            commands::execute_plugin_action,
         ]);
 
     builder

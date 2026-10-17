@@ -47,7 +47,7 @@ impl ThumbnailStore {
     /// サムネイル専用DB接続に必須となるPRAGMA設定を適用する
     ///
     /// 変更理由: WebPサムネイル（平均15KB）の格納に最適な 8KB ページサイズ、
-    /// 256MB のメモリマップトI/O（mmap）、および WAL モードを適用して極限の読み書き性能を達成する。
+    /// 256MB のメモリマップトI/O（mmap）、および WAL モードを適用して高い読み書き性能を達成する。
     ///
     /// @param conn SQLite接続
     /// @param is_writer 書き込み接続か否か

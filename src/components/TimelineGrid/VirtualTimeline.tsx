@@ -131,7 +131,7 @@ export const VirtualTimeline: React.FC = () => {
     }
   }, [virtualItems, rows, requestIndices]);
 
-  // Ctrl + マウスホイールによるサムネイルサイズの無段階変更（ブラウザ全体のズームを完全抑止）
+  // Ctrl + マウスホイールによるサムネイルサイズの無段階変更（ブラウザ全体のズームを抑止）
   useEffect(() => {
     const handleWheel = (e: WheelEvent) => {
       // ビューアが開いているときはビューア側の処理に任せる
@@ -572,7 +572,7 @@ export const VirtualTimeline: React.FC = () => {
         </div>
       </div>
 
-      {/* 画面右側の高速スクラブバー (Picasaスタイル) */}
+      {/* 画面右側の高速スクラブバー */}
       <TimelineScrubber
         containerRef={containerRef}
         rows={rows}

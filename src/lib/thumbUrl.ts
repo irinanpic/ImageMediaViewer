@@ -25,8 +25,8 @@ export function isMobileEnvironment(): boolean {
 /**
  * 画像IDとリビジョンからサムネイルURLを生成する
  *
- * 変更理由: 仕様書§5.5および完全ポートレス一体型アーキテクチャ。
- * TCP/IPポートを一切介さず、Tauriネイティブのカスタムスキーム（thumb://）により
+ * 変更理由: 仕様書§5.5およびポートレス一体型アーキテクチャ。
+ * TCP/IPポートを介さず、Tauriネイティブのカスタムスキーム（thumb://）により
  * Rustのオンデマンド生成・WebP配信パイプラインから直接バイナリを取得する。
  *
  * @param imageId 画像ID
@@ -45,8 +45,8 @@ export function getThumbnailUrl(imageId: number, rev: number): string {
 /**
  * 画像IDから原寸画像配信用URLを生成する
  *
- * 変更理由: 仕様書§5.5および完全ポートレス一体型アーキテクチャ。
- * TCP/IPポートを一切介さず、Tauriネイティブのカスタムスキーム（original://）により
+ * 変更理由: 仕様書§5.5およびポートレス一体型アーキテクチャ。
+ * TCP/IPポートを介さず、Tauriネイティブのカスタムスキーム（original://）により
  * 原寸画像バイナリを直接取得する。
  *
  * @param imageId 画像ID

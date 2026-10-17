@@ -7,6 +7,8 @@ import { ImageViewerModal } from "./components/Viewer/ImageViewerModal";
 import { MoodboardCanvas } from "./components/Moodboard/MoodboardCanvas";
 import { AddToBoardModal } from "./components/Moodboard/AddToBoardModal";
 import { LogViewerModal } from "./components/Common/LogViewerModal";
+import { ContextMenu } from "./components/ContextMenu/ContextMenu";
+import { ContextMenuSettingsModal } from "./components/ContextMenu/ContextMenuSettingsModal";
 import { useBackendEvents } from "./hooks/useBackendEvents";
 import { useWindowState } from "./hooks/useWindowState";
 import { useBackNavigation } from "./hooks/useBackNavigation";
@@ -21,6 +23,12 @@ export const App: React.FC = () => {
   useBackNavigation();
 
   const currentView = useAppStore((state) => state.currentView);
+  const loadAppSettings = useAppStore((state) => state.loadAppSettings);
+
+  // 起動時にアプリケーション設定（プラグイン・カスタムメニュー等）をロード
+  React.useEffect(() => {
+    loadAppSettings();
+  }, [loadAppSettings]);
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-textPrimary">
@@ -28,7 +36,7 @@ export const App: React.FC = () => {
       <div className="flex flex-1 overflow-hidden relative">
         <Sidebar />
         <div className="flex flex-col flex-1 overflow-hidden relative">
-          {/* タイムライン画面（ボード表示中もDOMとスクロール位置を完全保持） */}
+          {/* タイムライン画面（ボード表示中もDOMとスクロール位置を保持） */}
           <div className={`flex flex-col flex-1 overflow-hidden relative ${currentView === "timeline" ? "" : "hidden"}`}>
             <TimelineToolbar />
             <VirtualTimeline />
@@ -50,6 +58,12 @@ export const App: React.FC = () => {
 
       {/* システムログ & エラー診断モーダル */}
       <LogViewerModal />
+
+      {/* フローティング右クリックコンテキストメニュー */}
+      <ContextMenu />
+
+      {/* カスタムコンテキストメニュー設定モーダル */}
+      <ContextMenuSettingsModal />
     </div>
   );
 };

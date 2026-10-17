@@ -274,7 +274,7 @@ export const MoodboardCanvas: React.FC = () => {
    * 現在編集中のメモがあればテキストを即座に確定・保存する
    *
    * 変更理由: 余白クリックや他要素選択、モード切替時に編集中の複数行テキストが破棄されず
-   * 100%確実に保存されるようにするため。
+   * 確実に保存されるようにするため。
    */
   const flushSaveEditingNote = useCallback(() => {
     const currentId = editingNoteIdRef.current;
@@ -1248,7 +1248,7 @@ export const MoodboardCanvas: React.FC = () => {
     maxOverallWidth = Math.max(maxOverallWidth, curX - GAP);
     const maxOverallHeight = curY + rowMaxHeight;
 
-    // ステートとRefを即座に更新（rotationも0°にリセットして重なりを完全排除）
+    // ステートとRefを即座に更新（rotationも0°にリセットして重なりを排除）
     const newItemPosMap = new Map(itemUpdates.map((u) => [u.id, u]));
     const newNotePosMap = new Map(noteUpdates.map((u) => [u.id, u]));
 

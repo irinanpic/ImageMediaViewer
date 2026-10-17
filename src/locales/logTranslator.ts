@@ -95,15 +95,14 @@ const LOG_PATTERNS: LogMessagePattern[] = [
   },
   {
     patterns: [
-      /常駐設定がOFFのため、ウィンドウ終了に伴いアプリケーションを完全終了します/,
-      /常駐設定がOFFのため、アプリケーションを完全終了します/,
+      /常駐設定がOFFのため、(?:ウィンドウ終了に伴い)?アプリケーションを(?:完全)?終了します/,
       /Resident setting is OFF; Terminating application on window close/,
     ],
     key: "logMessages.windowClosedExit",
   },
   {
     patterns: [
-      /トレイメニューから終了が指示されました。アプリケーションを完全終了します。/,
+      /トレイメニューから終了が指示されました。アプリケーションを(?:完全)?終了します。/,
       /Exit requested from tray menu\. Terminating application\./,
     ],
     key: "logMessages.trayMenuExit",

@@ -6,8 +6,11 @@ import type { TimelineSort } from "../types/generated/TimelineSort";
 import type { WatchedFolder } from "../types/generated/WatchedFolder";
 import type { Board } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
+import type { ImageRecord } from "../types/generated/ImageRecord";
+import type { AppSettings } from "../types/settings";
 import { backendApi } from "../lib/ipc";
 import { isMobileEnvironment } from "../lib/thumbUrl";
+import { ContextMenuRegistry } from "../plugins/actions/registry";
 
 export interface ViewerTransformState {
   rotation: 0 | 90 | 180 | 270;
@@ -121,6 +124,26 @@ interface AppStoreState {
   jumpToBookmark: (bookmark: Bookmark) => void;
   currentVisibleInfo: { scrollTop: number; rowIndex: number; imageIndex: number | null; dayLabel: string } | null;
   setCurrentVisibleInfo: (info: { scrollTop: number; rowIndex: number; imageIndex: number | null; dayLabel: string }) => void;
+
+  // コンテキストメニュースライス
+  contextMenu: {
+    isOpen: boolean;
+    x: number;
+    y: number;
+    record: ImageRecord | null;
+  };
+  openContextMenu: (params: { x: number; y: number; record: ImageRecord }) => void;
+  closeContextMenu: () => void;
+
+  // コンテキストメニュー設定モーダルスライス
+  isContextMenuSettingsOpen: boolean;
+  openContextMenuSettings: () => void;
+  closeContextMenuSettings: () => void;
+
+  // アプリケーション設定スライス（プラグイン・カスタムメニュー）
+  appSettings: AppSettings | null;
+  loadAppSettings: () => Promise<void>;
+  updateAppSettings: (settings: AppSettings) => Promise<void>;
 }
 
 export const useAppStore = create<AppStoreState>((set) => ({
@@ -432,5 +455,66 @@ export const useAppStore = create<AppStoreState>((set) => ({
     }),
   currentVisibleInfo: null,
   setCurrentVisibleInfo: (info) => set({ currentVisibleInfo: info }),
+
+  // コンテキストメニュー状態
+  contextMenu: {
+    isOpen: false,
+    x: 0,
+    y: 0,
+    record: null,
+  },
+  openContextMenu: ({ x, y, record }) =>
+    set({
+      contextMenu: {
+        isOpen: true,
+        x,
+        y,
+        record,
+      },
+    }),
+  closeContextMenu: () =>
+    set((state) => ({
+      contextMenu: {
+        ...state.contextMenu,
+        isOpen: false,
+      },
+    })),
+
+  // コンテキストメニュー設定モーダル
+  isContextMenuSettingsOpen: false,
+  openContextMenuSettings: () => set({ isContextMenuSettingsOpen: true }),
+  closeContextMenuSettings: () => set({ isContextMenuSettingsOpen: false }),
+
+  // アプリケーション設定
+  appSettings: null,
+  loadAppSettings: async () => {
+    try {
+      const settings = await backendApi.getAppSettings();
+      try {
+        const pluginActions = await backendApi.getPluginActions();
+        ContextMenuRegistry.loadPluginActions(pluginActions);
+      } catch {
+        // プラグインアクション取得エラー時は無視
+      }
+      set({ appSettings: settings });
+    } catch (err) {
+      console.error("アプリケーション設定の読み込みに失敗しました:", err);
+    }
+  },
+  updateAppSettings: async (settings) => {
+    try {
+      await backendApi.saveAppSettings(settings);
+      try {
+        const pluginActions = await backendApi.getPluginActions();
+        ContextMenuRegistry.loadPluginActions(pluginActions);
+      } catch {
+        // プラグインアクション取得エラー時は無視
+      }
+      set({ appSettings: settings });
+    } catch (err) {
+      console.error("アプリケーション設定の保存に失敗しました:", err);
+      throw err;
+    }
+  },
 }));
 

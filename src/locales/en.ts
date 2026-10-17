@@ -70,7 +70,7 @@ export const en = {
   },
   timeline: {
     sortOrder: "Sort by:",
-    sortFolder: "📁 Folder (Picasa style)",
+    sortFolder: "📁 Folder (Seamless)",
     sortTakenAtDesc: "📅 Date Taken (Newest first)",
     sortTakenAtAsc: "📅 Date Taken (Oldest first)",
     sortNameAsc: "🔤 File Name (A to Z)",
@@ -133,6 +133,8 @@ export const en = {
     infoTooltip: "Information Panel (I)",
     addToBoardTooltip: "Add this image to moodboard as reference",
     closeTooltip: "Close (Esc)",
+    prevTooltip: "Previous image (← / A / Click left edge)",
+    nextTooltip: "Next image (→ / D / Click right edge)",
   },
   metadata: {
     title: "Image Details",

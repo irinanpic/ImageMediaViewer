@@ -71,7 +71,7 @@ export const ja: TranslationSchema = {
   },
   timeline: {
     sortOrder: "表示順:",
-    sortFolder: "📁 フォルダ順（Picasa流・シームレス）",
+    sortFolder: "📁 フォルダ順（シームレス）",
     sortTakenAtDesc: "📅 撮影日時（新しい順）",
     sortTakenAtAsc: "📅 撮影日時（古い順）",
     sortNameAsc: "🔤 ファイル名（昇順）",
@@ -134,6 +134,8 @@ export const ja: TranslationSchema = {
     infoTooltip: "情報パネル (I)",
     addToBoardTooltip: "この画像をムードボードに資料として追加",
     closeTooltip: "閉じる (Esc)",
+    prevTooltip: "前の画像 (← / A / 左端クリック)",
+    nextTooltip: "次の画像 (→ / D / 右端クリック)",
   },
   metadata: {
     title: "ファイル詳細情報",
@@ -312,8 +314,8 @@ export const ja: TranslationSchema = {
     localeUpdated: "言語設定を更新しました: locale = {locale}",
     secondInstanceDetected: "二重起動を検知しました。既存のメインウィンドウを表示・復元します。",
     windowHiddenToTray: "メインウィンドウを非表示にし、タスクトレイ常駐に移行しました",
-    windowClosedExit: "常駐設定がOFFのため、ウィンドウ終了に伴いアプリケーションを完全終了します",
-    trayMenuExit: "トレイメニューから終了が指示されました。アプリケーションを完全終了します。",
+    windowClosedExit: "常駐設定がOFFのため、ウィンドウ終了に伴いアプリケーションを終了します",
+    trayMenuExit: "トレイメニューから終了が指示されました。アプリケーションを終了します。",
     trayMenuRescan: "トレイメニューから再走査を要求されました",
     stayInTrayChanged: "常駐設定を変更しました: stay_in_tray = {value}",
     folderScanError: "フォルダ走査中にエラーが発生しました: {error}",

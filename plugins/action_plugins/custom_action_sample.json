@@ -1,0 +1,39 @@
+[
+  {
+    "id": "sample_paint_tool",
+    "name": "ペイントソフトで編集",
+    "appPath": "C:\\Windows\\system32\\mspaint.exe",
+    "args": "{path}",
+    "targetExtensions": [
+      "png",
+      "jpg",
+      "jpeg",
+      "bmp"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "sample_external_editor",
+    "name": "外部イラストツールで開く",
+    "appPath": "C:\\Program Files\\ExampleApp\\editor.exe",
+    "args": "{path}",
+    "targetExtensions": [
+      "clip",
+      "psd"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "sample_external_viewer",
+    "name": "外部ビューワで表示 (全画面)",
+    "appPath": "C:\\Program Files\\ExampleViewer\\viewer.exe",
+    "args": "--fullscreen {path}",
+    "targetExtensions": [
+      "png",
+      "jpg",
+      "webp",
+      "gif"
+    ],
+    "enabled": false
+  }
+]

@@ -2,6 +2,7 @@ import { spawn, execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { cleanAllTargetReadOnly } from "./clean-target-readonly.mjs";
+import { buildAndroidPlugins } from "./build-plugins.mjs";
 
 /**
  * モバイル版（Android）APK ビルド自動化スクリプト
@@ -165,7 +166,23 @@ async function main() {
 
   console.log(`[Config] Target Arch: ${target}`);
   console.log(`[Config] Mode:        ${isRelease ? "Release" : "Debug"}\n`);
-  console.log("ビルドを開始します。しばらくお待ちください...\n");
+
+  // 外部プラグインバイナリ（Android C-ABI動的ライブラリ .so）の事前コンパイルおよび jniLibs 自動配置
+  console.log("=========================================");
+  console.log("  Android 外部プラグインバイナリのビルド");
+  console.log("=========================================\n");
+  try {
+    buildAndroidPlugins({
+      ndkHome,
+      targetArch: target,
+      isRelease,
+    });
+  } catch (err) {
+    console.error("【エラー】外部プラグインのビルドに失敗しました:", err.message);
+    process.exit(1);
+  }
+
+  console.log("\nビルドを開始します。しばらくお待ちください...\n");
 
   const tauriArgs = [
     "tauri",
@@ -281,6 +298,34 @@ async function main() {
           const preferredApk =
             candidates.find((a) => (isRelease ? a.includes("release") : a.includes("debug"))) ||
             candidates[0];
+
+          // APK 内のネイティブライブラリ同梱検証
+          const jarExe = path.join(javaHome, "bin", process.platform === "win32" ? "jar.exe" : "jar");
+          if (fs.existsSync(jarExe) && preferredApk) {
+            try {
+              const zipEntries = execSync(`"${jarExe}" tf "${preferredApk}"`, { encoding: "utf8" });
+              const bundledPlugins = zipEntries
+                .split(/\r?\n/)
+                .filter((line) => line.includes("libimv_"));
+              if (bundledPlugins.length > 0) {
+                console.log("\n[検証OK] APK内に同梱された外部プラグインバイナリ (JNI .so):");
+                for (const p of bundledPlugins) {
+                  console.log(`  - ${p.trim()}`);
+                }
+              }
+
+              const bundledManifests = zipEntries
+                .split(/\r?\n/)
+                .filter((line) => line.includes("assets/plugins/") && line.endsWith("plugin.json"));
+              if (bundledManifests.length > 0) {
+                console.log("\n[検証OK] APK内に同梱されたプラグインマニフェスト (assets):");
+                for (const m of bundledManifests) {
+                  console.log(`  - ${m.trim()}`);
+                }
+              }
+            } catch (_) {}
+          }
+
           console.log("\n【インストール手順】");
           console.log("実機またはエミュレータが接続された状態で以下のコマンドを実行してください:");
           console.log(`  adb install -r "${preferredApk}"\n`);

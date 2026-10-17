@@ -10,9 +10,9 @@ const MAX_CACHED_PAGES = 50;
  * 既存のページレコードと新しく取得したページレコードを差分マージする
  *
  * 変更理由: ユーザー要求「再読込時、既に読み込まれている画像については基本的にそのまま利用しつつ
- * 未読込み画像があれば読み込む、また更新有無を確認し、もし更新があれば差し替え…」に完全準拠。
+ * 未読込み画像があれば読み込む、また更新有無を確認し、もし更新があれば差し替え…」に準拠。
  * 変更のないレコードについては既存のオブジェクト参照（oldRec）をそのまま流用し、
- * Reactの再レンダリングやサムネイル画像の再デコード・チラつきを完全に防止する。
+ * Reactの再レンダリングやサムネイル画像の再デコード・チラつきを防止する。
  *
  * @param oldRecords 既存のキャッシュ済みレコード配列（未キャッシュ時は undefined）
  * @param newRecords 新たにバックエンドから取得した最新レコード配列
@@ -35,7 +35,7 @@ export function mergePageRecords(
     const newRec = newRecords[i];
 
     if (oldRec && newRec) {
-      // id, rev, width, height, takenAt が全て同一なら完全一致とみなし、既存の参照を維持
+      // id, rev, width, height, takenAt が全て同一なら同一とみなし、既存の参照を維持
       if (
         oldRec.id === newRec.id &&
         oldRec.rev === newRec.rev &&

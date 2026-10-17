@@ -6,14 +6,14 @@
 
 ## 1. システム全体アーキテクチャ
 
-ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** が同一プロセス内で完全一体化されたクロスプラットフォーム・デスクトップ/モバイルアプリケーションです。TCP/IP ポートを一切使用せず、Tauri Native IPC および内部カスタムプロトコル（`thumb://`, `original://`）によって高速・安全に連携します。
+ImageMediaViewer は、**フロントエンド（React / TypeScript / Tailwind CSS）** と **バックエンド（Rust 高速ネイティブエンジン）** が同一プロセス内で一体化されたクロスプラットフォーム・デスクトップ/モバイルアプリケーションです。TCP/IP ポートを使用せず、Tauri Native IPC および内部カスタムプロトコル（`thumb://`, `original://`）によって高速・安全に連携します。
 
-プラットフォーム固有の機能（タスクトレイ常駐制御、二重起動防止プラグイン等）は `#[cfg(desktop)]` によりデスクトップ限定に抽象化・分離されており、Windows 版の既存動作を 100% 維持したまま Android / ChromeOS 等へのクロスプラットフォーム展開が可能なアーキテクチャを採用しています。
+プラットフォーム固有の機能（タスクトレイ常駐制御、二重起動防止プラグイン等）は `#[cfg(desktop)]` によりデスクトップ限定に抽象化・分離されており、デスクトップ版の動作を維持したまま Android / ChromeOS 等へのクロスプラットフォーム展開が可能なアーキテクチャを採用しています。
 
 
 ```mermaid
 flowchart TD
-    subgraph App ["完全ポートレス一体型デスクトップアプリ (image-media-viewer.exe)"]
+    subgraph App ["ポートレス一体型アプリ (image-media-viewer)"]
         subgraph UI ["ユーザーインターフェース (WebView2 / React)"]
             Timeline["仮想タイムライン (VirtualTimeline)"]
             Scrubber["高速スクロールバー (TimelineScrubber)"]
@@ -41,7 +41,7 @@ flowchart TD
         subgraph Storage ["データ・ストレージ"]
             DB[("カタログDB (SQLite WALモード)\n%APPDATA%/com.imagemediaviewer.desktop/catalog.db")]
             ThumbDB[("サムネイル専用DB (SQLite WALモード WITHOUT ROWID)\n%LOCALAPPDATA%/com.imagemediaviewer.desktop/thumbnails.db")]
-            OriginalFiles[("元画像ファイル (読み取り専用・完全保護)\nユーザー指定ディレクトリ")]
+            OriginalFiles[("元画像ファイル (読み取り専用保護)\nユーザー指定ディレクトリ")]
             SettingsFile[("アプリ設定 (app_settings.json)\n%APPDATA%/com.imagemediaviewer.desktop/app_settings.json")]
         end
     end
@@ -89,7 +89,7 @@ src/
 │   ├── TimelineGrid/
 │   │   ├── VirtualTimeline.tsx # @tanstack/react-virtual による仮想化タイムライン
 │   │   ├── TimelineToolbar.tsx # 検索、ソート順、グリッドサイズ、しおりボタン
-│   │   ├── TimelineScrubber.tsx# Picasaスタイル縦型スクラブバー（年月・枚数バッジ追従）
+│   │   ├── TimelineScrubber.tsx# 縦型タイムラインスクラブバー（年月・枚数バッジ追従）
 │   │   ├── BookmarkPopover.tsx # しおり保存・一覧ポップオーバー
 │   │   ├── GridCell.tsx        # 各画像セル、多層リトライ、スケルトン表示
 │   │   └── DateHeader.tsx      # 日付（日別）ヘッダーブロック
@@ -165,9 +165,9 @@ src/
   * 各アイテムはマウスドラッグによる自由な移動、右下ハンドルによる直感的なリサイズに対応。
   * 付箋メモはダブルクリックまたはアクションバーから即座にテキスト編集可能（`Ctrl+Enter` で確定）。カラーパレット（イエロー、ブルー、グリーン、ピンク、パープル、ダーク）の切替もワンクリックで反映。
 * **高精度変形操作（回転バグ解消）＆永続化安全ガード**:
-  * **回転ハンドル操作とアクティブRef同期**: 回転操作開始時、`rotatingItemIdRef.current = item.id` を設定し、`useCallback` の古いステート（stale closure）に依存せず常に操作対象の最新IDを参照。未選択の他画像が誤って回転する不具合を根絶。
+  * **回転ハンドル操作とアクティブRef同期**: 回転操作開始時、`rotatingItemIdRef.current = item.id` を設定し、`useCallback` の古いステート（stale closure）に依存せず常に操作対象の最新IDを参照。未選択の他画像が誤って回転する不具合を解消。
   * React の非同期ステートやクロージャ依存による移動先座標・対象IDの取りこぼしを防ぐため、ドラッグ中・リサイズ中の最新座標（`currentNotePosRef`）および対象ID（`draggingNoteIdRef`）を `useRef` でリアルタイム同期。
-  * ウィンドウ外や他UI要素上でマウスボタンを離した場合のドラッグ残留（マウス追従）を根絶するため、グローバルな `window.addEventListener("mouseup")` 安全ガードリスナーを装備。
+  * ウィンドウ外や他UI要素上でマウスボタンを離した場合のドラッグ残留（マウス追従）を防止するため、グローバルな `window.addEventListener("mouseup")` 安全ガードリスナーを装備。
   * テキスト入力中の誤ドラッグ防止（`stopPropagation`）およびブラウザ標準テキスト選択との競合防止制御を実装。
 * **自動並び替え（Row-based Flow Packing）アルゴリズム (`handleAutoArrange`)**:
   * **手動実行トリガー**: ユーザーが意図して重ねたりレイアウトした配置を勝手に破壊しないよう、上部コントロールバーの「📐 自動並び替え」ボタンからのみ明示的に実行。
@@ -177,7 +177,7 @@ src/
   * **行ベース・フロー配置**:
     * アイテム間隔（マージン）を $M = 28\text{px}$、行の最大幅ターゲットを $W_{\max} = 1800\text{px}$ と設定。
     * アイテムを左から右へ順に並べ、現在の行幅 $+ W_k + M > W_{\max}$ となった場合に次行へ折り返し。
-    * 行内の最大高さ $\max(H_{\text{row}})$ にマージンを加算して次の行の Y 座標とし、すべての要素同士の重複（被り）を幾何学的に 100% 排除。
+    * 行内の最大高さ $\max(H_{\text{row}})$ にマージンを加算して次の行の Y 座標とし、すべての要素同士の重複（被り）を幾何学的に排除。
     * 矩形の角の衝突や視認性低下を防ぐため、整列時に回転角（`rotation`）を 0° にリセット。
   * **カメラの自動追従 (Zoom to Fit)**:
     * 全整列要素の外接矩形 $[\min X, \max X] \times [\min Y, \max Y]$ を計算。
@@ -202,12 +202,12 @@ src/
     * 寸法不明時やBMP等の非圧縮ファイル時も適切なフォールバック表示を実施。
 
 ### 2.7 詳細画像ビューアの高品質レンダリング＆ピクセル等倍ズーム設計 (`ImageViewerModal.tsx`, `useViewerGestures.ts`)
-* **速度優先（タイムライン）と品質優先（ビューア）の完全分離**:
+* **速度優先（タイムライン）と品質優先（ビューア）の分離**:
   * タイムライン一覧では、スクロール性能（60fps）と省メモリを最優先し、軽量な WebP サムネイルのみを仮想スクロールで描画。
   * 詳細画像ビューアでは、しっかり鑑賞・確認する用途に特化し、原寸画像ファイル（`/raw/:id`）から同期デコード（`decoding="sync"`）で読み込み、最高品質のバイキュービック補間（`imageRendering: "auto"`）を適用。
-* **真の 100% 原寸ピクセル等倍（1:1 Pixel Scale）アルゴリズム**:
+* **原寸ピクセル等倍（1:1 Pixel Scale）アルゴリズム**:
   * 回転後の実画像寸法（$W, H$）とコンテナ表示寸法（$W_c, H_c$）から、画面フィット時の縮小率 $S_{\text{fit}} = \min(W_c / W, H_c / H)$ を算出。
-  * 原寸 1 ピクセルがディスプレイの 1 ピクセルに完全一致するスケール倍率 $Z_{100\%} = 1.0 / S_{\text{fit}}$ を動的に計算。
+  * 原寸 1 ピクセルがディスプレイの 1 ピクセルに一致するスケール倍率 $Z_{100\%} = 1.0 / S_{\text{fit}}$ を動的に計算。
   * `1` キー押下、上部ツールバーの等倍ボタン、またはダブルクリックにより、瞬時に $Z_{100\%}$（原寸等倍）とフィット表示（$Z=1.0$）をトグル切替。
 * **ハードウェアアクセラレーションと高品質スケーリング**:
   * `translate3d` による 3D GPU 加速レイヤーを適用しつつ、`backfaceVisibility: "hidden"` によりズーム操作時のモアレ・ジャギーやチラつきを抑制。
@@ -236,7 +236,7 @@ src/
        └─ [5] サムネイル未存在の場合:
                ├─ パイプラインへ高優先度 (High) でジョブ投入
                └─ HTTPスレッドは待機せず直ちに「503 Service Unavailable」を返却 (0ms)
-                  （HTTPスレッドは即解放され、次のAPI通信を一切邪魔しない）
+                  （HTTPスレッドは即解放され、次のAPI通信に影響を与えない）
   ```
 
 ### 3.2 高速サムネイル生成パイプライン (`queue.rs`, `thumbnail.rs`)
@@ -254,7 +254,7 @@ src/
        ├─ EXIF解析 (kamadak-exif)
        │   └─ IFD1 に Tag::JPEGInterchangeFormat が存在するか？
        │        ├─ [YES]: 内蔵サムネイルJPEGバイトを抽出
-       │        │         └─ 数MB〜数十MBの元画像フル展開を 100% 回避
+       │        │         └─ 数MB〜数十MBの元画像フル展開を回避
        │        │         └─ 内蔵JPEGを直接デコード・WebP化 (所要時間: 1〜3ms)
        │        └─ [NO]: 元画像全体を制限付きリーダーで安全にデコード (フォールバック)
        │
@@ -465,19 +465,19 @@ flowchart LR
     MainWindow <-->|サムネ・画像取得| CustomProtocol
 ```
 
-### 6.1 完全ポートレス一体化とタスクトレイ常駐制御 (Portless Lifecycle & Tray)
-* **完全ポートレス一体型アーキテクチャ**:
-  * TCP/IPポート（14201 等）を一切開かない完全ポートレス構成を採用。
+### 6.1 ポートレス一体化とタスクトレイ常駐制御 (Portless Lifecycle & Tray)
+* **ポートレス一体型アーキテクチャ**:
+  * TCP/IPポート（14201 等）を開かないポートレス構成を採用。
   * データ通信は Tauri Native IPC（メモリ内メッセージパイプ）、画像・サムネイル配信は内部プロトコル（`thumb://`, `original://`）で直接完結。
   * ポート競合、ファイアウォール警告、およびサーバー・クライアント間の非同期による片肺停止を根本的に解消。
 * **タスクトレイ常駐ライフサイクル**:
   * **デフォルト常駐（ON）**: メインウィンドウの「×」ボタンを押した際、`WindowEvent::CloseRequested` を捕捉して `api.prevent_close()` を実行し、ウィンドウを非表示（Hide）にしてタスクトレイに常駐。
   * **ウィンドウの復元**: タスクトレイアイコンの左クリック、または右クリックメニューの「クライアントを開く」から、非表示中のメインウィンドウを最前面に即座に再表示。
-  * **完全停止**: タスクトレイメニューの「終了」を実行することで、アプリケーション全体を完全停止（`app_handle.exit(0)`）。
+  * **停止**: タスクトレイメニューの「終了」を実行することで、アプリケーション全体を停止（`app_handle.exit(0)`）。
 * **「常駐する」設定メニューと設定の永続化**:
   * タスクトレイ右クリックメニューに「✔ 常駐する」（`CheckMenuItem`）を搭載。初期状態は **ON**。
   * クリックにより ON / OFF を切り替え可能。設定値は `%APPDATA%\com.imagemediaviewer.desktop\app_settings.json` へ自動保存され、次回起動時にも復元。
-  * **OFF の場合**: メインウィンドウの「×」ボタンを押すと、トレイに残らずアプリケーション全体が即座に完全終了。
+  * **OFF の場合**: メインウィンドウの「×」ボタンを押すと、トレイに残らずアプリケーション全体が即座に終了。
 * **トレイ右クリックメニュー構成**:
   * **クライアントを開く**: メインウィンドウを表示・最前面化。
   * **✔ 常駐する**: 常駐モードの有効/無効を切り替え（設定は自動保存）。
@@ -486,14 +486,14 @@ flowchart LR
   * **データフォルダを開く**: カタログDBおよびサムネイルキャッシュのディレクトリをOSファイルマネージャで開く。
   * **ログフォルダを開く**: ログ保存先ディレクトリを開く。
   * ──────────────（セパレータ）
-  * **終了**: アプリケーション全体を完全終了。
+  * **終了**: アプリケーション全体を終了。
 
 ### 6.2 通信状態監視と再接続 (Heartbeat & Multi-platform Recovery)
 * **常時監視**: クライアント上部右側の `ConnectionStatusIndicator` により、定期ハートビート（`/api/heartbeat`）で通信状態を可視化。
 * **多重起動防止型ワンクリック起動**:
   * カスタムプロトコル `imagemediaviewer://launch` のターゲットを、クライアント起動スクリプト（`run.bat`）からサーバー専用ランチャー（`run-server.bat`）へ設定。
-  * `run-server.bat` はリリース版バイナリ（`image-media-viewer.exe`）を優先探索し、`--server-only` 引数を渡して WMI（`Win32_Process.Create`）経由で呼び出し元の親プロセス（ブラウザやシェル等の Job Object）から完全に切り離された独立バックグラウンドプロセスとして起動。
-  * バックエンドバイナリ起動時の無条件クライアント表示呼び出し（`launch_client()`）を NOP 化することで、サーバー起動時に余計な Chrome ウィンドウがもう一つ開いてしまう多重起動問題を完全抑止。すでに開いているクライアント画面のみが自動再接続されてシームレスに継続利用可能。
+  * `run-server.bat` はリリース版バイナリ（`image-media-viewer.exe`）を優先探索し、`--server-only` 引数を渡して WMI（`Win32_Process.Create`）経由で呼び出し元の親プロセス（ブラウザやシェル等の Job Object）から切り離された独立バックグラウンドプロセスとして起動。
+  * バックエンドバイナリ起動時の無条件クライアント表示呼び出し（`launch_client()`）を NOP 化することで、サーバー起動時に余計な Chrome ウィンドウがもう一つ開いてしまう多重起動問題を抑止。すでに開いているクライアント画面のみが自動再接続されてシームレスに継続利用可能。
   * フロントエンドからの呼び出しは、最新の Chromium セキュリティポリシー（iframe からの外部プロトコル遮断）に対応し、トップレベルナビゲーション（`window.location.href = "imagemediaviewer://launch"`）を採用。タイマーと段階的バックオフリトライ（1.2秒、3秒、5秒、7.5秒）により、画面遷移を発生させず接続復旧を待機。
 * **URI プロトコルの自動登録と自己修復**:
   * バックエンド本体（`image-media-viewer.exe`）の初期化エントリポイント（`lib.rs` 内 `ensure_custom_protocol_registered()`）およびデスクトップランチャー（`run.ps1`）の双方に、Windows レジストリ（`HKCU:\Software\Classes\imagemediaviewer`）の自動登録・自己修復ロジックを統合。
@@ -564,7 +564,7 @@ flowchart TD
   * `thumb_status = 1`: 生成完了
   * `thumb_status = 2`: 生成失敗（破損画像、0バイトファイル、未対応動画/特殊形式等）
 * **補充ループ防止**:
-  * `get_pending_thumb_sources` で `thumb_status = 0` のみを抽出対象とし、失敗した画像（`thumb_status = 2`）がキューへ延々と再投入される無限ループを根絶。
+  * `get_pending_thumb_sources` で `thumb_status = 0` のみを抽出対象とし、失敗した画像（`thumb_status = 2`）がキューへ延々と再投入される無限ループを防止。
 * **原因特定・診断UI**:
   * `StatusBar` で「○件完了 / △件失敗」を明確に示し、ワンクリックで `LogViewerModal` を起動。失敗画像のパス・サイズ・形式を確認し、エクスプローラでの直接確認およびワンクリック再試行（リセット＆再スキャン）を実行可能。
 
@@ -577,7 +577,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph IdleDetection ["アイドル監視制御 (watcher.rs)"]
-        IdleCheck{"パイプラインが\n完全アイドルか？"}
+        IdleCheck{"パイプラインが\nアイドルか？"}
         CoolingTimer{"30秒間の\nクーリング経過？"}
         IntervalTimer{"前回の走査から\n5分経過？"}
     end
@@ -620,7 +620,7 @@ flowchart TD
   * 差分走査の間隔を従来の45秒から **5分（300秒）** に拡大。
   * サムネイルパイプラインがアイドルになった後、**30秒間のクーリング期間** を待機してから走査を開始し、ユーザーの連続作業の合間に無駄なI/Oが発生するのを抑制。
 * **Walking フェーズの I/O スロットリング**:
-  * 100ファイル走査するごとに **5ms のスレッド休止** を挿入。ディスクI/Oキューの過熱とCPU 1コア100%張り付きを防ぎ、平均CPU負荷 1〜3% で静かに走査を完了。
+  * 100ファイル走査するごとに **5ms のスレッド休止** を挿入。ディスクI/Oキューの過熱とCPUコアへの負荷集中を防ぎ、平均CPU負荷 1〜3% で静かに走査を完了。
 * **ユーザー最優先の即時中断 (Preemption)**:
   * バックグラウンド走査中、50ファイル毎および各バッチ処理時にパイプラインのアイドル状態を監視。ユーザーがスクロールや画像クリック等を行った場合は、即座に走査を安全中断してCPU・ディスクリソースを最優先でUIへ明け渡す。
 * **Indexing フェーズの負荷分散**:
@@ -632,8 +632,8 @@ flowchart TD
   * 画面外の事前生成（Low 優先度）は、1枚のサムネイル生成完了ごとに **20ms のクーリング休止** を挿入。
   * これにより、何千枚ものサムネイルを連続生成している最中でも、CPU使用率は 10〜15% 程度に抑制され、**ノートPCやデスクトップのCPUファンが唸るのを確実に防止**。
 
-### 8.3 ワーカースレッドの完全アイドル待機 (queue.rs)
-* **無駄な定期起床の根絶**:
+### 8.3 ワーカースレッドのアイドル待機 (queue.rs)
+* **無駄な定期起床の抑止**:
   * キューが空で未生成サムネイルもない定常時、ワーカースレッド群の条件変数タイムアウトを従来の5秒から **60秒** へ延長。
   * 常駐アイドル時のCPU使用率は **0.0%** を維持し、バッテリー消費や発熱を最小限に抑える。
   * 新規画像の追加や表示スクロールが発生した際は、`Condvar::notify_one` / `notify_all` により **0ミリ秒で即座に起床** するため、応答性への悪影響は皆無。
@@ -642,7 +642,7 @@ flowchart TD
 
 ## 9. 多言語対応 (i18n) アーキテクチャ
 
-ImageMediaViewer は、プログラム本体のロジックと言語リソースを完全に分離し、外部ライブラリ（i18next 等）を追加せずに型安全・超軽量・ゼロアロケーションの独自多言語機構を採用しています。
+ImageMediaViewer は、プログラム本体のロジックと言語リソースを分離し、外部ライブラリ（i18next 等）を追加せずに型安全・超軽量・ゼロアロケーションの独自多言語機構を採用しています。
 
 ```mermaid
 flowchart LR
@@ -678,7 +678,7 @@ flowchart LR
 * **ホットパスのゼロアロケーション・性能劣化防止**:
   * タイムライン仮想スクロールグリッド（`GridCell`）等、1秒間に数百回呼び出される可能性のあるホットパスでのオーバーヘッドを徹底排除。
   * `getNestedValue`: ドット区切り文字列（`category.item`）を split 配列生成せず、`indexOf('.')` で直接切り出すゼロヒープアロケーション検索を実装。
-  * 置換パラメータ（`{param}`）が含まれない静的テキストは、正規表現マッチングを完全バイパスして即座に返却。
+  * 置換パラメータ（`{param}`）が含まれない静的テキストは、正規表現マッチングをバイパスして即座に返却。
 * **UI言語切替トグル**:
   * サイドバー下部に「日本語 / English」切り替えUIを常設。LocalStorage およびバックエンド設定へ即時永続化。
 
@@ -695,7 +695,7 @@ flowchart LR
 
 ## 10. モバイル & タッチジェスチャー設計 (Mobile & Touch Gesture Architecture)
 
-Android 実機および Android Studio エミュレータ環境におけるドラッグ・ピンチ・スワイプ等のタッチ操作を完全保証するため、フロントエンドのイベントパイプラインを最新の Web 標準（Pointer Events & Touch Events）へ刷新し、Windows デスクトップ版の操作性を一切損なうことなくマルチプラットフォーム展開を実現しています。
+Android 実機および Android Studio エミュレータ環境におけるドラッグ・ピンチ・スワイプ等のタッチ操作を保証するため、フロントエンドのイベントパイプラインを最新の Web 標準（Pointer Events & Touch Events）へ刷新し、Windows デスクトップ版の操作性を損なうことなくマルチプラットフォーム展開を実現しています。
 
 ```mermaid
 flowchart TD
@@ -740,7 +740,7 @@ flowchart TD
   * `e.currentTarget.setPointerCapture(e.pointerId)` を呼ぶことで、移動中にポインターが要素の枠外へ飛び出しても確実にイベントを追従させ、画面外で指を離した際も確実に完了・位置永続化を実行。
 * **`touch-action: none` の徹底**:
   * ビューア画像領域、ムードボードキャンバス、スクラバー等のドラッグ操作要素に CSS `touch-action: none` を適用。
-  * Android WebView 標準のオーバースクロールやジェスチャーナビゲーション（戻る・進む）によるイベント中断（`pointercancel`）を完全に遮断。
+  * Android WebView 標準のオーバースクロールやジェスチャーナビゲーション（戻る・進む）によるイベント中断（`pointercancel`）を遮断。
 
 ### 10.2 画像ビューアのタッチジェスチャー (`useViewerGestures.ts`, `gestureMath.ts`)
 * **2本指ピンチズーム＆中心点パン**:
@@ -749,7 +749,7 @@ flowchart TD
 * **等倍時の左右フリック／スワイプ送り**:
   * 等倍（`zoom <= 1.05`）表示時は、横スワイプ移動量（`detectSwipeDirection`）を判定し、左右へのフリックで前後の画像へ即座にページ送り。
 * **ダブルタップ等倍トグル**:
-  * 300ms 以内の連続タップを検知し、元画像の解像度に基づいた真の 100% 等倍（1:1 ピクセル）と画面フィットをワンアクションで切り替え。
+  * 300ms 以内の連続タップを検知し、元画像の解像度に基づいた原寸等倍（1:1 ピクセル）と画面フィットをワンアクションで切り替え。
 
 ### 10.3 ムードボードキャンバスのマルチタッチ対応 (`MoodboardCanvas.tsx`)
 * **2本指ピンチによるキャンバスズーム＆パン**:
@@ -771,9 +771,11 @@ flowchart TD
 ## 11. システム最適化およびモバイル・デスクトップ統合設計（Phase 1〜3）
 
 ### 11.1 データベース＆ファイル I/O 最適化 (`migrations.rs`, `repo.rs`, `walker.rs`)
+* **同一ハッシュのサムネイルキャッシュ共有**:
+  * 走査時に計算された `quick_hash` が同一である既存画像が存在する場合、サムネイルBLOBを再生成せず既存キャッシュを参照・共有。重複画像の無駄なデコード・エンコード処理をスキップ。
 * **複合インデックス追加（Migration v7）**:
   * `CREATE INDEX IF NOT EXISTS idx_images_folder_filepath ON images(folder_id, file_path ASC);`
-  * フォルダ内走査時の既存レコード突き合わせおよびパス検索を完全なインデックスシーク化。
+  * フォルダ内走査時の既存レコード突き合わせおよびパス検索をインデックスシーク化。
 * **プリペアドステートメントキャッシュ (`prepare_cached`)**:
   * 頻繁に発行されるタイムライン画像取得、サマリ集計、ボード取得、しおり取得クエリをキャッシュし、SQLパース・コンパイルオーバーヘッドを削減。
 * **ディスク I/O の 1 ハンドル集約**:
@@ -787,46 +789,169 @@ flowchart TD
 ### 11.2 進捗管理とイベント駆動設計 (`state.rs`, `queue.rs`, `useBackendEvents.ts`)
 * **アトミックカウンタによる O(1) 進捗集計**:
   * サムネイルの完了数・失敗数・総数を `AtomicI64`（`thumb_done`, `thumb_failed`, `thumb_total`）で常時管理。
-  * `get_thumb_progress` 呼び出し時の SQLite テーブルフルスキャンを完全撤廃し、O(1) メモリアクセス化。
+  * `get_thumb_progress` 呼び出し時の SQLite テーブルフルスキャンを排除し、O(1) メモリアクセス化。
 * **200ms スロットリングによるイベント通知**:
   * ワーカースレッドがサムネイルを生成するごとに `emit_thumb_progress_throttled` を呼び出し、200ms 間隔または全件完了時のみ `thumb-progress` をフロントエンドへ送出。IPCバスの詰まりを防止。
-* **定周期ポーリングおよび不要ハートビートの完全撤廃**:
-  * クライアントの `useBackendEvents.ts` に存在していた 1.2秒ごとの `getThumbProgress` 定期ポーリングを削除。Tauri イベント駆動へ一本化。
-  * `useWindowState.ts` 内の 2.5秒ごとの HTTP `/api/heartbeat` 送信を削除し、クライアント・サーバー双方の無駄な CPU ウェイクアップを根絶。
+* **定周期ポーリングおよび不要ハートビートの廃止**:
+  * クライアントの `useBackendEvents.ts` に存在していた 1.2秒ごとの `getThumbProgress` 定期ポーリングを削除。Tauri イベント駆動（`scan:progress`, `thumb:progress`, `catalog:changed`）へ一本化。
+  * `useWindowState.ts` 内の 2.5秒ごとの HTTP `/api/heartbeat` 送信を削除し、クライアント・サーバー双方の無駄な CPU ウェイクアップを排除。
 
-### 11.3 仮想スクロール極限最適化 (`VirtualTimeline.tsx`, `usePagedImages.ts`, `useScrollVelocity.ts`)
+### 11.3 仮想スクロール最適化 (`VirtualTimeline.tsx`, `usePagedImages.ts`, `useScrollVelocity.ts`)
 * **仮想スクロール高さスケール圧縮**:
-  * 推定全高が 8,000,000px を超える超巨大ライブラリ（数万〜数十万枚）において、ブラウザの描画・レイアウト限界を超えないよう最大高さ 8,000,000px へのスケール圧縮を適用。
-  * スクロールオフセット（`observeElementOffset` / `scrollToFn`）を実スクロール量と仮想スクロール量の双方向比率マッピングとし、行自体の高さ（`virtualRow.size`）を潰すことなくビューポート相対位置へ正確に配置することで、行同士の重複や空白化を恒久防止。
+  * 推定全高が 8,000,000px を超える超巨大ライブラリ（数万〜数十万枚）において、ブラウザの描画・レイアウト限界を超えないよう最大高さ 8,000,000px へのスケール圧縮（`scaleCompression`）を適用。
+  * スクロールオフセット（`observeElementOffset` / `scrollToFn`）を実スクロール量と仮想スクロール量の双方向比率マッピングとし、行自体の高さ（`virtualRow.size`）を潰すことなくビューポート相対位置へ正確に配置することで、行同士の重複や空白化を防止。
 * **O(1) 日付ヘッダ参照**:
   * `TimelineRow` の `cells` 行に所属日付 `day` を保持させ、現在可視行の特定時に過去数千行を遡る線形探索ループを廃止。O(1) で即座に現在日付ラベルを解決。
 * **`overscan` の最適化**:
   * 事前描画バッファを 12行から 4行へ最適化。レンダリングDOM要素数および画像読込要求数を削減。
 * **共有ページキャッシュ (`usePagedImages.ts`)**:
   * コンポーネント個別インスタンス管理だったページキャッシュをモジュールシングルトンマネージャー（`SharedPageCacheManager`）へ統合。
-  * `VirtualTimeline` でフェッチされたページデータを `TimelineToolbar` や `ImageViewerModal` が即座に参照可能とし、空振りや重複フェッチを完全に解消。
+  * `VirtualTimeline` でフェッチされたページデータを `TimelineToolbar` や `ImageViewerModal` が即座に参照可能とし、空振りや重複フェッチを解消。
 * **スクロール速度監視の 400ms スロットリング (`useScrollVelocity.ts`)**:
   * 800px/s 超過時の `backendApi.clearQueue()` 呼び出しを 400ms スロットルし、高速スクロール中の IPC 乱発を防止。
 
 ### 11.4 モバイル体験強化 (`StatusBar.tsx`, `GridCell.tsx`, `useBackNavigation.ts`, `MoodboardCanvas.tsx`)
+* **Android 13+ (API 33+) メディア権限対応**:
+  * Android 13以降で変更された細分化パーミッション（`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`）を AndroidManifest に宣言し、安全な画像アクセスを実現。
 * **初期セルサイズとステータスバー列数調整**:
   * モバイル環境での初期セルサイズを 96px に設定（3〜4列の適正密度を自動確保）。
   * コンパクト画面（`isCompact`）時、下部ステータスバーに縮小・拡大（列数増減）ボタンを常設し、多言語対応ツールチップを提供。
 * **タッチ長押し（500ms）複数選択 (`GridCell.tsx`)**:
   * タッチデバイスにおいて 500ms の長押しで複数選択モードへ直感的に移行。誤操作防止のため移動距離 > 10px でキャンセル。バイブレーション連動。
 * **Android 戻るボタン階層ナビゲーション (`useBackNavigation.ts`)**:
-  * `window.history` / `popstate` とストア状態を連動させ、最上位ダイアログ（Log / AddToBoard）→ ビューア → 複数選択解除 → ムードボードからタイムラインへ復帰 → モバイルサイドバー閉の優先順序で安全に 1段ずつ戻すUXを実現。UIボタンによるクローズ時も履歴スタックと完全同期。
+  * `window.history` / `popstate` とストア状態を連動させ、最上位ダイアログ（Log / AddToBoard）→ ビューア → 複数選択解除 → ムードボードからタイムラインへ復帰 → モバイルサイドバー閉の優先順序で安全に 1段ずつ戻すUXを実現。UIボタンによるクローズ時も履歴スタックと同期。
 * **ムードボード LOD (Level of Detail) 制御 (`MoodboardCanvas.tsx`)**:
-  * 俯瞰表示時は軽量なサムネイル（`thumbUrl`）を表示し、選択時、クロップ時、または実効表示サイズが大きい場合のみ高解像度元画像（`rawSrc`）をロード。大量画像配置時のメモリ枯渇を防止。
+  * 俯瞰表示時は軽量なサムネイル（`thumbUrl`）を表示し、選択時、クロップ時、または実効表示サイズが大きい場合のみ高解像度元画像（`rawSrc`）をロード。大量画像配置時のメモリ消費を抑制。
 
 ### 11.5 クロスプラットフォーム・ビルド整合性とリンカー設計 (`build.rs`, `scripts/build-android.mjs`, `scripts/clean-target-readonly.mjs`)
 * **ビルドスクリプト（`build.rs`）におけるターゲットOS/環境の動的検証**:
   * Windowsホスト環境上で Android ターゲット（`aarch64-linux-android` 等）向けクロスコンパイルを行う場合、ホストOSではなくターゲット環境変数 `CARGO_CFG_TARGET_OS`（`windows`）および `CARGO_CFG_TARGET_ENV`（`msvc`）を動的に判定。
-  * Android NDK Clang リンカー等の非MSVCツールチェーンに対して不要または不正なリンカー引数が渡されるのを完全に隔離・抑止。
+  * Android NDK Clang リンカー等の非MSVCツールチェーンに対して不要または不正なリンカー引数が渡されるのを隔離・防止。
 * **Windows NTFS ReadOnly 属性自動解除パイプライン (`scripts/clean-target-readonly.mjs`)**:
   * Windows 環境において `src-tauri/target` や `CARGO_TARGET_DIR`、Android `app/build` 配下のディレクトリに NTFS ReadOnly 属性が付加された場合、Cargo 内部の `autocfg` 等が `output path is not a writable directory` でパニックを起こし終了コード 101 でビルドが停止する。
   * これを根本から予防するため、高速・確実な native コマンド `cmd /c attrib -r /s /d` を用いた一括解除スクリプト（`scripts/clean-target-readonly.mjs`）を新設。
   * `package.json` の `prebuild:installer` / `pretauri:build` フック、および `scripts/build-android.mjs` のビルド開始・ターゲット設定直後の各ポイントで自動実行するようパイプラインを統合。
-* **ビルドパイプラインの二重検証保証**:
-  * **Windows Installer**: `npm run build:installer`（`tauri build`）により MSI および NSIS インストーラーが正常生成されることを保証。
-  * **Android Release**: `npm run build:android:release`（`scripts/build-android.mjs --release`）により、NDK Clang ツールチェーンおよび Gradle による Universal Release APK（`app-universal-release.apk`）が正常生成されることを保証。
+* **ビルドパイプラインの検証**:
+  * **Windows Installer**: `npm run build:installer`（`tauri build`）により MSI および NSIS インストーラーが正常生成されることを確認。
+  * **Android Release**: `npm run build:android:release`（`scripts/build-android.mjs --release`）により、NDK Clang ツールチェーンおよび Gradle による Universal Release APK（`app-universal-release.apk`）が正常生成されることを確認。
+
+---
+
+## 12. プラグインアーキテクチャおよび機能拡張設計
+
+### 12.1 バックエンド・完全分離型動的プラグインランタイム機構 (`src-tauri/src/plugins/`)
+* **動機と本体からの完全分離・独立バイナリ化**:
+  * 独自バイナリ画像形式や専門ソフトウェア形式（CLIP STUDIO PAINT 等）のデコード・抽出ロジックを本体コードに統合・ハードコードすると、フォーマットの追加や修正のたびにアプリ本体全体の再コンパイル（`cargo build`）が必要となる。
+  * これを抜本的に解決するため、特定形式のデコード・抽出ロジック（SQLite 解析等）を本体コアから完全に撤廃し、**独立バイナリ（C-ABI動的ライブラリ `cdylib` および独立実行バイナリ `bin`）として完全分離**。
+  * マニフェストファイル（`plugin.json`）と独立バイナリを配置するだけで、本体の再ビルドを一切行うことなく動的ロード・実行できるアーキテクチャを確立。
+* **マニフェスト（`plugin.json`）駆動の画像抽出エンジン (`plugins/extractor.rs`, `plugins/runtime.rs`)**:
+  * `binary`: 独立ビルドされた動的ライブラリ（`cdylib`）または独立実行CLIバイナリ（`bin`）をロード・実行する抽出器。
+    * **C-ABI 動的呼び出し (`libloading`)**: プラットフォーム固有ライブラリ（`.dll` / `.so` / `.dylib`）を動的ロードし、エクスポート関数（`imv_plugin_init`, `imv_plugin_extract_metadata`, `imv_plugin_extract_preview`, `imv_plugin_free_buffer`）をインメモリで高速直接呼び出し。
+    * **独立CLIプロセスフォールバック**: C-ABI ロード失敗時や別プロセス分離実行環境において、CLIコマンド（`metadata`, `preview-pipe`）へフェイルセーフに自動フォールバック。
+  * `binary_slice`: ヘッダやシグネチャ（16進文字列またはASCII）による画像バイナリ切り出し。
+  * `command`: 外部ツールやスクリプト（`tools/xxx.exe "{input}" "{output}"` 等）を実行してサムネイル・プレビューを抽出。
+* **スキャナーの動的走査拡張と確実なインデックス合流**:
+  * **網羅的探索パス (`get_plugin_search_dirs`)**:
+    * 実行ファイル直下（`<exe_dir>/plugins`）、Tauriリソース配下（`<exe_dir>/../plugins`）、開発環境（`CARGO_MANIFEST_DIR/../plugins`）、ユーザーデータディレクトリ（`%APPDATA%/.../plugins/`）を網羅的に探索。
+  * **優先順位制御**: ユーザーデータディレクトリの定義が最も高い優先度を持ち、同IDのプラグインが存在する場合はユーザー定義が同梱定義をオーバーライド。
+  * **マニフェスト保護**: ファイルサイズ上限（5MB）によるメモリ保護および構文エラー時の警告ログ出力を完備。
+  * **設定マイグレーション**: 既存 `app_settings.json` の `enabled_plugins` が空配列の場合、既定のプラグインIDリストを自動補完し、プラグイン拡張子が無効化されるトラブルを恒久防止。
+  * **監視起点ディレクトリ除外バグの根本修正 (`walker.rs`)**:
+    * `WalkDir` 走査において、走査起点フォルダ（`entry.depth() == 0`）がドット始まり（例: `.tmpXXXX` 等）の場合に `filter_entry` で監視ルート全体がスキップされる不具合を修正し、起点フォルダは常に走査を継続するよう保護。
+  * **起動時自動差分走査**:
+    * アプリケーション起動時のセットアップフックにおいて、全監視フォルダに対する差分走査を非同期バックグラウンド実行。プラグイン追加後に取り込まれた新規拡張子ファイルも即座にDBインデックスへ反映。
+* **スレッドセーフな動的レジストリ (`plugins/format.rs`)**:
+  * `FormatPluginRegistry` の内部状態を `RwLock` で保護し、アプリケーション実行中のプラグインリロードや並列スキャン・サムネイル生成時の安全な参照を保証。
+
+### 12.2 ClipStudio形式等の完全独立プラグイン化 (`plugins-src/clipstudio/`, `plugins/clipstudio/`)
+* **独立クレートとしての切り離し**:
+  * CLIP STUDIO PAINT（`.clip`）の抽出ロジックを独立クレート `plugins-src/clipstudio` に完全移行。
+  * `CSFCHUNK` ヘッダ検証、`CHNKSQLi` チャンクからの SQLite クエリ実行（`SELECT ImageData FROM CanvasPreview`）、破損時バイナリシグネチャ探索、IHDR チャンクによる高速 O(1) 寸法取得、WebP/PNG エンコードをプラグイン側で完結。
+* **C-ABI および CLI 独立実行のデュアル出力**:
+  * `crate-type = ["cdylib", "rlib"]` と `[[bin]] name = "clipstudio_plugin"` を併用し、1回のビルドで動的ライブラリ（`imv_clipstudio.dll`）と CLI 実行ファイル（`clipstudio_plugin.exe`）を同時生成。
+  * `scripts/build-plugins.mjs` による自動リリースビルド＆配置スクリプトを整備し、`npm run build:plugins`, `npm run build:installer`, `npm run tauri:build` に自動統合。
+* **マニフェスト定義による抽出ルールとアクションの統合**:
+  * `plugin.json` にて `type: "binary"` を指定し、プラットフォーム別ライブラリ・実行バイナリパスを宣言。
+  * 実アクセス時更新検知（`original://`）時もプラグインレジストリを通じたメタデータ再抽出を行い、ファイルの最新状態を維持。
+  * 右クリックメニューアクション（`action.open_clip_studio`）も `plugin.json` の `actions` 配列に宣言的に定義され、汎用アクションランタイム（`commands::execute_plugin_action`）を通じて実行。
+
+### 12.3 ビューワ左右ナビゲーション改善 (`ImageViewerModal.tsx`)
+* **没入感保護と直感的ナビゲーションの両立**:
+  * 原寸画像鑑賞時の没入感を損なわないよう、通常時は前へ・次へボタン（◀ / ▶）を不可視（`opacity-0`）に設定。
+  * 画面左端および右端の領域をホバー検知エリア（`group`）として配置し、マウスカーソルが接近した際のみスムーズに半透明ボタン（`opacity-70 group-hover:opacity-100`）がフェードイン表示。
+* **検知エリア全体のクリック連動とズーム時非干渉制御**:
+  * 小さな矢印ボタンを正確にクリックしなくても、画面左右端の検知エリアをクリックするだけで前後の画像へ即座にページ送り（`handlePrev` / `handleNext`）を実行。
+  * 拡大表示中（`transform.zoom > 1.05`）は画像細部のパン（ドラッグ移動）やダブルタップ操作を阻害しないよう、検知エリアを自動で非表示・非活性化し、誤操作を防止。
+
+### 12.4 カスタムコンテキストメニューおよび外部アプリ連携 (`ContextMenu.tsx`, `ContextMenuSettingsModal.tsx`, `plugins/actions/`)
+* **動的アクションプラグイン機構**:
+  * フロントエンド側のアクションを `ContextMenuActionPlugin`（`id`, `label`, `icon`, `order`, `isAvailable`, `execute`）として抽象化。
+  * マニフェスト（`plugin.json`）で定義されたアクションを `backendApi.getPluginActions()` 経由で取得し、`ContextMenuRegistry.loadPluginActions` により動的登録。
+  * 有効化設定（`enabled_plugins`）および現在の画像詳細（拡張子・MIME）に基づいて表示すべき項目を動的フィルタリング・ソート。
+* **安全なフローティングメニューレンダリング**:
+  * クリック位置 `(x, y)` を起点としつつ、画面右端・下端の境界（`window.innerWidth`, `window.innerHeight`）を検知してメニュー全体が画面外へ突き出ないよう動的にクランプ補正。
+  * 外部クリック（`mousedown`）および `Escape` キー押下による自動クローズリスナーを完備。
+* **ユーザー定義外部アプリ設定モーダル (`ContextMenuSettingsModal.tsx`)**:
+  * アプリ名、実行ファイルパス、引数テンプレート（`{path}` 置換）、対象拡張子リスト（カンマ区切り）を GUI から追加・編集・削除可能。
+  * 変更内容は即座に `backendApi.saveAppSettings` を通じて `app_settings.json` へ永続化。
+* **環境非依存・モバイル互換原則（最重要設計）**:
+  * **初期設定の環境独立性**: 設定構造体 `AppSettings` の `custom_context_menu_items` 初期値は空配列 `[]` とし、Windows固有パス（`mspaint.exe` 等）などの特定OS依存値をハードコード・プリセットしない。
+  * **プラットフォーム抽象化レイヤー**:
+    * デスクトップ環境では `trash` クレイトによる OS ごみ箱移動および `std::process::Command` によるコマンド起動を実行（引用符除去や引数分割も安全に処理）。
+    * モバイル（Android）環境では外部プロセスコマンド起動を行わず、OS標準共有インテント（`tauri_plugin_opener`）および標準ファイル削除へ自動フォールバック。
+    * デスクトップ・モバイル双方のビルド（NSIS インストーラーおよび Android Release APK）において安定したクロスプラットフォーム互換性を維持。
+
+### 12.5 インストーラー配布パッケージおよびプラグイン同梱構成 (`tauri.conf.json`, `plugins/`)
+* **動機と背景**:
+  * NSIS / MSI インストーラーを用いてアプリケーションをインストールした環境において、プラグイン機能の存在や拡張手順、設定サンプルが直感的に確認・参照できるようにするため、配布パッケージ直下にプラグインガイドおよび標準プラグイン一式を同梱。
+* **リソースバンドルマッピング (`tauri.conf.json`)**:
+  * `bundle.resources` に `"../plugins": "plugins"` を定義。
+  * インストール時、アプリケーション実行ファイル（`image-media-viewer.exe`）と同じインストールルート（例: `C:\Program Files\ImageMediaViewer\plugins\`）に `plugins` ディレクトリを直接展開。
+* **同梱配布物の構成**:
+  * `plugins/README.md`: 再ビルド不要の動的プラグインランタイム仕様、マニフェスト（`plugin.json`）の記法、抽出エンジン仕様、および拡張手順を解説した日本語ドキュメント。
+  * `plugins/clipstudio/plugin.json`: 標準同梱の CLIP STUDIO PAINT (.clip) フォーマット対応マニフェスト（SQLiteクエリ抽出およびアプリ連携アクション）。
+  * `plugins/sample_format/plugin.json`: ユーザー独自フォーマット追加用のサンプルマニフェスト（バイナリスライス抽出）。
+  * `plugins/app_settings.sample.json`: プラグイン有効化設定（`enabled_plugins`）、タスクトレイ常駐、言語設定、およびカスタムコンテキストメニュー設定例を含む設定ファイルサンプル。
+  * `plugins/action_plugins/custom_action_sample.json`: ペイントソフトや外部ビューワ等の外部ツール連携をコンテキストメニューに登録するための設定サンプル。
+* **安全性と設定ファイル分離**:
+  * 同梱のサンプルファイルは閲覧・学習用のリファレンスとして提供し、ユーザーの実環境設定（`%APPDATA%\com.imagemediaviewer.desktop\app_settings.json`）とは物理的に分離。
+  * アプリケーション本体は `%APPDATA%` 側のユーザー設定のみを参照・変更するため、アップデート時にもユーザーの個人設定が上書き・初期化されるリスクを防止。
+
+---
+
+## 13. 全プラットフォーム共通・独立外部バイナリプラグインアーキテクチャ
+
+### 13.1 背景と設計原則（本体コアの純化）
+* **特定独自形式コードの本体からの完全排除**:
+  * CLIP STUDIO PAINT（.clip）をはじめとする各種独自プロプライエタリ形式のデコード処理、SQLite BLOB走査、バイナリスライス処理などの個別ロジックを、本体コア（`src-tauri`）から完全に分離。
+  * 本体コアはフォーマット固有の知識を一切持たない「純粋なプラグインホスト」に徹し、コードベースの肥大化と特定形式への依存を恒久的に防止。
+* **フォールバック依存の排除と外部バイナリへの完全統一**:
+  * モバイル環境（Android）を含むすべてのOSにおいて、本体組み込みの個別フォールバックを排し、独立した共有ライブラリ（`cdylib`）を外部から動的ロード・実行する単一アーキテクチャに統一。
+
+### 13.2 プラットフォーム別バイナリ設定 (`PlatformBinaryConfig`)
+* **OS別マッピングと自動解決**:
+  * `src-tauri/src/plugins/manifest.rs` の `PlatformBinaryConfig::PerPlatform` に `android: Option<String>` を追加。
+  * `target_os = "android"` の場合、`android` 設定値を最優先し、未定義時は `linux` → `default` へフォールバック解決。
+* **各プラットフォームのバイナリ形式**:
+  * **Windows**: `imv_clipstudio.dll`（C-ABI cdylib） / `clipstudio_plugin.exe`（CLI）
+  * **Linux**: `libimv_clipstudio.so`（C-ABI cdylib） / `clipstudio_plugin`（CLI）
+  * **macOS**: `libimv_clipstudio.dylib`（C-ABI cdylib） / `clipstudio_plugin`（CLI）
+  * **Android**: `libimv_clipstudio.so`（C-ABI cdylib）
+
+### 13.3 Android における C-ABI 動的ライブラリロードおよびマニフェスト展開機構 (`extractor.rs`, `MainActivity.kt`)
+* **Bionic `dlopen` / `libloading` の有効化**:
+  * 動的ライブラリロード処理のコンパイル条件を `#[cfg(not(target_os = "ios"))]` に統一し、Android 環境でも高速なインメモリ C-ABI 呼び出しを有効化。
+* **APK ネイティブライブラリパス解決 (W^X セキュリティ準拠)**:
+  * Android 10+（API 29+）ではアプリ内部書き込み可能ストレージ（`filesDir` 等）からの `dlopen` が OS レベルでブロックされるため、`BinaryPluginHost` は `target_os = "android"` においてライブラリ名単体（例: `libimv_clipstudio.so`）によるシステムライブラリ検索パス（Bionic linker による `nativeLibraryDir` 探索）からの直接ロードを最優先で試行。
+* **マニフェスト自動展開機構 (`MainActivity.kt` `extractAssetsPlugins`)**:
+  * Android の APK 内 `assets/plugins` は圧縮アーカイブ内に存在し標準の `std::fs::read_dir` から直接アクセスできないため、アプリ起動時（`onCreate`）に `assets/plugins` 内のマニフェスト（`plugin.json` 等）を `filesDir/plugins` へ自動展開。ネイティブバイナリ（`.so`）は jniLibs から OS が直接ロードするため、展開対象から除外して内部ストレージの無駄な消費を抑止。
+
+### 13.4 自動クロスコンパイルおよびビルドスクリプト連携
+* **NDK Clang クロスコンパイル (`scripts/build-plugins.mjs`)**:
+  * Android NDK の LLVM ツールチェーンを自動探索し、ターゲットアーキテクチャ（`aarch64-linux-android`, `x86_64-linux-android` 等）に応じた Clang コンパイラ、リンカー、AR ツールを特定。
+  * `plugins-src/clipstudio` を `cargo build --package imv-plugin-clipstudio --target <target> --release` でコンパイル（`--target all` で全アーキテクチャ一括ビルドにも対応）。
+* **APK 自動同梱連携 (`scripts/build-android.mjs`)**:
+  * `npm run build:android:release` の実行時、Tauri CLI 呼び出しの直前に `buildAndroidPlugins()` を自動トリガー。
+  * 生成された `libimv_clipstudio.so` を `src-tauri/gen/android/app/src/main/jniLibs/<abi>/libimv_clipstudio.so` へ自動配置。
+  * Gradle assemble 時に `jniLibs` 配下の共有ライブラリが APK 内の `lib/<abi>/` へ自動同梱され、ビルド完了時に `jar tf` を用いて JNI `.so` および assets マニフェストの双方の同梱検証ログを出力。
+

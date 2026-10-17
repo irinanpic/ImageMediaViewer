@@ -97,7 +97,7 @@ fn try_extract_exif_thumbnail(source_path: &Path) -> Option<Vec<u8>> {
 /// @param img デコード済み画像
 /// @param orientation Exif Orientation (1-8)
 /// @return WebPバイナリデータ
-fn resize_and_encode_webp(img: DynamicImage, orientation: u32) -> Result<webp::WebPMemory, String> {
+pub fn resize_and_encode_webp(img: DynamicImage, orientation: u32) -> Result<webp::WebPMemory, String> {
     let oriented_img = apply_orientation(img, orientation);
     let (w, h) = oriented_img.dimensions();
 
@@ -154,7 +154,7 @@ fn save_webp_atomically(
 /// 単一画像のサムネイル WebP バイナリデータを生成する（メモリ上に直接生成）
 ///
 /// 変更理由: SQLite BLOB（thumbnails.db）への直接格納を可能にし、
-/// ファイルシステムの I/O オーバーヘッドを完全排除するため。
+/// ファイルシステムの I/O オーバーヘッドを抑止するため。
 /// EXIF内蔵サムネイルを最優先で検出し、元画像のフルサイズ展開をスキップすることで
 /// 巨大画像であっても数ミリ秒でWebPを生成可能にする。
 ///
@@ -166,7 +166,7 @@ pub fn generate_thumbnail_bytes(
     orientation: u32,
 ) -> Result<Vec<u8>, String> {
     // 1. 高速化最優先: EXIF埋め込みサムネイルの抽出を試みる
-    // デジタルカメラ等の撮影データは数MB〜数十MBの元画像フル展開を完全にスキップ可能
+    // デジタルカメラ等の撮影データは数MB〜数十MBの元画像フル展開をスキップ可能
     if let Some(embedded_bytes) = try_extract_exif_thumbnail(source_path) {
         if let Ok(img) = image::load_from_memory(&embedded_bytes) {
             let (ew, eh) = img.dimensions();

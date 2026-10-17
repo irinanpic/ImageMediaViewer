@@ -108,7 +108,7 @@ struct QueueState {
 /// サムネイル生成ワーカースレッド群および優先度付きキュー
 ///
 /// 変更理由: 仕様書§7「優先度付きキュー + ワーカーstd::thread×N + メモリ予算」に準拠しつつ、
-/// Picasa並みの体感速度のため以下を追加:
+/// 高速な体感速度を実現するため以下を追加:
 /// - 表示範囲の世代管理により「今見えている範囲」を常に最優先（LIFO）で処理
 /// - スクロールで画面外に流れた古い要求は破棄し、無駄な生成でワーカーを塞がない
 /// - キューが空いたらDBから未生成分を自動補充し、全件を事前生成しておく
@@ -205,6 +205,11 @@ impl ThumbnailPipeline {
         }
     }
 
+    /// AppState への参照を取得するヘルパー
+    fn get_app_state(&self) -> Option<std::sync::Arc<crate::state::AppState>> {
+        self.app_state.read().ok()?.as_ref()?.upgrade()
+    }
+
     /// ジョブを内部キューに投入する（ロック取得済み前提）
     ///
     /// 同一IDが既に同等以上の優先度・世代でキューにあれば投入しない。
@@ -288,7 +293,7 @@ impl ThumbnailPipeline {
         }
     }
 
-    /// 表示範囲（ビューポート）を更新し、現画面のサムネイル生成に完全に仕切り直す
+    /// 表示範囲（ビューポート）を更新し、現画面のサムネイル生成に仕切り直す
     ///
     /// 変更理由: ユーザー要求「激しく動かすのを止めた場合でも復帰が遅い。溜まってしまった場合は状況に関係なく一度クリアして現在位置での読込みから再開する」。
     /// 画面外に流れた過去ジョブを待機者（waiters）ごと即座に破棄・失敗解放し、ブロックされていたHTTPワーカースレッドを一瞬で解放して現画面に専任させる。
@@ -348,7 +353,7 @@ impl ThumbnailPipeline {
         generation
     }
 
-    /// キュー内の未処理ジョブおよび待機者を状況に関係なく完全に一掃クリアする
+    /// キュー内の未処理ジョブおよび待機者を一括クリアする
     ///
     /// 変更理由: ユーザー要求「溜まってしまった場合は状況に関係なく一度クリアして現在位置での読込みから再開する」
     pub fn clear_queue(&self) -> u64 {
@@ -586,7 +591,7 @@ impl ThumbnailPipeline {
             }
 
             // 新しいジョブの到着、またはバックグラウンド枠の空きを待つ
-            // ヒープが空で未生成ジョブもない場合は、無駄な定期起床・DB負荷を防ぐため60秒間完全に静止待機
+            // ヒープが空で未生成ジョブもない場合は、無駄な定期起床・DB負荷を防ぐため60秒間静止待機
             let timeout = if heap_empty {
                 Duration::from_secs(60)
             } else {
@@ -671,9 +676,19 @@ impl ThumbnailPipeline {
             return Err("Memory budget not acquired".to_string());
         }
 
-        let result = generate_thumbnail_bytes(&job.file_path, job.orientation);
+        let result = if let Some(state) = self.get_app_state() {
+            let ext = job.file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+                plugin.generate_thumbnail(&job.file_path, job.orientation)
+            } else {
+                generate_thumbnail_bytes(&job.file_path, job.orientation).map_err(|e| e.to_string())
+            }
+        } else {
+            generate_thumbnail_bytes(&job.file_path, job.orientation).map_err(|e| e.to_string())
+        };
+
         self.memory_budget_bytes.fetch_sub(est_bytes, AtomicOrdering::SeqCst);
-        result.map_err(|e| e.to_string())
+        result
     }
 
     /// ワーカースレッドのメインループ

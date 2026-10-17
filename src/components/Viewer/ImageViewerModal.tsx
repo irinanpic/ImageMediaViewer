@@ -27,6 +27,7 @@ export const ImageViewerModal: React.FC = () => {
   const transform = useAppStore((state) => state.transform);
   const totalImages = useAppStore((state) => state.totalImages);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
+  const openContextMenu = useAppStore((state) => state.openContextMenu);
 
   const closeViewer = useAppStore((state) => state.closeViewer);
   const setViewerIndex = useAppStore((state) => state.setViewerIndex);
@@ -72,7 +73,7 @@ export const ImageViewerModal: React.FC = () => {
     onPrev: handlePrev,
   });
 
-  // 回転後の元画像解像度とコンテナ寸法から真の100%原寸ピクセル等倍（1:1）ズーム率を算出
+  // 回転後の元画像解像度とコンテナ寸法から原寸ピクセル等倍（1:1）ズーム率を算出
   // 変更理由: フィット表示（縮小）から元画像の本来のピクセル解像度で細部をクリアに確認できるようにするため
   const get100PercentZoom = (): number => {
     const el = containerRef.current;
@@ -96,6 +97,19 @@ export const ImageViewerModal: React.FC = () => {
 
   // 現在の画像レコード取得
   const currentRecord = activeImageIndex !== null ? getImageByIndex(activeImageIndex) : null;
+
+  // 右クリック時のコンテキストメニュー起動
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (currentRecord) {
+      openContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        record: currentRecord,
+      });
+    }
+  };
 
   // 画像切り替え時に詳細メタデータを取得
   useEffect(() => {
@@ -318,6 +332,7 @@ export const ImageViewerModal: React.FC = () => {
       {/* メイン画像領域 */}
       <div
         ref={containerRef}
+        onContextMenu={handleContextMenu}
         style={{ touchAction: "none" }}
         className="flex-1 relative overflow-hidden flex items-center justify-center cursor-grab"
       >
@@ -349,25 +364,52 @@ export const ImageViewerModal: React.FC = () => {
           />
         )}
 
-
-        {/* 前後ボタン */}
-        {activeImageIndex !== null && activeImageIndex > 0 && (
-          <button
-            onClick={handlePrev}
-            style={{ left: "calc(1rem + var(--sal))" }}
-            className="absolute top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
+        {/* 左端ナビゲーションホバー＆クリック連動領域（拡大表示中はパン操作を妨げないよう非活性化） */}
+        {activeImageIndex !== null && activeImageIndex > 0 && transform.zoom <= 1.05 && (
+          <div
+            onClick={() => {
+              if (transform.zoom <= 1.05) {
+                handlePrev();
+              }
+            }}
+            style={{ left: "var(--sal)" }}
+            className="absolute left-0 top-0 bottom-0 w-20 md:w-28 z-20 flex items-center justify-start pl-4 group cursor-pointer select-none"
+            title={t("viewer.prevTooltip")}
           >
-            <ChevronLeft className="w-6 h-6" />
-          </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handlePrev();
+              }}
+              className="p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition-opacity duration-200 opacity-0 group-hover:opacity-100 backdrop-blur pointer-events-auto"
+            >
+              <ChevronLeft className="w-6 h-6" />
+            </button>
+          </div>
         )}
-        {activeImageIndex !== null && activeImageIndex < totalImages - 1 && (
-          <button
-            onClick={handleNext}
-            style={{ right: "calc(1rem + var(--sar))" }}
-            className="absolute top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur z-10"
+
+        {/* 右端ナビゲーションホバー＆クリック連動領域（拡大表示中はパン操作を妨げないよう非活性化） */}
+        {activeImageIndex !== null && activeImageIndex < totalImages - 1 && transform.zoom <= 1.05 && (
+          <div
+            onClick={() => {
+              if (transform.zoom <= 1.05) {
+                handleNext();
+              }
+            }}
+            style={{ right: "var(--sar)" }}
+            className="absolute right-0 top-0 bottom-0 w-20 md:w-28 z-20 flex items-center justify-end pr-4 group cursor-pointer select-none"
+            title={t("viewer.nextTooltip")}
           >
-            <ChevronRight className="w-6 h-6" />
-          </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleNext();
+              }}
+              className="p-3 bg-black/50 hover:bg-black/80 text-white rounded-full transition-opacity duration-200 opacity-0 group-hover:opacity-100 backdrop-blur pointer-events-auto"
+            >
+              <ChevronRight className="w-6 h-6" />
+            </button>
+          </div>
         )}
       </div>
 

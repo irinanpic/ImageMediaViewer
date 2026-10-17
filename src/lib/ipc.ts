@@ -21,11 +21,12 @@ import type {
   UpdateBoardPayload,
 } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
+import type { PluginActionDefinition } from "../types/generated/PluginActionDefinition";
 /**
  * Tauri ネイティブ IPC を呼び出す型安全ラッパー関数
  *
- * 変更理由: TCP/IPポートを一切使用しない完全ポートレス一体型アーキテクチャ。
- * Tauri Native IPC（メモリ内メッセージパイプ）により、ポート競合リスクゼロで
+ * 変更理由: TCP/IPポートを使用しないポートレス一体型アーキテクチャ。
+ * Tauri Native IPC（メモリ内メッセージパイプ）により、ポート競合を回避して
  * 高速かつ型安全にRustバックエンドと通信する。
  *
  * @param command コマンド名
@@ -330,5 +331,80 @@ export const backendApi = {
    */
   requestStoragePermissions: (): Promise<boolean> =>
     callIpc<boolean>("request_storage_permissions"),
+
+  /**
+   * ファイルをOS既定の関連付けアプリケーションで開く
+   * @param params id または path
+   */
+  openFileWithDefaultApp: (params: { id?: number; path?: string }): Promise<void> =>
+    callIpc<void>("open_file_with_default_app", params),
+
+  /**
+   * ファイルをOSのファイルマネージャー（エクスプローラー等）で表示
+   * @param params id または path
+   */
+  showInFolder: (params: { id?: number; path?: string }): Promise<void> =>
+    callIpc<void>("show_in_folder", params),
+
+  /**
+   * CLIP STUDIO PAINT で .clip ファイルを開く
+   * @param params id または path
+   */
+  openInClipStudio: (params: { id?: number; path?: string }): Promise<void> =>
+    callIpc<void>("open_in_clip_studio", params),
+
+  /**
+   * ユーザー登録された外部アプリケーションでファイルを開く
+   * @param params 実行ファイルパス、引数、ファイルパスまたはID
+   */
+  openFileWithApp: (params: {
+    appPath: string;
+    args?: string[];
+    id?: number;
+    filePath?: string;
+  }): Promise<void> =>
+    callIpc<void>("open_file_with_app", {
+      appPath: params.appPath,
+      args: params.args,
+      id: params.id,
+      filePath: params.filePath,
+    }),
+
+  /**
+   * ファイルをゴミ箱（リサイクルビン）へ移動し、カタログおよびキャッシュから削除
+   * @param imageId 画像ID
+   */
+  trashFile: (imageId: number): Promise<void> =>
+    callIpc<void>("trash_file", { imageId }),
+
+  /**
+   * アプリケーション全般の設定を取得
+   */
+  getAppSettings: (): Promise<import("../types/settings").AppSettings> =>
+    callIpc<import("../types/settings").AppSettings>("get_app_settings"),
+
+  /**
+   * アプリケーション全般の設定を保存
+   * @param settings 保存する設定オブジェクト
+   */
+  saveAppSettings: (settings: import("../types/settings").AppSettings): Promise<void> =>
+    callIpc<void>("save_app_settings", { settings }),
+
+  /**
+   * プラグインが提供するコンテキストメニューアクション一覧を取得
+   */
+  getPluginActions: (): Promise<PluginActionDefinition[]> =>
+    callIpc<PluginActionDefinition[]>("get_plugin_actions"),
+
+  /**
+   * プラグインアクションを実行
+   * @param params アクションID、画像ID、またはファイルパス
+   */
+  executePluginAction: (params: {
+    actionId: string;
+    id?: number;
+    path?: string;
+  }): Promise<void> =>
+    callIpc<void>("execute_plugin_action", params),
 };
 
