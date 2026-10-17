@@ -6,9 +6,37 @@ import type { PluginActionDefinition } from "../../types/generated/PluginActionD
 import { backendApi } from "../../lib/ipc";
 
 /**
+ * 指定されたプラグインIDまたはアクションIDが有効化パターンリストに合致するか判定する
+ *
+ * 変更理由: 特定プラグイン名への依存や複雑な正規表現によるヒューリスティック判定を廃止し、
+ * 完全一致、ワイルドカード（"*", "prefix*"）、および明示的無効化（"!id"）のみでクリーンに判定するため。
+ *
+ * @param id 判定対象のプラグインIDまたはアクションID
+ * @param enabledPlugins 有効化プラグインパターン配列
+ * @returns 有効であれば true
+ */
+export function isPluginIdEnabled(id: string, enabledPlugins: string[]): boolean {
+  if (enabledPlugins.includes(`!${id}`)) {
+    return false;
+  }
+
+  return enabledPlugins.some((pattern) => {
+    if (pattern.startsWith("!")) return false;
+    if (pattern === "*" || pattern === id) return true;
+    if (pattern.endsWith("*")) {
+      const prefix = pattern.slice(0, -1);
+      return id.startsWith(prefix);
+    }
+    return false;
+  });
+}
+
+/**
  * 組み込み標準アクションプラグイン群
  *
  * 変更理由: 仕様書§2.2(F-12)および右クリックメニュー標準機能の実装。
+ * 外部プラグイン固有のアクション（CLIP STUDIO PAINT等）は本体にハードコードせず、
+ * すべて plugin.json からの動的登録（createDynamicPluginAction）に一元化する。
  */
 export const builtInActionPlugins: ContextMenuActionPlugin[] = [
   {
@@ -16,26 +44,10 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     label: (locale) => (locale === "en" ? "Open with Default App" : "既定のアプリで開く"),
     icon: "ExternalLink",
     order: 10,
-    isAvailable: (_record, enabledPlugins) => enabledPlugins.includes("action.open_default"),
+    isAvailable: (_record, enabledPlugins) =>
+      isPluginIdEnabled("action.open_default", enabledPlugins),
     execute: async (context) => {
       await backendApi.openFileWithDefaultApp({ id: context.record.id });
-    },
-  },
-  {
-    id: "action.open_clip_studio",
-    label: (locale) => (locale === "en" ? "Open with CLIP STUDIO PAINT" : "CLIP STUDIO PAINTで開く"),
-    icon: "Palette",
-    order: 20,
-    isAvailable: (_record, enabledPlugins, detail) => {
-      if (!enabledPlugins.includes("action.open_clip_studio")) return false;
-      if (!detail) return false;
-      const isClip =
-        detail.format?.toLowerCase() === "clip" ||
-        detail.filePath.toLowerCase().endsWith(".clip");
-      return isClip;
-    },
-    execute: async (context) => {
-      await backendApi.openInClipStudio({ id: context.record.id });
     },
   },
   {
@@ -43,7 +55,8 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     label: (locale) => (locale === "en" ? "Reveal in File Manager" : "フォルダで表示"),
     icon: "FolderOpen",
     order: 30,
-    isAvailable: (_record, enabledPlugins) => enabledPlugins.includes("action.show_in_folder"),
+    isAvailable: (_record, enabledPlugins) =>
+      isPluginIdEnabled("action.show_in_folder", enabledPlugins),
     execute: async (context) => {
       await backendApi.showInFolder({ id: context.record.id });
     },
@@ -53,7 +66,8 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     label: (locale) => (locale === "en" ? "Copy File Path" : "ファイルパスをコピー"),
     icon: "Copy",
     order: 40,
-    isAvailable: (_record, enabledPlugins) => enabledPlugins.includes("action.copy_path"),
+    isAvailable: (_record, enabledPlugins) =>
+      isPluginIdEnabled("action.copy_path", enabledPlugins),
     execute: async (context) => {
       let path = context.detail?.filePath;
       if (!path) {
@@ -62,6 +76,26 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
       }
       if (path && navigator.clipboard) {
         await navigator.clipboard.writeText(path);
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          try {
+            navigator.vibrate(30);
+          } catch {}
+        }
+        if (typeof document !== "undefined") {
+          const existing = document.getElementById("imv-copy-toast");
+          if (existing) existing.remove();
+          const toast = document.createElement("div");
+          toast.id = "imv-copy-toast";
+          toast.className =
+            "fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] bg-surface/95 text-textPrimary px-4 py-2 rounded-lg shadow-2xl border border-accent/60 text-xs font-medium flex items-center gap-2 pointer-events-none transition-all duration-300 animate-in fade-in";
+          const fileName = path.split(/[\\/]/).pop() || path;
+          toast.textContent = `📋 パスをコピーしました: ${fileName}`;
+          document.body.appendChild(toast);
+          setTimeout(() => {
+            toast.style.opacity = "0";
+            setTimeout(() => toast.remove(), 300);
+          }, 2000);
+        }
       }
     },
   },
@@ -82,7 +116,8 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     label: (locale) => (locale === "en" ? "Move to Trash" : "ゴミ箱へ移動"),
     icon: "Trash2",
     order: 90,
-    isAvailable: (_record, enabledPlugins) => enabledPlugins.includes("action.trash_file"),
+    isAvailable: (_record, enabledPlugins) =>
+      isPluginIdEnabled("action.trash_file", enabledPlugins),
     execute: async (context) => {
       await backendApi.trashFile(context.record.id);
       if (context.refreshTimeline) {
@@ -141,6 +176,8 @@ export function createCustomActionPlugin(
  * プラグインマニフェストのアクション定義から動的コンテキストメニュープラグインを生成する
  *
  * 変更理由: plugin.json に記載されたアクションを動的にコンテキストメニューに登録可能にするため。
+ * バックエンドが PluginActionDefinition に付与する親 pluginId を参照することで、
+ * 複雑な文字列正規化を行うことなく正確に有効/無効判定を行う。
  *
  * @param def プラグインアクション定義
  * @return ContextMenuActionPlugin
@@ -155,29 +192,19 @@ export function createDynamicPluginAction(
     icon: def.icon ?? "Play",
     order: def.order ?? 25,
     isAvailable: (_record, enabledPlugins, detail) => {
-      // 1. プラグインIDまたはアクションIDが有効化されているか（完全一致、"*"、"prefix*" ワイルドカード）
-      const defIdNormalized = def.id.toLowerCase().replace(/[^a-z0-9]/g, "");
-      const isEnabled =
-        enabledPlugins.includes("*") ||
-        enabledPlugins.includes(def.id) ||
-        enabledPlugins.some((p) => {
-          if (p === "*") return true;
-          if (p.endsWith("*")) {
-            const prefix = p.slice(0, -1);
-            if (def.id.startsWith(prefix)) return true;
-            const pNormalized = prefix.toLowerCase().replace(/^format/, "").replace(/[^a-z0-9]/g, "");
-            if (pNormalized.length === 0) {
-              // "format.*" の場合、フォーマットプラグイン由来のアクション（action.open_xxx等）も有効とする
-              return true;
-            }
-            return defIdNormalized.includes(pNormalized);
-          }
-          const pNormalized = p.toLowerCase().replace(/^format/, "").replace(/[^a-z0-9]/g, "");
-          return pNormalized.length > 0 && defIdNormalized.includes(pNormalized);
-        });
-      if (!isEnabled) return false;
+      // 1. 明示的にアクションまたは親プラグインが無効化("!id")されている場合は false
+      if (enabledPlugins.includes(`!${def.id}`)) return false;
+      if (def.pluginId && enabledPlugins.includes(`!${def.pluginId}`)) return false;
 
-      // 2. 対象拡張子の判定
+      // 2. アクションID、親プラグインID、またはフォーマットプラグイン一括指定("format.*")で有効か判定
+      const isActionEnabled = isPluginIdEnabled(def.id, enabledPlugins);
+      const isParentPluginEnabled = def.pluginId
+        ? isPluginIdEnabled(def.pluginId, enabledPlugins)
+        : isPluginIdEnabled("format.*", enabledPlugins);
+
+      if (!isActionEnabled && !isParentPluginEnabled) return false;
+
+      // 3. 対象拡張子の判定
       if (!def.extensions || def.extensions.length === 0) return true;
       if (!detail) return false;
 
@@ -248,10 +275,9 @@ export class ContextMenuRegistry {
     detail?: ImageDetail
   ): ContextMenuActionPlugin[] {
     const enabledPlugins = appSettings?.enabled_plugins ?? [
-      "format.clipstudio",
+      "*",
       "format.*",
       "action.open_default",
-      "action.open_clip_studio",
       "action.show_in_folder",
       "action.copy_path",
       "action.trash_file",

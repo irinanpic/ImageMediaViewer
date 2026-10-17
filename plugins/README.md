@@ -15,23 +15,20 @@ ClipStudio 形式（.clip）を含むすべての特定フォーマット抽出�
 ```text
 plugins/
 ├── README.md                              # 本開発・設定ガイド（本書）
-├── app_settings.sample.json               # 設定ファイル（app_settings.json）のサンプル
-├── clipstudio/                            # 標準同梱 ClipStudio プラグイン（本体分離バイナリ）
-│   ├── plugin.json                        # ClipStudio形式の抽出ルール・アクション定義マニフェスト
-│   ├── imv_clipstudio.dll                 # C-ABI 動的ライブラリ（Windows環境）
-│   └── clipstudio_plugin.exe              # 独立実行CLIバイナリ（フォールバック用）
-├── sample_format/                         # ユーザー追加用サンプルフォーマットプラグイン
-│   └── plugin.json                        # バイナリスライス抽出のサンプルマニフェスト
-└── action_plugins/                        # 外部アクション設定サンプル
-    └── custom_action_sample.json          # 外部ツール連携アクションの設定サンプル
+└── clipstudio/                            # ClipStudio プラグイン（plugins-src/clipstudio から自動同期）
+    ├── plugin.json                        # ClipStudio形式の抽出ルール・アクション定義マニフェスト
+    ├── README.md                          # ClipStudioプラグイン単体配布用ドキュメント
+    ├── imv_clipstudio.dll                 # C-ABI 動的ライブラリ（Windows環境）
+    └── clipstudio_plugin.exe              # 独立実行CLIバイナリ（フォールバック用）
 ```
+（※ プラグインのソースコードおよびマニフェストの原本は `plugins-src/<plugin_name>/` で完全独立管理され、`npm run build:plugins` または `npm run package:plugins` により `plugins/` および配布用ZIPパッケージ `dist-plugins/` へ出力されます。）
 
 ### プラグインの種類
 1. **動的画像フォーマットプラグイン (`plugin.json` + 独立バイナリ)**:
    - 独自バイナリ形式や特定ソフトウェア（CLIP STUDIO PAINT 等）のファイルから、内蔵サムネイル・プレビュー画像・メタデータを抽出し、カタログ化および原寸ビューワ表示を可能にする拡張。
    - 高速なメモリ内呼び出し（C-ABI `cdylib`）と、安全な独立プロセスフォールバック（CLIバイナリ）のハイブリッド駆動に対応。本体再コンパイルは不要です。
 2. **プラグインアクション (`plugin.json` 内 `actions`)**:
-   - 右クリックメニュー（コンテキストメニュー）に、対象形式専用の外部アプリ起動メニュー項目（例: 「CLIP STUDIO PAINTで開く」）を自動登録する拡張。
+   - 右クリックメニュー（コンテキストメニュー：タイムライン・詳細ビューワ・ムードボード共通）に、対象形式専用の外部アプリ起動メニュー項目（例: 「CLIP STUDIO PAINTで開く」）を自動登録する拡張。
 3. **カスタムメニュー項目 (`app_settings.json` 内 `custom_context_menu_items`)**:
    - ユーザーが設定UIから任意のペイントソフトや外部ツールを右クリックメニューへ登録する拡張。
 
@@ -165,39 +162,43 @@ pub unsafe extern "C" fn imv_plugin_free_buffer(buf: *mut u8, len: usize);
 
 ---
 
-## 4. ユーザーによる新規プラグインの追加手順（再ビルド不要）
+## 4. ユーザーによる新規プラグインの導入手順（GUIワンクリック導入・再ビルド不要）
 
-本体のソースコード修正や再コンパイル（`cargo build`）は**一切不要**です。
+本体のソースコード修正や再コンパイル（`cargo build`）、および手動での設定ファイル（`app_settings.json`）編集は**一切不要**です。
 
-1. `plugins/clipstudio/` または `plugins/sample_format/` をコピーし、`plugins/my_format/` を作成します。
-   （ユーザー固有プラグインとして `%APPDATA%\com.imagemediaviewer.desktop\plugins\my_format\` に配置しても構いません）
-2. `plugins/my_format/plugin.json` を開き、対象拡張子（`extensions`）、抽出方式（`extractor`）、および右クリックアクション（`actions`）を編集します。
-3. 設定ファイル（`app_settings.json`）の `enabled_plugins` にプラグインの ID（例: `"format.my_format"`）を追加、またはUI設定から有効化します。
-4. 即座に対象拡張子のファイルがスキャンされ、タイムラインやビューワで閲覧可能になります。
+### 方法A: アプリ内GUIからのワンクリック導入（推奨）
+1. ImageMediaViewer の右クリックメニュー下部の **「メニュー設定...」** を開きます。
+2. **「プラグイン管理」** タブを選択します。
+3. **「ZIPから追加」**（配布された `.zip` パッケージを選択）または **「フォルダから追加」**（`plugin.json` が入ったフォルダを選択）をクリックします。
+4. 自動的にユーザー用プラグインフォルダへ展開・検証・即時リロードが行われ、再起動なしで対象拡張子のファイルがスキャン・表示されます。
+5. 各プラグインの **ON / OFF スイッチ** から、いつでも個別に有効化・無効化を切り替えられます。
+
+### 方法B: プラグインフォルダへの直接配置
+1. 設定モーダルの **「フォルダを開く」** ボタンからユーザー用プラグインフォルダ（`%APPDATA%\com.imagemediaviewer.desktop\plugins\`）を開きます。
+2. プラグインフォルダ（例: `my_format/plugin.json` およびバイナリ）を配置し、**「再読込」** ボタンを押します（既定でワイルドカード `"*"` により自動有効化されます）。
 
 ---
 
-## 5. 検証・テスト実行手順
+## 5. プラグイン個別開発・配布パッケージ作成・テスト手順
 
-プラグインやランタイムの変更後は、以下のコマンドで動作検証を行います。
+プラグインは `plugins-src/<plugin_name>/` 配下で本体とは独立して開発・ビルド・単体配布パッケージ化（`.zip`）が可能です。
 
 ```bash
-# 1. 独立プラグインバイナリビルド（cdylib + CLI bin を release ビルドして plugins/ 配下へ自動同期）
+# 1. 独立プラグインバイナリビルド（plugins-src/* を自動検出し plugins/ 配下へ同期）
 npm run build:plugins
 
-# 2. バックエンド単体テスト
+# 2. 個別配布用スタンドアロンZIPパッケージの生成（dist-plugins/<name>-plugin-v<version>-<os>.zip 出力）
+npm run package:plugins
+
+# 3. ClipStudioプラグイン単体のテスト実行
+cd plugins-src/clipstudio
+cargo test
+
+# 4. バックエンド単体・結合テスト
 cd src-tauri
 cargo test
 
-# 3. フロントエンド単体テスト
+# 5. フロントエンド単体テスト & 本番Webアセットビルド
 npm test
-
-# 4. 本番Webアセットビルド
 npm run build
-
-# 5. Windowsインストーラー生成（プラグインバイナリ同梱）
-npm run build:installer
-
-# 6. Androidパッケージビルド
-npm run build:android:release
 ```

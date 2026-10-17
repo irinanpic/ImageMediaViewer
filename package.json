@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "clean:readonly": "node scripts/clean-target-readonly.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",
+    "package:plugins": "node scripts/build-plugins.mjs --package",
     "prebuild:installer": "node scripts/clean-target-readonly.mjs && node scripts/build-plugins.mjs",
     "build:installer": "tauri build",
     "pretauri:build": "node scripts/clean-target-readonly.mjs && node scripts/build-plugins.mjs",

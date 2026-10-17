@@ -11,6 +11,7 @@ pub mod scanner;
 pub mod server;
 pub mod settings;
 pub mod state;
+pub mod android_native;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod tray;
 
@@ -160,7 +161,8 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(crate::android_native::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -284,13 +286,15 @@ pub fn run() {
             commands::request_storage_permissions,
             commands::open_file_with_default_app,
             commands::show_in_folder,
-            commands::open_in_clip_studio,
             commands::open_file_with_app,
             commands::trash_file,
             commands::get_app_settings,
             commands::save_app_settings,
             commands::get_plugin_actions,
             commands::execute_plugin_action,
+            commands::get_installed_plugins,
+            commands::open_plugins_folder,
+            commands::install_plugin,
         ]);
 
     builder

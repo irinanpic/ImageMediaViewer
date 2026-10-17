@@ -14,6 +14,8 @@ export interface ViewerGestureOptions {
   onNext?: () => void;
   /** 前の画像へ戻るコールバック（等倍時スワイプ送り用） */
   onPrev?: () => void;
+  /** 長押し等でコンテキストメニューを開くコールバック */
+  onContextMenu?: (x: number, y: number) => void;
 }
 
 /**
@@ -26,6 +28,7 @@ export interface ViewerGestureOptions {
  * 2. ズーム時の1本指タッチドラッグパン
  * 3. 等倍表示時の左右フリック／スワイプによる画像送り
  * 4. ダブルタップによる原寸ピクセル等倍（1:1）と画面フィットのトグル
+ * 5. 1本指長押し（450ms）によるコンテキストメニュー表示
  *
  * @param containerRef 画像表示領域コンテナのRef
  * @param imgRef 表示中の画像要素Ref（原寸ピクセル等倍計算用）
@@ -63,6 +66,8 @@ export function useViewerGestures(
   const touchStartPosRef = useRef({ x: 0, y: 0, time: 0, panX: 0, panY: 0 });
   const lastTapTimeRef = useRef(0);
   const lastTapPosRef = useRef({ x: 0, y: 0 });
+  const longPressTimerRef = useRef<number | null>(null);
+  const isLongPressTriggeredRef = useRef(false);
 
   useEffect(() => {
     if (!isViewerOpen) return;
@@ -189,6 +194,10 @@ export function useViewerGestures(
         // 2本指ピンチ開始
         isPinchingRef.current = true;
         isTouchDraggingRef.current = false;
+        if (longPressTimerRef.current) {
+          window.clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
         const t1 = e.touches[0];
         const t2 = e.touches[1];
         pinchStartDistRef.current = calculateDistance(t1.clientX, t1.clientY, t2.clientX, t2.clientY);
@@ -200,6 +209,7 @@ export function useViewerGestures(
         const touch = e.touches[0];
         isTouchDraggingRef.current = true;
         isPinchingRef.current = false;
+        isLongPressTriggeredRef.current = false;
         touchStartPosRef.current = {
           x: touch.clientX,
           y: touch.clientY,
@@ -207,6 +217,24 @@ export function useViewerGestures(
           panX: current.panX,
           panY: current.panY,
         };
+
+        if (longPressTimerRef.current) {
+          window.clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+
+        // 長押し（450ms）検知: コンテキストメニュー起動
+        if (optionsRef.current?.onContextMenu) {
+          longPressTimerRef.current = window.setTimeout(() => {
+            isLongPressTriggeredRef.current = true;
+            if (typeof navigator !== "undefined" && navigator.vibrate) {
+              try {
+                navigator.vibrate(40);
+              } catch {}
+            }
+            optionsRef.current?.onContextMenu?.(touch.clientX, touch.clientY);
+          }, 450);
+        }
 
         // ダブルタップ検知（300ms以内かつ移動量25px未満）
         const timeDiff = now - lastTapTimeRef.current;
@@ -218,6 +246,10 @@ export function useViewerGestures(
         );
 
         if (timeDiff > 40 && timeDiff < 320 && distFromLastTap < 25) {
+          if (longPressTimerRef.current) {
+            window.clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+          }
           handleToggleZoomAt(touch.clientX, touch.clientY);
           lastTapTimeRef.current = 0; // リセット
         } else {
@@ -229,6 +261,20 @@ export function useViewerGestures(
 
     const handleTouchMove = (e: TouchEvent) => {
       if ((e.target as HTMLElement)?.closest("button, input, select")) return;
+
+      if (longPressTimerRef.current) {
+        const touch = e.touches[0];
+        if (touch) {
+          const dist = Math.hypot(
+            touch.clientX - touchStartPosRef.current.x,
+            touch.clientY - touchStartPosRef.current.y
+          );
+          if (dist > 10) {
+            window.clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+          }
+        }
+      }
 
       if (isPinchingRef.current && e.touches.length >= 2) {
         e.preventDefault(); // ブラウザ標準のピンチズーム・スクロールを抑止
@@ -296,6 +342,17 @@ export function useViewerGestures(
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+
+      if (isLongPressTriggeredRef.current) {
+        isLongPressTriggeredRef.current = false;
+        isTouchDraggingRef.current = false;
+        return;
+      }
+
       if (isPinchingRef.current) {
         if (e.touches.length < 2) {
           isPinchingRef.current = false;
@@ -341,6 +398,10 @@ export function useViewerGestures(
     window.addEventListener("touchcancel", handleTouchEnd, { passive: false });
 
     return () => {
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
       window.removeEventListener("wheel", handleWheel);
       window.removeEventListener("dblclick", handleDoubleClick);
       window.removeEventListener("mousedown", handleMouseDown);

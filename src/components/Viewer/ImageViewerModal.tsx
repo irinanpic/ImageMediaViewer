@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Maximize2,
   Minimize2,
+  MoreVertical,
   RotateCw,
   X,
 } from "lucide-react";
@@ -47,6 +48,9 @@ export const ImageViewerModal: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  // 現在の画像レコード取得
+  const currentRecord = activeImageIndex !== null ? getImageByIndex(activeImageIndex) : null;
+
   // 前後への移動処理
   const handlePrev = async () => {
     if (activeImageIndex !== null && activeImageIndex > 0) {
@@ -71,6 +75,15 @@ export const ImageViewerModal: React.FC = () => {
   useViewerGestures(containerRef, imgRef, {
     onNext: handleNext,
     onPrev: handlePrev,
+    onContextMenu: (x, y) => {
+      if (currentRecord) {
+        openContextMenu({
+          x,
+          y,
+          record: currentRecord,
+        });
+      }
+    },
   });
 
   // 回転後の元画像解像度とコンテナ寸法から原寸ピクセル等倍（1:1）ズーム率を算出
@@ -95,9 +108,6 @@ export const ImageViewerModal: React.FC = () => {
     return Math.max(1.2, Math.min(16, 1.0 / fitScale));
   };
 
-  // 現在の画像レコード取得
-  const currentRecord = activeImageIndex !== null ? getImageByIndex(activeImageIndex) : null;
-
   // 右クリック時のコンテキストメニュー起動
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -106,6 +116,20 @@ export const ImageViewerModal: React.FC = () => {
       openContextMenu({
         x: e.clientX,
         y: e.clientY,
+        record: currentRecord,
+      });
+    }
+  };
+
+  // その他メニュー（⋮）ボタンクリック時のコンテキストメニュー起動（モバイル・タブレット対応）
+  const handleMoreButtonClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (currentRecord) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      openContextMenu({
+        x: Math.max(16, rect.left - 120),
+        y: rect.bottom + 8,
         record: currentRecord,
       });
     }
@@ -317,6 +341,15 @@ export const ImageViewerModal: React.FC = () => {
               className="p-2 hover:bg-white/10 rounded-full transition text-accent"
             >
               <LayoutGrid className="w-5 h-5" />
+            </button>
+          )}
+          {currentRecord && (
+            <button
+              onClick={handleMoreButtonClick}
+              title={t("viewer.moreActionsTooltip") || "メニュー"}
+              className="p-2 hover:bg-white/10 rounded-full transition text-textSecondary hover:text-white"
+            >
+              <MoreVertical className="w-5 h-5" />
             </button>
           )}
           <button

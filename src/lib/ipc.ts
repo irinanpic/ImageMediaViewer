@@ -22,6 +22,7 @@ import type {
 } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
 import type { PluginActionDefinition } from "../types/generated/PluginActionDefinition";
+import type { InstalledPluginInfo } from "../types/generated/InstalledPluginInfo";
 /**
  * Tauri ネイティブ IPC を呼び出す型安全ラッパー関数
  *
@@ -347,13 +348,6 @@ export const backendApi = {
     callIpc<void>("show_in_folder", params),
 
   /**
-   * CLIP STUDIO PAINT で .clip ファイルを開く
-   * @param params id または path
-   */
-  openInClipStudio: (params: { id?: number; path?: string }): Promise<void> =>
-    callIpc<void>("open_in_clip_studio", params),
-
-  /**
    * ユーザー登録された外部アプリケーションでファイルを開く
    * @param params 実行ファイルパス、引数、ファイルパスまたはID
    */
@@ -406,5 +400,25 @@ export const backendApi = {
     path?: string;
   }): Promise<void> =>
     callIpc<void>("execute_plugin_action", params),
+
+  /**
+   * 導入済みプラグイン一覧を取得
+   */
+  getInstalledPlugins: (): Promise<InstalledPluginInfo[]> =>
+    callIpc<InstalledPluginInfo[]>("get_installed_plugins"),
+
+  /**
+   * ユーザーデータ領域のプラグインフォルダをOSのファイルマネージャで開く
+   */
+  openPluginsFolder: (): Promise<string> =>
+    callIpc<string>("open_plugins_folder"),
+
+  /**
+   * 指定されたパス（ZIPアーカイブ、フォルダ、またはplugin.json）からプラグインをインストールして即時有効化
+   * @param sourcePath インポート元パス
+   */
+  installPlugin: (sourcePath: string): Promise<InstalledPluginInfo[]> =>
+    callIpc<InstalledPluginInfo[]>("install_plugin", { sourcePath }),
 };
+
 

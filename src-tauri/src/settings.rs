@@ -54,12 +54,14 @@ pub struct AppSettings {
 }
 
 /// デフォルトで有効化される安全なプラグイン一覧
+///
+/// 変更理由: 特定プラグイン名（format.clipstudio 等）のハードコードを本体コアから完全に排除し、
+/// 導入されたフォーマット・アクションプラグインを自動的に認識・有効化する汎用ワイルドカード構成に統一するため。
 pub fn default_enabled_plugins() -> Vec<String> {
     vec![
-        "format.clipstudio".to_string(),
+        "*".to_string(),
         "format.*".to_string(),
         "action.open_default".to_string(),
-        "action.open_clip_studio".to_string(),
         "action.show_in_folder".to_string(),
         "action.copy_path".to_string(),
         "action.trash_file".to_string(),
@@ -80,8 +82,8 @@ impl Default for AppSettings {
 /// 設定ファイル（app_settings.json）から設定を読み込む
 ///
 /// 変更理由: 過去のバージョンで保存された既存の app_settings.json において、
-/// enabled_plugins が空配列だったり新設プラグイン（format.clipstudio 等）が含まれていない場合に
-/// 自動的に推奨プラグインをマージし、全プラグインが無効化される不具合を防止するため。
+/// enabled_plugins が空配列だったりフォーマットプラグイン指定が欠落している場合に
+/// 自動的に汎用ワイルドカード（format.*）をマージし、プラグインが無効化される不具合を防止するため。
 ///
 /// @param data_dir 設定ファイルの保存先ディレクトリ（%APPDATA%/com.imagemediaviewer.desktop 等）
 /// @return 読み込まれ、必要に応じてマイグレーションされた設定
@@ -90,16 +92,15 @@ pub fn load_settings(data_dir: &Path) -> AppSettings {
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(mut s) = serde_json::from_str::<AppSettings>(&content) {
             // 互換性マイグレーション: enabled_plugins が空配列、または古い設定でフォーマットプラグイン指定が欠落している場合、
-            // 推奨デフォルトプラグインを自動的に補完・マージする
+            // 推奨デフォルトのワイルドカード指定を自動的に補完・マージする
             if s.enabled_plugins.is_empty() {
                 s.enabled_plugins = default_enabled_plugins();
             } else {
                 let has_format_pattern = s
                     .enabled_plugins
                     .iter()
-                    .any(|p| p == "*" || p == "format.*" || p.starts_with("format."));
+                    .any(|p| p == "*" || p == "format.*" || p.starts_with("format.") || p.starts_with("!format."));
                 if !has_format_pattern {
-                    s.enabled_plugins.push("format.clipstudio".to_string());
                     s.enabled_plugins.push("format.*".to_string());
                 }
             }
@@ -140,8 +141,12 @@ mod tests {
             "環境依存を避けるため、デフォルトのカスタムメニュー項目は空配列であること"
         );
         assert!(
-            default_settings.enabled_plugins.contains(&"format.clipstudio".to_string()),
-            "デフォルトで format.clipstudio が有効化リストに含まれていること"
+            default_settings.enabled_plugins.contains(&"*".to_string()),
+            "デフォルトで汎用ワイルドカード '*' が有効化リストに含まれていること"
+        );
+        assert!(
+            default_settings.enabled_plugins.contains(&"format.*".to_string()),
+            "デフォルトで 'format.*' が有効化リストに含まれていること"
         );
     }
 
@@ -158,7 +163,7 @@ mod tests {
         let modified = AppSettings {
             stay_in_tray: false,
             locale: "en".to_string(),
-            enabled_plugins: vec!["format.clipstudio".to_string()],
+            enabled_plugins: vec!["format.*".to_string(), "!format.disabled".to_string()],
             custom_context_menu_items: vec![CustomContextMenuItem {
                 id: "test-item".to_string(),
                 name: "Test Action".to_string(),
@@ -188,21 +193,18 @@ mod tests {
         // 1. enabled_plugins が空配列の古い設定ファイル
         std::fs::write(&settings_path, r#"{"stay_in_tray": true, "locale": "ja", "enabled_plugins": []}"#).unwrap();
         let loaded = load_settings(dir_path);
-        assert!(loaded.enabled_plugins.contains(&"format.clipstudio".to_string()));
         assert!(loaded.enabled_plugins.contains(&"format.*".to_string()));
 
         // 2. enabled_plugins が古いアクションのみでフォーマット指定を含まない設定ファイル
         std::fs::write(&settings_path, r#"{"stay_in_tray": true, "locale": "ja", "enabled_plugins": ["action.open_default"]}"#).unwrap();
         let loaded2 = load_settings(dir_path);
         assert!(loaded2.enabled_plugins.contains(&"action.open_default".to_string()));
-        assert!(loaded2.enabled_plugins.contains(&"format.clipstudio".to_string()));
         assert!(loaded2.enabled_plugins.contains(&"format.*".to_string()));
 
-        // 3. enabled_plugins に既に format.clipstudio が含まれる場合は重複しない
-        std::fs::write(&settings_path, r#"{"stay_in_tray": true, "locale": "ja", "enabled_plugins": ["format.clipstudio", "action.open_clip_studio"]}"#).unwrap();
+        // 3. enabled_plugins に既に format.* が含まれる場合は重複しない
+        std::fs::write(&settings_path, r#"{"stay_in_tray": true, "locale": "ja", "enabled_plugins": ["format.*"]}"#).unwrap();
         let loaded3 = load_settings(dir_path);
-        assert_eq!(loaded3.enabled_plugins.iter().filter(|p| *p == "format.clipstudio").count(), 1);
-        assert_eq!(loaded3.enabled_plugins.iter().filter(|p| *p == "action.open_clip_studio").count(), 1);
+        assert_eq!(loaded3.enabled_plugins.iter().filter(|p| *p == "format.*").count(), 1);
     }
 
     #[test]

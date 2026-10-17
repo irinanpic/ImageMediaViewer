@@ -10,6 +10,10 @@ export type PluginActionDefinition = {
  */
 id: string, 
 /**
+ * 親プラグイン識別子（ロード時に自動付与。例: "format.clipstudio"）
+ */
+pluginId: string | null, 
+/**
  * メニュー表示名（日本語）
  */
 name: string, 

@@ -13,6 +13,7 @@ import {
   Layers,
   LayoutGrid,
   Lock,
+  MoreVertical,
   RotateCcw,
   RotateCw,
   StickyNote,
@@ -58,6 +59,8 @@ export const MoodboardCanvas: React.FC = () => {
   const activeBoardId = useAppStore((state) => state.activeBoardId);
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setBoards = useAppStore((state) => state.setBoards);
+  const openContextMenu = useAppStore((state) => state.openContextMenu);
+  const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isSpacePressedRef = useRef(false);
@@ -141,6 +144,10 @@ export const MoodboardCanvas: React.FC = () => {
   const pinchStartCenterRef = useRef({ x: 0, y: 0 });
   const pinchStartPanRef = useRef({ x: 0, y: 0 });
 
+  // タッチデバイスでの画像アイテム長押しコンテキストメニュー用Ref
+  const itemLongPressTimerRef = useRef<number | null>(null);
+  const isItemLongPressTriggeredRef = useRef(false);
+
   useEffect(() => {
     panRef.current = pan;
   }, [pan]);
@@ -190,7 +197,7 @@ export const MoodboardCanvas: React.FC = () => {
 
   useEffect(() => {
     loadBoardData();
-  }, [loadBoardData]);
+  }, [loadBoardData, timelineRefreshTick]);
 
   // 選択画像アイテムの詳細情報を自動取得
   useEffect(() => {
@@ -335,6 +342,96 @@ export const MoodboardCanvas: React.FC = () => {
     [pan, flushSaveEditingNote]
   );
 
+  /**
+   * ボード上の画像アイテム右クリック時に共通コンテキストメニュー（＋ボード固有操作）を表示する
+   *
+   * 変更理由: タイムラインやビューアと同様に、ムードボード上の画像に対しても
+   * 外部連携（CLIP STUDIO PAINT等）・フォルダ表示・パスコピー・別ボードへの追加・ゴミ箱移動、
+   * およびムードボード固有の配置操作を右クリックから直感的に実行可能にするため。
+   */
+  const handleItemContextMenu = useCallback(
+    (e: React.MouseEvent | { clientX: number; clientY: number; preventDefault?: () => void; stopPropagation?: () => void }, item: BoardItem) => {
+      e.preventDefault?.();
+      e.stopPropagation?.();
+
+      flushSaveEditingNote();
+      setSelectedItemId(item.id);
+      setSelectedNoteId(null);
+
+      openContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        record: {
+          id: item.imageId,
+          takenAt: item.rev,
+          width: item.width,
+          height: item.height,
+          rev: item.rev,
+        },
+        boardItemContext: {
+          boardItemId: item.id,
+          isLocked: item.isLocked,
+          onBringToFront: () => {
+            const currentItems = itemsRef.current;
+            const maxZ = currentItems.reduce((max, it) => Math.max(max, it.zIndex), 0);
+            const nextZ = maxZ + 1;
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, zIndex: nextZ } : it))
+            );
+            backendApi.updateBoardItem(item.id, { zIndex: nextZ }).catch(console.error);
+          },
+          onSendToBack: () => {
+            const currentItems = itemsRef.current;
+            const minZ = currentItems.reduce((min, it) => Math.min(min, it.zIndex), 0);
+            const nextZ = Math.min(0, minZ - 1);
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, zIndex: nextZ } : it))
+            );
+            backendApi.updateBoardItem(item.id, { zIndex: nextZ }).catch(console.error);
+          },
+          onToggleFlipH: () => {
+            const current = itemsRef.current.find((it) => it.id === item.id);
+            if (!current) return;
+            const nextFlipH = !current.flipH;
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, flipH: nextFlipH } : it))
+            );
+            backendApi.updateBoardItem(item.id, { flipH: nextFlipH }).catch(console.error);
+          },
+          onToggleFlipV: () => {
+            const current = itemsRef.current.find((it) => it.id === item.id);
+            if (!current) return;
+            const nextFlipV = !current.flipV;
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, flipV: nextFlipV } : it))
+            );
+            backendApi.updateBoardItem(item.id, { flipV: nextFlipV }).catch(console.error);
+          },
+          onToggleLock: () => {
+            const current = itemsRef.current.find((it) => it.id === item.id);
+            if (!current) return;
+            const nextLocked = !current.isLocked;
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, isLocked: nextLocked } : it))
+            );
+            backendApi.updateBoardItem(item.id, { isLocked: nextLocked }).catch(console.error);
+          },
+          onRemoveFromBoard: () => {
+            backendApi
+              .deleteBoardItem(item.id)
+              .then(() => {
+                setItems((prev) => prev.filter((it) => it.id !== item.id));
+                setSelectedItemId((curr) => (curr === item.id ? null : curr));
+                setIsCropping(false);
+              })
+              .catch(console.error);
+          },
+        },
+      });
+    },
+    [flushSaveEditingNote, openContextMenu]
+  );
+
   // アイテムのドラッグ移動開始
   const handleItemPointerDown = useCallback(
     (e: React.PointerEvent, item: BoardItem) => {
@@ -345,6 +442,29 @@ export const MoodboardCanvas: React.FC = () => {
       setSelectedItemId(item.id);
       setSelectedNoteId(null);
       if (item.isLocked) return;
+
+      if (itemLongPressTimerRef.current) {
+        window.clearTimeout(itemLongPressTimerRef.current);
+        itemLongPressTimerRef.current = null;
+      }
+      isItemLongPressTriggeredRef.current = false;
+
+      // タッチ操作時の長押し検知 (450ms)
+      if (e.pointerType === "touch") {
+        const clientX = e.clientX;
+        const clientY = e.clientY;
+        itemLongPressTimerRef.current = window.setTimeout(() => {
+          isItemLongPressTriggeredRef.current = true;
+          isDraggingItemRef.current = false;
+          draggingItemIdRef.current = null;
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
+            try {
+              navigator.vibrate(40);
+            } catch {}
+          }
+          handleItemContextMenu({ clientX, clientY }, item);
+        }, 450);
+      }
 
       try {
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -364,7 +484,7 @@ export const MoodboardCanvas: React.FC = () => {
       };
       currentItemPosRef.current = { x: item.x, y: item.y };
     },
-    [isCropping]
+    [isCropping, flushSaveEditingNote, handleItemContextMenu]
   );
 
   // アイテムのリサイズ（角ハンドル）開始
@@ -606,6 +726,15 @@ export const MoodboardCanvas: React.FC = () => {
   // ポインター・マウス移動（ドラッグ処理）
   const handlePointerMove = useCallback(
     (e: React.PointerEvent | React.MouseEvent) => {
+      // タッチ長押し中に10px以上動いたら長押しメニューをキャンセル
+      if (itemLongPressTimerRef.current) {
+        const dist = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
+        if (dist > 10) {
+          window.clearTimeout(itemLongPressTimerRef.current);
+          itemLongPressTimerRef.current = null;
+        }
+      }
+
       // 0. クリッピング矩形ドラッグ中
       if (isDraggingCropRef.current && cropImageRectRef.current && selectedItemId !== null) {
         const rect = cropImageRectRef.current;
@@ -722,6 +851,18 @@ export const MoodboardCanvas: React.FC = () => {
 
   // ポインター・マウスアップ（変更確定）
   const handlePointerUp = useCallback((e?: React.PointerEvent | React.MouseEvent) => {
+    if (itemLongPressTimerRef.current) {
+      window.clearTimeout(itemLongPressTimerRef.current);
+      itemLongPressTimerRef.current = null;
+    }
+
+    if (isItemLongPressTriggeredRef.current) {
+      isItemLongPressTriggeredRef.current = false;
+      isDraggingItemRef.current = false;
+      draggingItemIdRef.current = null;
+      return;
+    }
+
     if (e && "pointerId" in e) {
       try {
         (e.currentTarget as HTMLElement)?.releasePointerCapture(e.pointerId);
@@ -1462,6 +1603,7 @@ export const MoodboardCanvas: React.FC = () => {
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onContextMenu={(e) => e.preventDefault()}
       data-canvas-bg="true"
       style={{
         backgroundColor: board?.backgroundColor || "#1a1a20",
@@ -1811,6 +1953,24 @@ export const MoodboardCanvas: React.FC = () => {
 
           <div className="h-4 w-px bg-border/40" />
 
+          {/* その他メニュー（⋮） */}
+          <button
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              handleItemContextMenu(
+                {
+                  clientX: Math.max(16, rect.left - 120),
+                  clientY: rect.top - 8,
+                },
+                selectedItem
+              );
+            }}
+            title={t("viewer.moreActionsTooltip") || "メニュー"}
+            className="p-1.5 hover:bg-surfaceLight/50 text-textSecondary hover:text-textPrimary rounded transition cursor-pointer"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+
           <button
             onClick={() => {
               backendApi.deleteBoardItem(selectedItem.id).then(() => {
@@ -1962,6 +2122,7 @@ export const MoodboardCanvas: React.FC = () => {
             <div
               key={item.id}
               onPointerDown={(e) => handleItemPointerDown(e, item)}
+              onContextMenu={(e) => handleItemContextMenu(e, item)}
               onDoubleClick={() => {
                 setSelectedItemId(item.id);
                 setIsCropping(true);

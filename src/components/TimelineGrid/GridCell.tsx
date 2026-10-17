@@ -126,13 +126,19 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
       longPressTimerRef.current = window.setTimeout(() => {
         isLongPressTriggeredRef.current = true;
         setSelectedCellIndex(globalIndex);
-        toggleSelectImageId(record.id);
         if (typeof navigator !== "undefined" && navigator.vibrate) {
           try {
             navigator.vibrate(40);
           } catch {}
         }
-      }, 500);
+        if (touchStartPosRef.current) {
+          openContextMenu({
+            x: touchStartPosRef.current.x,
+            y: touchStartPosRef.current.y,
+            record,
+          });
+        }
+      }, 450);
     };
 
     const handleTouchMove = (e: React.TouchEvent) => {

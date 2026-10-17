@@ -215,51 +215,63 @@
   * Windows ホスト環境での Android NDK クロスコンパイル時における MSVC リンカーフラグ誤適用を隔離・防止（`build.rs` 内で `CARGO_CFG_TARGET_OS` / `CARGO_CFG_TARGET_ENV` を動的検証）。
   * Windows NTFS ReadOnly 属性付加による `autocfg` パニック（`output path is not a writable directory` / code 101）の自動事前解除機構（`clean-target-readonly.mjs`）をビルドパイプラインへ統合。
   * Windows インストーラー（NSIS: `npm run build:installer`）および Android Release APK（`npm run build:android:release`）の双方を安定して独立生成可能。
-* **F-40 完全分離型動的バイナリプラグインアーキテクチャ (Isolated Binary Dynamic Plugins)**:
-  * アプリ本体から特定形式のデコード・抽出ロジック（SQLite 解析等）を完全に分離・撤廃し、独立バイナリ（C-ABI動的ライブラリ `cdylib` および独立実行バイナリ `bin`）として別クレート/別ターゲットでビルド・配置・動的ロードする完全分離型アーキテクチャを導入。
+* **F-40 完全分離型動的バイナリプラグインアーキテクチャ & GUIプラグイン管理 (Isolated Binary Dynamic Plugins)**:
+  * アプリ本体から特定形式のデコード・抽出ロジックや固有IDハードコード（`format.clipstudio` 等）を完全に分離・撤廃し、独立バイナリ（C-ABI動的ライブラリ `cdylib` および独立実行バイナリ `bin`）として別クレート/別ターゲットでビルド・配置・動的ロードする完全分離型アーキテクチャを導入。
   * `ImageFormatPlugin` トレイト、プラットフォーム別バイナリ解決機能を持つ汎用抽出エンジン（`binary`, `binary_slice`, `command`）、および動的プラグインレジストリ `FormatPluginRegistry` を実装。
   * `binary` 抽出タイプでは、`libloading` によるインメモリ C-ABI 直接呼び出し（`imv_plugin_init`, `imv_plugin_extract_metadata`, `imv_plugin_extract_preview`, `imv_plugin_free_buffer`）を最優先とし、未ロード時やプロセス分離環境では CLI コマンド（`metadata`, `preview-pipe`）へのフェイルセーフな自動フォールバックを完備。
-  * 設定ファイル（`app_settings.json`）の `enabled_plugins` に基づき、必要なプラグインのみを明示的またはワイルドカード（`"format.*"`, `"*"`）で柔軟にロード。未対応・無効化プラグインは走査・パイプラインから安全に隔離。既存設定が空配列の場合の自動マイグレーション補完を実装。
+  * 設定ファイル（`app_settings.json`）の `enabled_plugins` に基づき、ワイルドカード（`"*", "format.*"`）および否定パターン（`"!format.xxx"`）で柔軟に有効化・個別無効化を制御。新しいプラグインを配置するだけで設定ファイルの手動編集なしに即座に自動有効化。
+  * **GUIからのワンクリック導入 (`install_plugin`)**:
+    * 設定モーダルの「プラグイン管理」タブから、個別配布された `.zip` アーカイブやプラグインフォルダを直接インポート可能。OS標準機能（`tar` / `Expand-Archive`）を用いて外部依存を増やさずに `%APPDATA%/.../plugins/<id>` へ安全展開し、即座にホットリロード・再走査を実行。
   * **スキャナーの動的走査拡張と確実なインデックス反映**:
     * プラグイン探索パス（実行ファイル直下、リソースディレクトリ、親ディレクトリ、開発環境、ユーザーデータディレクトリ `%APPDATA%/.../plugins/`）を網羅的に走査し、有効化された全プラグインの拡張子（`extensions`）をスキャナー（`walker.rs`）へ動的に合流。
     * 監視起点フォルダ（`entry.depth() == 0`）がドット始まりの場合に走査が破棄される問題を根本解決。
-    * アプリ起動時のバックグラウンド自動差分走査により、プラグイン追加後のファイル取り込みを即座に実現。
-  * **プラグイン標準同梱および配布**:
-    * インストーラー配布物に `plugins/` ディレクトリを同梱（`bundle.resources`）。インストール先直下に `plugins/README.md`（プラグイン開発ガイド）、`plugins/clipstudio/plugin.json`、`plugins/clipstudio/imv_clipstudio.dll`、`plugins/clipstudio/clipstudio_plugin.exe`、`plugins/sample_format/plugin.json`、`plugins/app_settings.sample.json`、`plugins/action_plugins/custom_action_sample.json` を展開。
-* **F-41 標準同梱 ClipStudio 形式 (.clip) 独立プラグイン (`plugins-src/clipstudio/`)**:
-  * CLIP STUDIO PAINT ドキュメント形式（`.clip`）の抽出ロジックを本体コードから完全に分離し、独立クレート `plugins-src/clipstudio` として実装。
+    * アプリ起動時およびプラグイン導入時のバックグラウンド自動差分走査により、プラグイン追加後のファイル取り込みを即座に実現。
+* **F-41 独立 ClipStudio 形式 (.clip) プラグインおよび個別配布パッケージ (`plugins-src/clipstudio/`)**:
+  * CLIP STUDIO PAINT ドキュメント形式（`.clip`）の抽出ロジック・マニフェスト（`plugin.json`）・ドキュメント（`README.md`）を本体コードから完全に分離し、自己完結した独立クレート `plugins-src/clipstudio` として実装。
   * **デュアルターゲット出力**: `crate-type = ["cdylib", "rlib"]` および `[[bin]] name = "clipstudio_plugin"` により、C-ABI 動的ライブラリ（`imv_clipstudio.dll`）と CLI 独立実行バイナリ（`clipstudio_plugin.exe`）の双方をビルド・出力。
-  * **自動ビルド＆同期パイプライン**: `scripts/build-plugins.mjs` を通じて、本体インストーラービルド時および `npm run build:plugins` 時に自動コンパイル・配置。
+  * **動的検出ビルド＆単体ZIPパッケージ生成 (`scripts/build-plugins.mjs`)**: `plugins-src/` 配下のプラグインを動的に自動検出し、`npm run build:plugins` で本体同梱先へ同期するほか、`npm run package:plugins` によりプラグイン単体で配布・導入可能なスタンドアロンZIPパッケージ（`dist-plugins/clipstudio-plugin-v1.0.0-<os>.zip`）を自動生成。
   * **CSFCHUNK 構造解析 & インメモリ SQLite デシリアライズ抽出**: `CHNKSQLi` チャンクを `sqlite3_deserialize` でインメモリ展開し、`CanvasPreview` テーブルの `ImageData` からオーバーフローページの混入のない PNG バイナリを高速抽出。非SQLiteチャンクやモック構造にはストリーミングシグネチャ探索へ自動フォールバック。
   * **IHDR チャンクによる O(1) 高速寸法抽出**: 抽出した PNG の先頭 16〜24 バイト（IHDR チャンク）からダイレクトに画像幅・高さをビッグエンディアン読取。
   * **WebP サムネイル自動生成 & 原寸プレビュープロトコル連動**: WebP サムネイルを生成して `thumbnails.db` へ格納し、原寸ビューワ表示時はカスタムプロトコル `original://` を通じて内蔵 PNG を透過返却。
-  * **CLIP STUDIO PAINT 外部起動連携**: アプリケーション連携アクション（`action.open_clip_studio`）を通じて、OSの関連付け起動または標準インストールパスから対象 `.clip` ファイルを直接開く操作をサポート。
-* **F-42 カスタム右クリックコンテキストメニューおよび外部アプリ連携**:
-  * タイムライングリッドの画像セル（`GridCell`）および詳細画像ビューア（`ImageViewerModal`）上での右クリック（モバイル長押し）によるフローティングコンテキストメニュー表示。
+  * **CLIP STUDIO PAINT 外部起動連携**: マニフェスト内アクション定義（`action.open_clip_studio`）と汎用プラグインアクション実行基盤（`execute_plugin_action`）を通じて、本体側に固有コマンドを持つことなく `.clip` ファイルを直接開く操作をサポート。
+* **F-42 カスタム右クリックコンテキストメニュー（タイムライン・ビューワ・ムードボード対応）および外部アプリ連携**:
+  * タイムライングリッドの画像セル（`GridCell`）、詳細画像ビューア（`ImageViewerModal`）、および**ムードボード上の画像アイテム（`MoodboardCanvas`）**上での右クリック（モバイル長押し）によるフローティングコンテキストメニュー表示。
+  * **ムードボード専用コンテキスト操作セクション**: ムードボード上の画像アイテムを右クリックした際は、共通のファイル・プラグイン連携メニューに加えて、ムードボード専用の操作項目（最前面へ移動、最背面へ移動、左右反転、上下反転、位置をロック/解除、ボードから外す）を統合表示。また右クリックメニューから「ゴミ箱へ移動」を実行した際もボード表示を即座に自動同期。
   * **ビューワ左右ナビゲーション連動とズーム時非干渉**: ビューワ画面端のホバー検知・クリック連動により前後の画像へ素早く移動。拡大ズーム時（`transform.zoom > 1.05`）は画像細部のパンドラッグ操作を阻害しないようナビゲーション検知領域を非活性化。
   * **画面外はみ出し防止のクランプ制御**: ビューポート境界（上下左右）をリアルタイム検知し、画面端で開かれた場合でもメニュー全体が確実に画面内に収まるよう座標を動的補正。外部クリックおよび `Esc` キー押下による自動クローズを完備。
-  * **標準組み込みアクション**:
+  * **標準組み込みアクション & 動的プラグインアクション**:
     * 既定のアプリで開く (`open_file_with_default_app`)
-    * CLIP STUDIO PAINTで開く (`open_in_clip_studio`、`.clip` ファイル時のみ動的表示)
+    * 各プラグインが提供する動的アクション（例: `action.open_clip_studio` による「CLIP STUDIO PAINTで開く」、対象拡張子ファイル時のみ動的表示）
     * フォルダで表示 (`show_in_folder`)
     * ファイルパスをコピー (`action.copy_path`)
     * ボードに追加 (`action.add_to_board`)
     * ゴミ箱へ移動 (`trash_file`、OS標準のゴミ箱へ安全に退避し、カタログDBおよびUIから即時除去)
-  * **ユーザー定義カスタム外部アプリ登録**:
-    * 設定モーダル（`ContextMenuSettingsModal`）から、ユーザーが日常使用する画像編集ソフト・ビューワ等の実行ファイルパス、起動引数（`{path}` 置換）、対象拡張子フィルタリングを GUI 上で自由に登録・編集・削除可能。
-    * 拡張子フィルタ（例: `clip, psd`）が指定されている場合、対象フォーマットの画像でのみメニュー項目が出現するスマートフィルタリングを実装。
+  * **ユーザー定義カスタム外部アプリ登録 & プラグイン管理モーダル**:
+    * 設定モーダル（`ContextMenuSettingsModal`）に「プラグイン管理」タブと「カスタム外部アプリ連携」タブを搭載。
+    * プラグインのZIP/フォルダからのワンクリック導入・ON/OFF切替と、任意の画像編集ソフト・ビューワ等の実行ファイルパス、起動引数（`{path}` 置換）、対象拡張子フィルタリングの登録・編集・削除を GUI 上で一元管理可能。
 * **F-43 アプリケーション設定（app_settings.json）とプラットフォーム抽象化レイヤー**:
   * アプリ設定構造体 `AppSettings`（常駐設定 `stay_in_tray`、言語 `locale`、有効化プラグイン一覧 `enabled_plugins`、カスタムメニュー項目 `custom_context_menu_items`）を導入。
   * **環境非依存・モバイル互換原則**:
-    * `custom_context_menu_items` のデフォルト初期値は空配列 `[]` とし、Windows固有パス（`mspaint.exe` 等）などの環境依存設定をプリセットしない設計を徹底。
-    * 設定ファイル（`app_settings.json`）にはユーザーが明示的に登録した項目のみを保存。
+    * `custom_context_menu_items` のデフォルト初期値は空配列 `[]` とし、Windows固有パス（`mspaint.exe` 等）や特定プラグインIDのハードコードを一切行わない設計を徹底。
+    * 設定ファイル（`app_settings.json`）にはユーザーが明示的に変更・登録した項目のみを保存。
     * モバイル（Android）環境では外部プロセスコマンド起動やデスクトップ用ゴミ箱API（`trash` クレイト）をプラットフォーム抽象化レイヤーで安全に隔離し、OS共有インテント（`tauri_plugin_opener`）および標準ファイル削除へ自動フォールバック。
 * **F-44 全プラットフォーム共通・独立外部バイナリプラグイン (Independent External Binary Plugins)**:
-  * **本体コアの純化**: ビューワ本体コードベース（`src-tauri`）から特定ソフトウェア形式（CLIP STUDIO等）の知識やフォールバック処理を完全に排除し、純粋なプラグインホストに徹する。
+  * **本体コアの純化**: ビューワ本体コードベース（`src-tauri` および `src/`）から特定ソフトウェア形式（CLIP STUDIO等）の知識・専用コマンド・正規表現ヒューリスティックを完全に排除し、純粋なプラグインホストに徹する。
   * **独立共有ライブラリ (cdylib)**: 各プラットフォーム向けに外部共有ライブラリ（Windows: `imv_clipstudio.dll`, Android: `libimv_clipstudio.so`, Linux: `libimv_clipstudio.so`, macOS: `libimv_clipstudio.dylib`）を独立ビルド。
   * **Android C-ABI 動的ロード (`extractor.rs`)**: Android 環境でも Bionic `dlopen`（`libloading`）による C-ABI 呼び出しを有効化し、W^X セキュリティ制約に準拠して APK 内のネイティブライブラリパス（`nativeLibraryDir`）からの直接ロードを最優先処理。
-  * **Android マニフェスト自動同期 (`MainActivity.kt`)**: 起動時に APK 内の `assets/plugins`（`plugin.json` 等）をアプリ内部ストレージ（`filesDir/plugins`）へ自動展開し、ファイル走査エンジンからの確実なプラグイン認識を保証。
-  * **自動ビルド・APK 同梱連携 (`scripts/build-android.mjs`, `scripts/build-plugins.mjs`)**: Android APK ビルド時に NDK Clang を用いて `aarch64-linux-android` および `x86_64-linux-android` 向けにプラグインを自動コンパイルし、`src-tauri/gen/android/app/src/main/jniLibs/<abi>/` へ自動配置して APK へ同梱。
+  * **Android マニフェスト自動同期 (`MainActivity.kt`)**: 起動時に APK 内の `assets/plugins`（`plugin.json` のみ、不要なWindowsバイナリ等は除外）をアプリ内部ストレージ（`filesDir/plugins`）へ自動展開し、ファイル走査エンジンからの確実なプラグイン認識を保証。
+* **F-45 Androidネイティブメディア連携ブリッジ＆タッチ操作性最適化 (Android Native Media Bridge & Touch Usability)**:
+  * **Android ネイティブ連携プラグイン (`com.imagemediaviewer.desktop.AndroidMediaPlugin`)**:
+    * `tauri-plugin-opener` が Web URL（`https://`）のみ対応でローカルファイルパスに対応していない制限、および Android 7+ (API 24+) の `FileUriExposedException` 制約を根本解決。
+    * `androidx.core.content.FileProvider` を全ストレージ領域（内部ストレージ、外部ストレージ、SDカード、DCIM）に対応するよう `file_paths.xml` を拡張し、安全な `content://com.imagemediaviewer.desktop.fileprovider` URI を動的発行。
+    * `FLAG_GRANT_READ_URI_PERMISSION` を付与した OS 標準の `Intent.createChooser` シートにより、連携可能なすべての外部アプリをユーザーが選択・起動可能。
+    * **CLIP STUDIO PAINT Android アプリ連携**: `.clip` 形式またはアクション実行時に Android アプリパッケージ `jp.co.celsys.clipstudiopaint.googleplay` および MIME `application/x-clip` を明示指定してダイレクト起動。
+    * **DocumentsContract によるフォルダ直接表示**: デスクトップのエクスプローラー「フォルダで表示」に相当する機能として、Android 標準の DocumentsUI（Files アプリ）のディレクトリ URI（`content://com.android.externalstorage.documents/document/primary%3A<相対パス>`）を用いて該当フォルダをダイレクト展開表示。フォールバックとして MIME `resource/folder` の Intent Chooser およびストレージ設定画面表示を完備。
+    * **Scoped Storage 対応の安全なファイル削除**: Android 10+ (API 29+) のストレージアクセス制限に準拠し、`File.delete()` に加え `MediaStore.Images.Media` ContentResolver による削除・`MediaScannerConnection.scanFile` を連携実行。
+  * **タッチジェスチャー＆長押し操作性の全面刷新**:
+    * タイムライングリッド（`GridCell`）、画像詳細ビューア（`ImageViewerModal` / `useViewerGestures`）、ムードボードキャンバス（`MoodboardCanvas`）の全画面において、**450ms タッチ長押し**によるバイブレーション（40ms）フィードバック付きコンテキストメニュー展開を実装。
+    * ビューア画面のトップツールバーおよびムードボード選択アイテムのアクションバーに、タッチフレンドリーな「⋮」（その他メニュー）ボタンを常設配置し、長押し不要のワンタップでもコンテキストメニューを起動可能。
+    * ファイルパスのコピー実行時に、バイブレーションおよびフローティングトースト通知（`📋 パスをコピーしました: <ファイル名>`）を表示して操作完了を明示。
 
 ---
 

@@ -227,8 +227,6 @@ pub async fn reveal_in_file_manager(
     state: State<'_, Arc<AppState>>,
     id: i64,
 ) -> Result<(), AppError> {
-    use tauri_plugin_opener::OpenerExt;
-
     let path_str = {
         let conn = state.db.reader()?;
         crate::db::repo::get_image_file_info(&conn, id)?
@@ -236,11 +234,19 @@ pub async fn reveal_in_file_manager(
             .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
     };
 
-    app.opener()
-        .reveal_item_in_dir(path_str)
-        .map_err(|e| AppError::internal(format!("エクスプローラ表示に失敗: {}", e)))?;
-
-    Ok(())
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::open_folder(&app, &path_str)?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .reveal_item_in_dir(path_str)
+            .map_err(|e| AppError::internal(format!("エクスプローラ表示に失敗: {}", e)))?;
+        Ok(())
+    }
 }
 
 /// 表示範囲（ビューポート）の画像ID群を登録し、優先度付きパイプラインの世代を進める
@@ -292,11 +298,20 @@ pub async fn get_logs(
 pub async fn open_log_folder(
     app: AppHandle,
 ) -> Result<serde_json::Value, AppError> {
-    use tauri_plugin_opener::OpenerExt;
     if let Some(manager) = crate::logger::get_log_manager() {
         let dir = manager.log_dir();
         let dir_str = dir.to_string_lossy().to_string();
-        let _ = app.opener().reveal_item_in_dir(&dir_str);
+
+        #[cfg(target_os = "android")]
+        {
+            let _ = crate::android_native::open_folder(&app, &dir_str);
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            use tauri_plugin_opener::OpenerExt;
+            let _ = app.opener().reveal_item_in_dir(&dir_str);
+        }
+
         Ok(serde_json::json!({ "success": true, "path": dir_str }))
     } else {
         Err(AppError::internal("ロガーが初期化されていません"))
@@ -704,8 +719,6 @@ pub async fn open_file_with_default_app(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    use tauri_plugin_opener::OpenerExt;
-
     let target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
@@ -717,18 +730,26 @@ pub async fn open_file_with_default_app(
         return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
     };
 
-    app.opener()
-        .open_path(target_path, None::<&str>)
-        .map_err(|e| AppError::internal(format!("既定アプリでの起動に失敗: {}", e)))?;
-
-    Ok(())
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::open_file(&app, &target_path, None, None)?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_path(target_path, None::<&str>)
+            .map_err(|e| AppError::internal(format!("既定アプリでの起動に失敗: {}", e)))?;
+        Ok(())
+    }
 }
 
 /// ファイルをOSのファイルマネージャー（エクスプローラー等）で表示しハイライトする
 ///
 /// 変更理由: アクションプラグイン「フォルダで表示」のバックエンド処理。
 /// デスクトップ環境では対象ファイルを選択状態でエクスプローラーを開き、
-/// モバイル環境（Android）では親ディレクトリまたはファイルをOS既定アプリ/共有で開く。
+/// Android 環境では DocumentsContract またはファイルマネージャ用 Intent で該当フォルダを表示する。
 ///
 /// @param app Tauri AppHandle
 /// @param state アプリケーション状態
@@ -741,8 +762,6 @@ pub async fn show_in_folder(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    use tauri_plugin_opener::OpenerExt;
-
     let target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
@@ -754,22 +773,28 @@ pub async fn show_in_folder(
         return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
     };
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(target_os = "android")]
     {
-        app.opener()
-            .reveal_item_in_dir(&target_path)
-            .map_err(|e| AppError::internal(format!("エクスプローラーでの表示に失敗: {}", e)))?;
+        crate::android_native::open_folder(&app, &target_path)?;
         Ok(())
     }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(target_os = "ios")]
     {
-        // モバイルではフォルダ表示（reveal）APIが存在しないため、親フォルダまたはファイルを既定アプリ/共有で開く
+        use tauri_plugin_opener::OpenerExt;
         let res = if let Some(parent) = std::path::Path::new(&target_path).parent() {
             app.opener().open_path(parent.to_string_lossy().to_string(), None::<&str>)
         } else {
             app.opener().open_path(&target_path, None::<&str>)
         };
         let _ = res;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .reveal_item_in_dir(&target_path)
+            .map_err(|e| AppError::internal(format!("エクスプローラーでの表示に失敗: {}", e)))?;
         Ok(())
     }
 }
@@ -807,8 +832,6 @@ pub async fn execute_plugin_action(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    use tauri_plugin_opener::OpenerExt;
-
     let target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
@@ -884,26 +907,33 @@ pub async fn execute_plugin_action(
         }
     }
 
-    // 2. コマンド未指定、またはプロセス起動失敗時はOS標準のファイル関連付け（既定アプリ/共有）でオープン
-    if app.opener().open_path(&target_path, None::<&str>).is_ok() {
-        return Ok(());
+    // 2. Android環境での起動:
+    // CLIP STUDIO PAINT または .clip 拡張子の場合は専用パッケージとMIMEタイプを指定して起動
+    #[cfg(target_os = "android")]
+    {
+        let is_clip = action_id == "action.open_clip_studio"
+            || target_path.to_lowercase().ends_with(".clip");
+        let mime = if is_clip { Some("application/x-clip") } else { None };
+        let package = if is_clip {
+            Some("jp.co.celsys.clipstudiopaint.googleplay")
+        } else {
+            None
+        };
+
+        crate::android_native::open_file(&app, &target_path, mime, package)?;
+        Ok(())
     }
 
-    Err(AppError::internal(format!("アクション [{}] の実行に失敗しました（関連付けまたは実行ファイルが見つかりません）", action_def.name)))
-}
+    // 3. デスクトップ環境: コマンド未指定、またはプロセス起動失敗時はOS標準のファイル関連付け（既定アプリ/共有）でオープン
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        if app.opener().open_path(&target_path, None::<&str>).is_ok() {
+            return Ok(());
+        }
 
-/// CLIP STUDIO PAINT で .clip ファイルを開く（汎用アクションランタイムへの委譲）
-///
-/// 変更理由: 後方互換性を維持しつつ、本体コードからClipStudio固有ハードコードを全廃し、
-/// 汎用プラグインアクションランタイム（execute_plugin_action）へ委譲するため。
-#[command]
-pub async fn open_in_clip_studio(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-    id: Option<i64>,
-    path: Option<String>,
-) -> Result<(), AppError> {
-    execute_plugin_action(app, state, "action.open_clip_studio".to_string(), id, path).await
+        Err(AppError::internal(format!("アクション [{}] の実行に失敗しました（関連付けまたは実行ファイルが見つかりません）", action_def.name)))
+    }
 }
 
 /// コマンドライン引数文字列を空白・引用符を考慮してトークン分割するヘルパー
@@ -1003,7 +1033,12 @@ pub async fn open_file_with_app(
             .map_err(|e| AppError::internal(format!("アプリケーションの起動に失敗: {}", e)))?;
         Ok(())
     }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::open_file(&app, &target_path, None, None)?;
+        Ok(())
+    }
+    #[cfg(target_os = "ios")]
     {
         use tauri_plugin_opener::OpenerExt;
         app.opener()
@@ -1017,6 +1052,7 @@ pub async fn open_file_with_app(
 ///
 /// 変更理由: 仕様書および右クリックメニュー「ゴミ箱へ移動」アクションの実装。
 /// ファイルをOSのゴミ箱へ安全に退避させ、UI表示を即時更新する。
+/// Android環境ではMediaStoreまたはストレージAPI経由で安全に削除する。
 ///
 /// @param app Tauri AppHandle
 /// @param state アプリケーション状態
@@ -1044,7 +1080,11 @@ pub async fn trash_file(
             trash::delete(&target_path)
                 .map_err(|e| AppError::internal(format!("ゴミ箱への移動に失敗: {}", e)))?;
         }
-        #[cfg(any(target_os = "android", target_os = "ios"))]
+        #[cfg(target_os = "android")]
+        {
+            crate::android_native::trash_file(&app, &file_path_str)?;
+        }
+        #[cfg(target_os = "ios")]
         {
             std::fs::remove_file(&target_path)
                 .map_err(|e| AppError::internal(format!("ファイルの削除に失敗: {}", e)))?;
@@ -1127,6 +1167,311 @@ pub async fn save_app_settings(
     info!("AppSettings saved successfully");
     Ok(())
 }
+
+/// 導入済みプラグイン一覧を取得する
+///
+/// 変更理由: 設定モーダルの「プラグイン管理」タブで全プラグインの状態・対応拡張子を表示するため。
+///
+/// @param state アプリケーション状態
+/// @return InstalledPluginInfo の配列
+#[command]
+pub async fn get_installed_plugins(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::plugins::InstalledPluginInfo>, AppError> {
+    let settings = crate::settings::load_settings(&state.data_dir);
+    Ok(state
+        .format_plugins
+        .list_installed_plugins(&settings.enabled_plugins, &state.data_dir))
+}
+
+/// ユーザーのプラグインフォルダ（%APPDATA%/com.imagemediaviewer.desktop/plugins）をOSのファイルマネージャで開く
+///
+/// 変更理由: ユーザーが手動でプラグインフォルダを配置・確認したい場合にワンクリックでアクセス可能にするため。
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+#[command]
+pub async fn open_plugins_folder(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, AppError> {
+    let plugins_dir = state.data_dir.join("plugins");
+    std::fs::create_dir_all(&plugins_dir)
+        .map_err(|e| AppError::io(format!("プラグインフォルダの作成に失敗: {}", e)))?;
+
+    let dir_str = plugins_dir.to_string_lossy().to_string();
+
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::open_folder(&app, &dir_str)?;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        let _ = app.opener().open_path(&dir_str, None::<&str>);
+    }
+
+    Ok(dir_str)
+}
+
+/// ディレクトリ配下から plugin.json が存在するプラグインルートディレクトリを再帰探索する（深さ上限3）
+fn find_manifest_root_dir(dir: &Path, depth: usize) -> Option<PathBuf> {
+    if depth > 3 || !dir.is_dir() {
+        return None;
+    }
+    if dir.join("plugin.json").is_file() {
+        return Some(dir.to_path_buf());
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                if let Some(found) = find_manifest_root_dir(&p, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// ディレクトリの中身を再帰的にコピーするヘルパー
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// プラグインIDから安全なディレクトリ名を生成する
+fn sanitize_plugin_folder_name(id: &str) -> String {
+    let stripped = id.strip_prefix("format.").unwrap_or(id);
+    let sanitized: String = stripped
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if sanitized.is_empty() {
+        "custom_plugin".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// 指定されたパス（ZIPアーカイブ、プラグインフォルダ、または plugin.json）からプラグインをインストールする
+///
+/// 変更理由: 外部で個別開発・配布されたプラグイン（ClipStudioプラグイン等）を、
+/// ユーザーが設定ファイル（app_settings.json）を手動編集したりパスを探すことなく、
+/// GUIからファイル/フォルダ選択するだけで即座に導入・有効化できるようにするため。
+/// 最小限の依存関係原則に従い、ZIP展開にはOS標準の `tar -xf`（WindowsフォールバックとしてPowerShell `Expand-Archive`）を使用する。
+///
+/// @param app_data_dir アプリケーションデータディレクトリ
+/// @param source_path 選択されたZIPファイル、プラグインディレクトリ、または plugin.json のパス
+/// @return インストールされた PluginManifest
+pub fn install_plugin_from_path(
+    app_data_dir: &Path,
+    source_path: &Path,
+) -> Result<crate::plugins::PluginManifest, AppError> {
+    if !source_path.exists() {
+        return Err(AppError::invalid_argument("指定されたパスが存在しません"));
+    }
+
+    // 一時作業ディレクトリの準備（ZIP展開用）
+    let temp_extract_dir = std::env::temp_dir().join(format!(
+        "imv_plugin_import_{}_{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+
+    let resolve_res = (|| -> Result<(PathBuf, crate::plugins::PluginManifest), AppError> {
+        let plugin_src_dir = if source_path.is_dir() {
+            find_manifest_root_dir(source_path, 0).ok_or_else(|| {
+                AppError::invalid_argument("指定されたフォルダ内に plugin.json が見つかりません")
+            })?
+        } else if source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case("plugin.json"))
+            .unwrap_or(false)
+        {
+            source_path
+                .parent()
+                .ok_or_else(|| AppError::invalid_argument("親ディレクトリを特定できません"))?
+                .to_path_buf()
+        } else if source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("zip"))
+            .unwrap_or(false)
+        {
+            std::fs::create_dir_all(&temp_extract_dir).map_err(|e| {
+                AppError::io(format!("一時展開ディレクトリの作成に失敗: {}", e))
+            })?;
+
+            // 1. OS標準の tar コマンドによる展開を試行 (Windows 10/11, macOS, Linux 標準搭載)
+            let tar_ok = std::process::Command::new("tar")
+                .arg("-xf")
+                .arg(source_path)
+                .arg("-C")
+                .arg(&temp_extract_dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if !tar_ok {
+                #[cfg(target_os = "windows")]
+                {
+                    let ps_ok = std::process::Command::new("powershell")
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            &format!(
+                                "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
+                                source_path.to_string_lossy().replace('\'', "''"),
+                                temp_extract_dir.to_string_lossy().replace('\'', "''")
+                            ),
+                        ])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    if !ps_ok {
+                        return Err(AppError::internal(
+                            "ZIPアーカイブの展開に失敗しました（破損しているか未対応の形式です）",
+                        ));
+                    }
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let unzip_ok = std::process::Command::new("unzip")
+                        .arg("-o")
+                        .arg(source_path)
+                        .arg("-d")
+                        .arg(&temp_extract_dir)
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    if !unzip_ok {
+                        return Err(AppError::internal("ZIPアーカイブの展開に失敗しました"));
+                    }
+                }
+            }
+
+            find_manifest_root_dir(&temp_extract_dir, 0).ok_or_else(|| {
+                AppError::invalid_argument("ZIPアーカイブ内に有効な plugin.json が含まれていません")
+            })?
+        } else {
+            return Err(AppError::invalid_argument(
+                "対応していないファイル形式です（.zip ファイル、plugin.json、またはプラグインフォルダを指定してください）",
+            ));
+        };
+
+        let manifest_path = plugin_src_dir.join("plugin.json");
+        let content = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| AppError::io(format!("plugin.json の読み込みに失敗: {}", e)))?;
+        let manifest: crate::plugins::PluginManifest = serde_json::from_str(&content)
+            .map_err(|e| AppError::invalid_argument(format!("plugin.json の構文が不正です: {}", e)))?;
+
+        if manifest.id.trim().is_empty() || manifest.name.trim().is_empty() {
+            return Err(AppError::invalid_argument(
+                "plugin.json の id または name が空です",
+            ));
+        }
+
+        Ok((plugin_src_dir, manifest))
+    })();
+
+    let result = match resolve_res {
+        Ok((plugin_src_dir, manifest)) => {
+            let folder_name = sanitize_plugin_folder_name(&manifest.id);
+            let target_dir = app_data_dir.join("plugins").join(&folder_name);
+
+            let src_canon = plugin_src_dir.canonicalize().unwrap_or_else(|_| plugin_src_dir.clone());
+            let dst_canon = target_dir.canonicalize().unwrap_or_else(|_| target_dir.clone());
+
+            if src_canon != dst_canon {
+                copy_dir_recursive(&plugin_src_dir, &target_dir).map_err(|e| {
+                    AppError::io(format!("プラグインファイルのコピーに失敗: {}", e))
+                })?;
+            }
+
+            Ok(manifest)
+        }
+        Err(e) => Err(e),
+    };
+
+    if temp_extract_dir.exists() {
+        let _ = std::fs::remove_dir_all(&temp_extract_dir);
+    }
+
+    result
+}
+
+/// GUIからプラグイン（ZIPパッケージ・フォルダ・plugin.json）をインストールし即時有効化するコマンド
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション状態
+/// @param source_path インポート元のパス
+/// @return 更新後の導入済みプラグイン一覧
+#[command]
+pub async fn install_plugin(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    source_path: String,
+) -> Result<Vec<crate::plugins::InstalledPluginInfo>, AppError> {
+    let manifest = install_plugin_from_path(&state.data_dir, Path::new(&source_path))?;
+
+    // 設定を更新し、対象プラグインが明示的に無効化（!id）されていた場合は解除して有効化リストに追加
+    let mut settings = crate::settings::load_settings(&state.data_dir);
+    let disable_entry = format!("!{}", manifest.id);
+    settings.enabled_plugins.retain(|p| p != &disable_entry);
+    if !crate::plugins::format::is_plugin_enabled_by_patterns(&manifest.id, &settings.enabled_plugins) {
+        settings.enabled_plugins.push(manifest.id.clone());
+    }
+    for act in &manifest.actions {
+        let disable_act = format!("!{}", act.id);
+        settings.enabled_plugins.retain(|p| p != &disable_act);
+    }
+    let _ = crate::settings::save_settings(&state.data_dir, &settings);
+
+    // プラグインレジストリを即時リロードし、新規拡張子があれば監視フォルダを再走査
+    let reload_res = state
+        .format_plugins
+        .reload(&settings.enabled_plugins, &state.data_dir);
+
+    if !reload_res.added_extensions.is_empty() {
+        let app_clone = app.clone();
+        let state_clone = Arc::clone(&state);
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(conn) = state_clone.db.reader() {
+                if let Ok(folders) = crate::db::repo::get_watched_folders(&conn) {
+                    for folder in folders {
+                        let _ = crate::scanner::scan_folder(
+                            app_clone.clone(),
+                            Arc::clone(&state_clone),
+                            folder.id,
+                            folder.path,
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    info!("Plugin installed and enabled: id={}, name={}", manifest.id, manifest.name);
+
+    Ok(state
+        .format_plugins
+        .list_installed_plugins(&settings.enabled_plugins, &state.data_dir))
+}
+
 
 
 

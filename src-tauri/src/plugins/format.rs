@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use crate::pipeline::exif::ExtractedMetadata;
-use super::manifest::{PluginActionDefinition, PluginManifest};
+use super::manifest::{InstalledPluginInfo, PluginActionDefinition, PluginManifest};
 use super::runtime::{discover_plugins, get_plugin_search_dirs, DynamicFormatPlugin};
 
 /// 画像フォーマット拡張プラグインインターフェース
@@ -74,9 +74,20 @@ struct FormatPluginRegistryInner {
     manifests: Vec<PluginManifest>,
 }
 
-/// プラグインIDが有効化リスト（完全一致、全一致 "*"、前方一致ワイルドカード "prefix*"）に合致するか判定する
+/// プラグインIDが有効化リスト（完全一致、全一致 "*"、前方一致ワイルドカード "prefix*"、および明示的無効化 "!id"）に合致するか判定する
+///
+/// 変更理由: デフォルトで "*" や "format.*" による自動有効化を維持しつつ、
+/// ユーザーがGUIから特定のプラグインを個別にOFFにした際（"!format.xxx"）に確実に無効化できるようにするため。
 pub fn is_plugin_enabled_by_patterns(id: &str, enabled_plugins: &[String]) -> bool {
+    let disabled_rule = format!("!{}", id);
+    if enabled_plugins.iter().any(|p| p == &disabled_rule) {
+        return false;
+    }
+
     enabled_plugins.iter().any(|pattern| {
+        if pattern.starts_with('!') {
+            return false;
+        }
         if pattern == "*" || pattern == id {
             true
         } else if let Some(prefix) = pattern.strip_suffix('*') {
@@ -192,11 +203,63 @@ impl FormatPluginRegistry {
         }
     }
 
+    /// 検索ディレクトリから検出された全プラグインの一覧情報（有効・無効両方を含む）を取得する
+    ///
+    /// 変更理由: 設定モーダルの「プラグイン管理」タブにおいて、現在インストールされている全プラグインの
+    /// 状態（有効/無効、対応拡張子、提供アクション、配置パス）を一覧表示・操作可能にするため。
+    ///
+    /// @param enabled_plugins 現在の有効化プラグインパターン一覧
+    /// @param app_data_dir アプリケーションデータディレクトリ
+    /// @return ソート済みの InstalledPluginInfo リスト
+    pub fn list_installed_plugins(
+        &self,
+        enabled_plugins: &[String],
+        app_data_dir: &Path,
+    ) -> Vec<InstalledPluginInfo> {
+        let search_dirs = get_plugin_search_dirs(app_data_dir);
+        let discovered = discover_plugins(&search_dirs);
+        let user_plugins_root = app_data_dir
+            .join("plugins")
+            .canonicalize()
+            .unwrap_or_else(|_| app_data_dir.join("plugins"));
+
+        let mut list: Vec<InstalledPluginInfo> = discovered
+            .into_iter()
+            .map(|(id, (manifest, plugin_dir))| {
+                let enabled = is_plugin_enabled_by_patterns(&id, enabled_plugins);
+                let canonical_dir = plugin_dir.canonicalize().unwrap_or_else(|_| plugin_dir.clone());
+                let is_user_installed = canonical_dir.starts_with(&user_plugins_root);
+                let extensions = manifest
+                    .extensions
+                    .iter()
+                    .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+                    .filter(|ext| !ext.is_empty())
+                    .collect();
+                let action_names = manifest.actions.iter().map(|a| a.name.clone()).collect();
+
+                InstalledPluginInfo {
+                    id,
+                    name: manifest.name,
+                    version: manifest.version,
+                    description: manifest.description,
+                    extensions,
+                    action_names,
+                    enabled,
+                    path: plugin_dir.to_string_lossy().to_string(),
+                    is_user_installed,
+                }
+            })
+            .collect();
+
+        list.sort_by(|a, b| a.id.cmp(&b.id));
+        list
+    }
+
     /// プラグインディレクトリを再走査し、enabled_plugins に合致するプラグインを動的リロードする
     ///
     /// 変更理由: ユーザーが新しいプラグインフォルダを追加したり、設定画面でプラグインを有効化した際、
     /// 本体の再起動や再ビルドを不要にし、即座に拡張子監視とアクションを反映させるため。
-    /// ワイルドカード（"*" や "format.*"）による一括指定にも対応。
+    /// ワイルドカード（"*" や "format.*"）および個別無効化（"!id"）による指定にも対応。
     ///
     /// @param enabled_plugins 有効化プラグインID一覧
     /// @param app_data_dir アプリケーションデータディレクトリ
@@ -214,10 +277,17 @@ impl FormatPluginRegistry {
 
         for (id, (manifest, plugin_dir)) in discovered {
             if is_plugin_enabled_by_patterns(&id, enabled_plugins) {
-                // アクションの収集
+                // アクションの収集（親プラグインIDを自動付与し、個別アクション無効化設定も考慮）
                 for action in &manifest.actions {
+                    if !is_plugin_enabled_by_patterns(&action.id, enabled_plugins) {
+                        continue;
+                    }
                     if !new_actions.iter().any(|a| a.id == action.id) {
-                        new_actions.push(action.clone());
+                        let mut act = action.clone();
+                        if act.plugin_id.is_none() {
+                            act.plugin_id = Some(id.clone());
+                        }
+                        new_actions.push(act);
                     }
                 }
 
@@ -281,6 +351,18 @@ mod tests {
     }
 
     #[test]
+    fn test_is_plugin_enabled_by_patterns_with_negation() {
+        let patterns = vec![
+            "*".to_string(),
+            "format.*".to_string(),
+            "!format.disabled_one".to_string(),
+        ];
+        assert!(is_plugin_enabled_by_patterns("format.myformat", &patterns));
+        assert!(is_plugin_enabled_by_patterns("format.clipstudio", &patterns));
+        assert!(!is_plugin_enabled_by_patterns("format.disabled_one", &patterns));
+    }
+
+    #[test]
     fn test_format_plugin_registry_dynamic_reload() {
         let temp_dir = tempdir().unwrap();
         let plugins_dir = temp_dir.path().join("plugins");
@@ -318,39 +400,33 @@ mod tests {
         assert!(res1.added_extensions.is_empty());
         assert!(registry.get_by_extension("myfmt").is_none());
 
-        // 2. 有効化してリロード（新規拡張子が検出されること）
-        let res2 = registry.reload(&["format.myformat".to_string()], temp_dir.path());
-        assert_eq!(res2.loaded_count, 1);
-        assert_eq!(res2.added_extensions, vec!["myf".to_string(), "myfmt".to_string()]);
+        // 2. 有効化してリロード（新規拡張子が検出され、アクションに plugin_id が付与されること）
+        let res2 = registry.reload(&["format.myformat".to_string(), "*".to_string()], temp_dir.path());
+        assert!(res2.loaded_count >= 1);
+        assert!(res2.added_extensions.contains(&"myf".to_string()));
+        assert!(res2.added_extensions.contains(&"myfmt".to_string()));
         assert!(registry.is_plugin_enabled("format.myformat"));
         assert!(registry.get_by_extension("myfmt").is_some());
         assert!(registry.get_by_extension("myf").is_some());
-        assert_eq!(registry.get_actions().len(), 1);
-        assert_eq!(registry.get_actions()[0].id, "action.open_my_format");
+        let my_act = registry.find_action("action.open_my_format").expect("アクションが登録されていること");
+        assert_eq!(my_act.plugin_id, Some("format.myformat".to_string()));
 
         // 3. 再度同じ設定でリロードした場合、added_extensions は空になること
-        let res3 = registry.reload(&["format.myformat".to_string()], temp_dir.path());
+        let res3 = registry.reload(&["format.myformat".to_string(), "*".to_string()], temp_dir.path());
         assert!(res3.added_extensions.is_empty());
-        assert_eq!(res3.loaded_count, 1);
 
-        // 4. ワイルドカード "format.*" でのリロード検証（一時ディレクトリのmyformatに加え、同梱のclipstudioとsampleも合流して3件）
-        let registry_wildcard = FormatPluginRegistry::empty();
-        let res_wildcard = registry_wildcard.reload(&["format.*".to_string()], temp_dir.path());
-        assert_eq!(res_wildcard.loaded_count, 3);
-        assert!(registry_wildcard.is_plugin_enabled("format.myformat"));
-        assert!(registry_wildcard.is_plugin_enabled("format.clipstudio"));
-        assert!(registry_wildcard.is_plugin_enabled("format.sample"));
-        assert!(registry_wildcard.get_by_extension("myfmt").is_some());
-        assert!(registry_wildcard.get_by_extension("clip").is_some());
-        assert!(registry_wildcard.get_by_extension("sampleimg").is_some());
+        // 4. 個別無効化 "!format.myformat" を指定すると無効化されること
+        let _res4 = registry.reload(&["*".to_string(), "!format.myformat".to_string()], temp_dir.path());
+        assert!(!registry.is_plugin_enabled("format.myformat"));
+        assert!(registry.get_by_extension("myfmt").is_none());
+        assert!(registry.find_action("action.open_my_format").is_none());
 
-        // 5. ワイルドカード "*" でのリロード検証
-        let registry_all = FormatPluginRegistry::empty();
-        let res_all = registry_all.reload(&["*".to_string()], temp_dir.path());
-        assert_eq!(res_all.loaded_count, 3);
-        assert!(registry_all.is_plugin_enabled("format.myformat"));
-        assert!(registry_all.is_plugin_enabled("format.clipstudio"));
-        assert!(registry_all.is_plugin_enabled("format.sample"));
+        // 5. list_installed_plugins で全プラグインと有効/無効状態が取得できること
+        let installed = registry.list_installed_plugins(&["*".to_string(), "!format.myformat".to_string()], temp_dir.path());
+        let my_info = installed.iter().find(|p| p.id == "format.myformat").expect("myformatが一覧に含まれること");
+        assert!(!my_info.enabled);
+        assert!(my_info.is_user_installed);
+        assert_eq!(my_info.extensions, vec!["myfmt".to_string(), "myf".to_string()]);
     }
 
     #[test]

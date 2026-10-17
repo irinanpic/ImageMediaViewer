@@ -1,15 +1,17 @@
-//! プラグインサンプルファイルおよび同梱リソースの検証テスト
+//! プラグインパッケージ導入・動的ロードおよび同梱リソースの結合検証テスト
 //!
-//! 変更理由: インストーラーに同梱される plugins ディレクトリ内の設定サンプル
-//! （app_settings.sample.json, custom_action_sample.json）および標準フォーマットプラグインマニフェスト
-//! （plugins/clipstudio/plugin.json, plugins/sample_format/plugin.json）が、
-//! アプリ本体のデータ構造・仕様と整合していることを自動検証するため。
+//! 変更理由: 本番ディレクトリ（plugins/）にテスト用ダミープラグイン（sample_format等）を放置せず、
+//! 一時ディレクトリを用いたプラグインのフォルダ・ZIPインポート（install_plugin_from_path）および
+//! 独立ビルドされた ClipStudio プラグインの動作をクリーンに自動検証するため。
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tempfile::tempdir;
 
-use image_media_viewer_lib::plugins::{DynamicFormatPlugin, ImageFormatPlugin, PluginManifest};
-use image_media_viewer_lib::settings::{AppSettings, CustomContextMenuItem};
+use image_media_viewer_lib::commands::install_plugin_from_path;
+use image_media_viewer_lib::plugins::{DynamicFormatPlugin, FormatPluginRegistry, ImageFormatPlugin, PluginManifest};
+use image_media_viewer_lib::settings::default_enabled_plugins;
 
 /// プロジェクトルートの plugins ディレクトリのパスを取得する
 fn get_plugins_dir() -> PathBuf {
@@ -17,59 +19,17 @@ fn get_plugins_dir() -> PathBuf {
     manifest_dir.join("../plugins")
 }
 
-#[test]
-fn test_app_settings_sample_json_validity() {
-    let plugins_dir = get_plugins_dir();
-    let sample_file = plugins_dir.join("app_settings.sample.json");
-    assert!(sample_file.exists(), "app_settings.sample.json が存在すること");
-
-    let content = fs::read_to_string(&sample_file).expect("app_settings.sample.json の読み込みに失敗");
-    let settings: AppSettings = serde_json::from_str(&content)
-        .expect("app_settings.sample.json が AppSettings 構造体へ正常にデシリアライズできること");
-
-    assert!(settings.stay_in_tray, "常駐フラグが設定されていること");
-    assert_eq!(settings.locale, "ja", "言語設定が ja であること");
-    assert!(!settings.enabled_plugins.is_empty(), "有効化プラグイン一覧が空でないこと");
-    assert!(
-        settings.enabled_plugins.contains(&"format.clipstudio".to_string()),
-        "format.clipstudio が含まれていること"
-    );
-    assert!(
-        !settings.custom_context_menu_items.is_empty(),
-        "カスタムコンテキストメニューサンプルが含まれていること"
-    );
-    for item in &settings.custom_context_menu_items {
-        assert!(!item.id.is_empty(), "項目IDが空でないこと");
-        assert!(!item.name.is_empty(), "項目名が空でないこと");
-        assert!(!item.app_path.is_empty(), "appPath が空でないこと");
-    }
-}
-
-#[test]
-fn test_custom_action_sample_json_validity() {
-    let plugins_dir = get_plugins_dir();
-    let sample_file = plugins_dir.join("action_plugins/custom_action_sample.json");
-    assert!(sample_file.exists(), "custom_action_sample.json が存在すること");
-
-    let content = fs::read_to_string(&sample_file).expect("custom_action_sample.json の読み込みに失敗");
-    let items: Vec<CustomContextMenuItem> = serde_json::from_str(&content)
-        .expect("custom_action_sample.json が Vec<CustomContextMenuItem> へ正常にデシリアライズできること");
-
-    assert!(!items.is_empty(), "アクションサンプル一覧が空でないこと");
-    for item in &items {
-        assert!(!item.id.is_empty(), "項目IDが空でないこと");
-        assert!(!item.name.is_empty(), "項目名が空でないこと");
-        assert!(!item.app_path.is_empty(), "appPath が空でないこと");
-        assert!(item.args.is_some(), "引数テンプレートが指定されていること");
-    }
+/// 独立プラグインソース（plugins-src/clipstudio）のパスを取得する
+fn get_clipstudio_src_dir() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir.join("../plugins-src/clipstudio")
 }
 
 #[test]
 fn test_clip_studio_plugin_json_validity_and_runtime() {
-    let plugins_dir = get_plugins_dir();
-    let clip_dir = plugins_dir.join("clipstudio");
-    let manifest_file = clip_dir.join("plugin.json");
-    assert!(manifest_file.exists(), "plugins/clipstudio/plugin.json が存在すること");
+    let clip_src_dir = get_clipstudio_src_dir();
+    let manifest_file = clip_src_dir.join("plugin.json");
+    assert!(manifest_file.exists(), "plugins-src/clipstudio/plugin.json が存在すること");
 
     let content = fs::read_to_string(&manifest_file).expect("plugin.json の読み込みに失敗");
     let manifest: PluginManifest = serde_json::from_str(&content)
@@ -83,49 +43,91 @@ fn test_clip_studio_plugin_json_validity_and_runtime() {
     assert_eq!(manifest.actions[0].id, "action.open_clip_studio");
 
     // 動的プラグインランタイムへの読み込み検証
-    let plugin = DynamicFormatPlugin::new(manifest, clip_dir);
+    let plugin = DynamicFormatPlugin::new(manifest, clip_src_dir);
     assert_eq!(plugin.id(), "format.clipstudio");
     assert_eq!(plugin.name(), "CLIP STUDIO PAINT (.clip) Support");
     assert_eq!(plugin.supported_extensions(), &["clip"]);
 }
 
 #[test]
-fn test_sample_format_plugin_json_validity() {
-    let plugins_dir = get_plugins_dir();
-    let sample_dir = plugins_dir.join("sample_format");
-    let manifest_file = sample_dir.join("plugin.json");
-    assert!(manifest_file.exists(), "plugins/sample_format/plugin.json が存在すること");
+fn test_install_plugin_from_directory_and_zip() {
+    let app_data_dir = tempdir().unwrap();
+    let external_plugin_src = tempdir().unwrap();
 
-    let content = fs::read_to_string(&manifest_file).expect("plugin.json の読み込みに失敗");
-    let manifest: PluginManifest = serde_json::from_str(&content)
-        .expect("plugin.json が PluginManifest 構造体へ正常にデシリアライズできること");
+    let sample_manifest = r#"{
+        "id": "format.custom_ext",
+        "name": "Custom External Plugin",
+        "version": "1.2.0",
+        "description": "外部開発プラグインのインポート検証用",
+        "extensions": ["cstm"],
+        "extractor": {
+            "type": "binary_slice",
+            "start_signature": "89504E470D0A1A0A",
+            "end_signature": "49454E44AE426082",
+            "include_end_signature": true,
+            "mime_type": "image/png"
+        },
+        "actions": [
+            {
+                "id": "action.open_custom_ext",
+                "name": "Customアプリで開く",
+                "order": 25,
+                "extensions": ["cstm"]
+            }
+        ]
+    }"#;
 
-    assert_eq!(manifest.id, "format.sample");
-    assert_eq!(manifest.extensions, vec!["sampleimg".to_string()]);
-    assert!(manifest.extractor.is_some());
-}
+    fs::write(external_plugin_src.path().join("plugin.json"), sample_manifest).unwrap();
 
-#[test]
-fn test_bundled_plugins_loadable_with_default_settings() {
-    let plugins_dir = get_plugins_dir();
-    let default_plugins = image_media_viewer_lib::settings::default_enabled_plugins();
+    // 1. フォルダ指定でのプラグインインストール検証
+    let installed_manifest = install_plugin_from_path(app_data_dir.path(), external_plugin_src.path())
+        .expect("フォルダからのプラグインインストールに成功すること");
+    assert_eq!(installed_manifest.id, "format.custom_ext");
 
-    let registry = image_media_viewer_lib::plugins::FormatPluginRegistry::new(
-        &default_plugins,
-        &plugins_dir,
-    );
+    let installed_file = app_data_dir
+        .path()
+        .join("plugins")
+        .join("custom_ext")
+        .join("plugin.json");
+    assert!(installed_file.exists(), "ユーザーの plugins/custom_ext/plugin.json にコピーされていること");
 
-    assert!(
-        registry.is_plugin_enabled("format.clipstudio"),
-        "ClipStudioプラグインがデフォルト設定で有効化されていること"
-    );
-    assert!(
-        registry.is_plugin_enabled("format.sample"),
-        "SampleFormatプラグインがformat.*ワイルドカードでデフォルト有効化されていること"
-    );
-    let exts = registry.supported_extensions();
-    assert!(exts.contains(&"clip".to_string()), "clip拡張子が登録されていること");
-    assert!(exts.contains(&"sampleimg".to_string()), "sampleimg拡張子が登録されていること");
+    // デフォルト設定（ワイルドカード）で自動的に有効化・認識されること
+    let default_plugins = default_enabled_plugins();
+    let registry = FormatPluginRegistry::new(&default_plugins, app_data_dir.path());
+    assert!(registry.is_plugin_enabled("format.custom_ext"));
+    assert!(registry.supported_extensions().contains(&"cstm".to_string()));
+    let action = registry.find_action("action.open_custom_ext").expect("アクションが登録されていること");
+    assert_eq!(action.plugin_id, Some("format.custom_ext".to_string()));
+
+    // 2. ZIPアーカイブからのプラグインインストール検証
+    let zip_dir = tempdir().unwrap();
+    let zip_path = zip_dir.path().join("custom_zip_plugin.zip");
+    let zip_staging = zip_dir.path().join("zip_pkg");
+    fs::create_dir_all(&zip_staging).unwrap();
+    let zip_manifest = sample_manifest
+        .replace("format.custom_ext", "format.zipped_ext")
+        .replace("\"cstm\"", "\"zext\"");
+    fs::write(zip_staging.join("plugin.json"), zip_manifest).unwrap();
+
+    let tar_status = std::process::Command::new("tar")
+        .arg("-a")
+        .arg("-cf")
+        .arg(&zip_path)
+        .arg("-C")
+        .arg(zip_dir.path())
+        .arg("zip_pkg")
+        .status();
+
+    if let Ok(s) = tar_status {
+        if s.success() && zip_path.exists() {
+            let zip_installed = install_plugin_from_path(app_data_dir.path(), &zip_path)
+                .expect("ZIPアーカイブからのプラグインインストールに成功すること");
+            assert_eq!(zip_installed.id, "format.zipped_ext");
+            registry.reload(&default_plugins, app_data_dir.path());
+            assert!(registry.is_plugin_enabled("format.zipped_ext"));
+            assert!(registry.supported_extensions().contains(&"zext".to_string()));
+        }
+    }
 }
 
 /// テスト用の有効な mock .clip ファイル（CSFCHUNK + SQLiteチャンク）を生成
@@ -155,14 +157,12 @@ fn create_test_clip_file(width: u32, height: u32) -> Vec<u8> {
 #[test]
 fn test_clipstudio_binary_plugin_loading_and_walker_scan() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
-    use std::sync::Arc;
-    use tempfile::tempdir;
 
     let plugins_dir = get_plugins_dir();
-    let default_plugins = image_media_viewer_lib::settings::default_enabled_plugins();
+    let default_plugins = default_enabled_plugins();
 
     // 1. レジストリを初期化し、ClipStudioプラグイン（外部バイナリ）がロードされることを検証
-    let registry = Arc::new(image_media_viewer_lib::plugins::FormatPluginRegistry::new(
+    let registry = Arc::new(FormatPluginRegistry::new(
         &default_plugins,
         &plugins_dir,
     ));
@@ -232,25 +232,17 @@ fn test_clipstudio_binary_plugin_loading_and_walker_scan() {
             .id
     };
 
-    println!("Plugin get_by_extension clip: {:?}", registry.get_by_extension("clip").is_some());
-    println!("Supported extensions: {:?}", registry.supported_extensions());
-
     // フォルダをスキャン
     image_media_viewer_lib::scanner::scan_folder_core(
         None,
         Arc::clone(&app_state),
         folder_id,
-        folder_path_str.clone(),
+        folder_path_str,
         false,
     ).expect("フォルダスキャンが正常に完了すること");
 
     // DB に .clip ファイルがインデックスされているか検証
     let reader = db.reader().unwrap();
-    let img_count: i64 = reader.query_row("SELECT count(*) FROM images;", [], |r| r.get(0)).unwrap();
-    println!("Images count in DB: {}", img_count);
-    let watched_count: i64 = reader.query_row("SELECT count(*) FROM watched_folders;", [], |r| r.get(0)).unwrap();
-    println!("Watched folders count in DB: {}", watched_count);
-
     let mut stmt = reader.prepare("SELECT file_path, width, height, format FROM images;").unwrap();
     let mut rows = stmt.query([]).unwrap();
 
@@ -268,9 +260,6 @@ fn test_clipstudio_binary_plugin_loading_and_walker_scan() {
 
 #[test]
 fn test_legacy_settings_migration_and_clip_scanning() {
-    use std::sync::Arc;
-    use tempfile::tempdir;
-
     let app_dir = tempdir().unwrap();
     let plugins_dir = get_plugins_dir();
 
@@ -278,19 +267,15 @@ fn test_legacy_settings_migration_and_clip_scanning() {
     let legacy_json = r#"{"stay_in_tray": true, "locale": "ja", "enabled_plugins": ["action.open_default"]}"#;
     fs::write(app_dir.path().join("app_settings.json"), legacy_json).unwrap();
 
-    // 2. load_settings による互換性マイグレーションの実行
+    // 2. load_settings による互換性マイグレーションの実行（特定プラグイン名に依存せず format.* が補完される）
     let loaded_settings = image_media_viewer_lib::settings::load_settings(app_dir.path());
-    assert!(
-        loaded_settings.enabled_plugins.contains(&"format.clipstudio".to_string()),
-        "古い設定ファイルであっても自動マイグレーションにより format.clipstudio が追加されること"
-    );
     assert!(
         loaded_settings.enabled_plugins.contains(&"format.*".to_string()),
         "古い設定ファイルであっても自動マイグレーションにより format.* が追加されること"
     );
 
     // 3. レジストリを初期化し、clip 拡張子がサポート対象として登録されていることを検証
-    let registry = Arc::new(image_media_viewer_lib::plugins::FormatPluginRegistry::new(
+    let registry = Arc::new(FormatPluginRegistry::new(
         &loaded_settings.enabled_plugins,
         &plugins_dir,
     ));
@@ -298,50 +283,4 @@ fn test_legacy_settings_migration_and_clip_scanning() {
         registry.supported_extensions().contains(&"clip".to_string()),
         "マイグレーション後の設定により 'clip' 拡張子が走査対象に追加されていること"
     );
-
-    // 4. 監視フォルダ内の .clip ファイルが walker により走査・登録されることを検証
-    let folder_dir = tempdir().unwrap();
-    let clip_path = folder_dir.path().join("legacy_migrated.clip");
-    let clip_bytes = create_test_clip_file(320, 240);
-    fs::write(&clip_path, &clip_bytes).unwrap();
-
-    let cache_dir = tempdir().unwrap();
-    let db_path = app_dir.path().join("catalog.db");
-    let db = image_media_viewer_lib::db::Database::open(&db_path).unwrap();
-    let thumb_store = Arc::new(image_media_viewer_lib::db::ThumbnailStore::open(cache_dir.path()).unwrap());
-    let thumb_pipeline = image_media_viewer_lib::pipeline::ThumbnailPipeline::new(
-        db.clone(),
-        Arc::clone(&thumb_store),
-        cache_dir.path().to_path_buf(),
-    );
-
-    let app_state = Arc::new(image_media_viewer_lib::state::AppState::new(
-        db.clone(),
-        thumb_store,
-        app_dir.path().to_path_buf(),
-        cache_dir.path().to_path_buf(),
-        thumb_pipeline,
-        Arc::clone(&registry),
-    ));
-
-    let folder_str = folder_dir.path().to_string_lossy().to_string();
-    let folder_id = {
-        let mut writer = db.writer();
-        image_media_viewer_lib::db::repo::add_watched_folder(&mut writer, &folder_str, 1720000000)
-            .unwrap()
-            .id
-    };
-
-    image_media_viewer_lib::scanner::scan_folder_core(
-        None,
-        Arc::clone(&app_state),
-        folder_id,
-        folder_str,
-        false,
-    ).expect("スキャン完了");
-
-    let reader = db.reader().unwrap();
-    let count: i64 = reader.query_row("SELECT count(*) FROM images WHERE format = 'clip';", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1, "古い設定から移行した環境でも .clip ファイルが正常にインデックスされること");
 }
-

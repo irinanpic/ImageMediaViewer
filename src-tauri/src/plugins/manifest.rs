@@ -160,6 +160,9 @@ fn default_output_format() -> String {
 pub struct PluginActionDefinition {
     /// アクション一意識別子 (例: "action.open_clip_studio")
     pub id: String,
+    /// 親プラグイン識別子（ロード時に自動付与。例: "format.clipstudio"）
+    #[serde(default)]
+    pub plugin_id: Option<String>,
     /// メニュー表示名（日本語）
     pub name: String,
     /// メニュー表示名（英語）
@@ -178,6 +181,34 @@ pub struct PluginActionDefinition {
     /// コマンド実行定義
     #[serde(default)]
     pub command: Option<PluginActionCommand>,
+}
+
+/// 導入済みプラグインのメタ情報（設定画面での一覧・管理用）
+///
+/// 変更理由: ユーザーが導入済みのプラグインをGUI上で一覧確認し、
+/// ON/OFF切り替えや配置パスの確認を直感的に行えるようにするため。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct InstalledPluginInfo {
+    /// プラグイン一意識別子
+    pub id: String,
+    /// プラグイン名称
+    pub name: String,
+    /// バージョン文字列
+    pub version: Option<String>,
+    /// 説明文
+    pub description: Option<String>,
+    /// サポートする拡張子一覧
+    pub extensions: Vec<String>,
+    /// 提供するアクション名一覧
+    pub action_names: Vec<String>,
+    /// 現在有効化されているか否か
+    pub enabled: bool,
+    /// プラグインフォルダの配置パス
+    pub path: String,
+    /// ユーザーデータ領域（%APPDATA%/plugins）に配置されているか否か
+    pub is_user_installed: bool,
 }
 
 /// プラグインアクションのプロセス起動定義
@@ -204,6 +235,7 @@ mod tests {
     fn export_bindings_plugins() {
         PluginActionDefinition::export().expect("Failed to export PluginActionDefinition bindings");
         PluginActionCommand::export().expect("Failed to export PluginActionCommand bindings");
+        InstalledPluginInfo::export().expect("Failed to export InstalledPluginInfo bindings");
     }
 
     #[test]

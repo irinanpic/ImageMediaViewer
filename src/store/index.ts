@@ -30,6 +30,17 @@ const DEFAULT_TRANSFORM: ViewerTransformState = {
   panY: 0,
 };
 
+export interface BoardItemContextMenuProps {
+  boardItemId: number;
+  isLocked: boolean;
+  onBringToFront: () => void;
+  onSendToBack: () => void;
+  onToggleFlipH: () => void;
+  onToggleFlipV: () => void;
+  onToggleLock: () => void;
+  onRemoveFromBoard: () => void;
+}
+
 interface AppStoreState {
   // 多言語（i18n）スライス
   locale: "ja" | "en";
@@ -131,8 +142,14 @@ interface AppStoreState {
     x: number;
     y: number;
     record: ImageRecord | null;
+    boardItemContext?: BoardItemContextMenuProps | null;
   };
-  openContextMenu: (params: { x: number; y: number; record: ImageRecord }) => void;
+  openContextMenu: (params: {
+    x: number;
+    y: number;
+    record: ImageRecord;
+    boardItemContext?: BoardItemContextMenuProps | null;
+  }) => void;
   closeContextMenu: () => void;
 
   // コンテキストメニュー設定モーダルスライス
@@ -462,14 +479,16 @@ export const useAppStore = create<AppStoreState>((set) => ({
     x: 0,
     y: 0,
     record: null,
+    boardItemContext: null,
   },
-  openContextMenu: ({ x, y, record }) =>
+  openContextMenu: ({ x, y, record, boardItemContext }) =>
     set({
       contextMenu: {
         isOpen: true,
         x,
         y,
         record,
+        boardItemContext: boardItemContext ?? null,
       },
     }),
   closeContextMenu: () =>
@@ -477,6 +496,7 @@ export const useAppStore = create<AppStoreState>((set) => ({
       contextMenu: {
         ...state.contextMenu,
         isOpen: false,
+        boardItemContext: null,
       },
     })),
 

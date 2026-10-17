@@ -1,13 +1,20 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ChevronsDown,
+  ChevronsUp,
   Copy,
   ExternalLink,
+  FlipHorizontal,
+  FlipVertical,
   FolderOpen,
   LayoutGrid,
+  Lock,
   Palette,
   Play,
   Settings,
   Trash2,
+  Unlock,
+  XCircle,
 } from "lucide-react";
 import { useAppStore } from "../../store";
 import { useTranslation } from "../../locales";
@@ -31,8 +38,9 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
  * 右クリック（長押し）時にカーソル位置へ出現するフローティングコンテキストメニュー
  *
  * 変更理由: 仕様書およびプラグインアーキテクチャに準拠し、
- * 有効化されたアクションおよびユーザー登録カスタムアプリを動的レンダリングする。
- * 画面外はみ出し防止のクランプ制御、Escapeキー / 外部クリックによる自動クローズを完備。
+ * タイムライン・ビューア・ムードボードのすべてで共通のプラグインアクションおよび
+ * カスタム外部連携アプリを動的レンダリングするとともに、
+ * ムードボード上のアイテム右クリック時にはボード固有の配置操作もシームレスに提供するため。
  */
 export const ContextMenu: React.FC = () => {
   const { locale } = useTranslation();
@@ -76,8 +84,8 @@ export const ContextMenu: React.FC = () => {
 
     const updatePosition = () => {
       const el = menuRef.current;
-      const menuWidth = el ? el.offsetWidth : 200;
-      const menuHeight = el ? el.offsetHeight : 240;
+      const menuWidth = el ? el.offsetWidth : 220;
+      const menuHeight = el ? el.offsetHeight : 320;
       const padding = 12;
 
       let clampedX = contextMenu.x;
@@ -144,6 +152,8 @@ export const ContextMenu: React.FC = () => {
     detail
   );
 
+  const boardCtx = contextMenu.boardItemContext;
+
   const handleActionClick = async (action: (typeof actions)[0]) => {
     closeContextMenu();
     if (!contextMenu.record) return;
@@ -171,7 +181,7 @@ export const ContextMenu: React.FC = () => {
         left: `${position.x}px`,
         top: `${position.y}px`,
       }}
-      className="fixed z-50 min-w-[200px] max-w-[280px] bg-surface/95 backdrop-blur-md border border-border shadow-2xl rounded-lg py-1.5 text-textPrimary text-sm animate-in fade-in zoom-in-95 duration-100 select-none"
+      className="fixed z-50 min-w-[210px] max-w-[290px] bg-surface/95 backdrop-blur-md border border-border shadow-2xl rounded-lg py-1.5 text-textPrimary text-sm animate-in fade-in zoom-in-95 duration-100 select-none"
     >
       <div className="px-3 py-1 text-xs text-textSecondary font-medium truncate border-b border-border/40 mb-1">
         {detail?.filePath
@@ -179,6 +189,107 @@ export const ContextMenu: React.FC = () => {
           : `Image #${contextMenu.record.id}`}
       </div>
 
+      {/* ムードボード上のアイテム右クリック時専用操作セクション */}
+      {boardCtx && (
+        <>
+          <div className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-textSecondary/70">
+            {locale === "en" ? "Board Item" : "ボード配置操作"}
+          </div>
+          <button
+            role="menuitem"
+            onClick={() => {
+              closeContextMenu();
+              boardCtx.onBringToFront();
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors"
+          >
+            <ChevronsUp className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate flex-1">
+              {locale === "en" ? "Bring to Front" : "最前面へ移動"}
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              closeContextMenu();
+              boardCtx.onSendToBack();
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors"
+          >
+            <ChevronsDown className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate flex-1">
+              {locale === "en" ? "Send to Back" : "最背面へ移動"}
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              closeContextMenu();
+              boardCtx.onToggleFlipH();
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors"
+          >
+            <FlipHorizontal className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate flex-1">
+              {locale === "en" ? "Flip Horizontal" : "左右反転"}
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              closeContextMenu();
+              boardCtx.onToggleFlipV();
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors"
+          >
+            <FlipVertical className="w-4 h-4 flex-shrink-0" />
+            <span className="truncate flex-1">
+              {locale === "en" ? "Flip Vertical" : "上下反転"}
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              closeContextMenu();
+              boardCtx.onToggleLock();
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors"
+          >
+            {boardCtx.isLocked ? (
+              <Unlock className="w-4 h-4 flex-shrink-0 text-accent" />
+            ) : (
+              <Lock className="w-4 h-4 flex-shrink-0" />
+            )}
+            <span className="truncate flex-1">
+              {boardCtx.isLocked
+                ? locale === "en"
+                  ? "Unlock Position"
+                  : "ロックを解除"
+                : locale === "en"
+                ? "Lock Position"
+                : "位置をロック"}
+            </span>
+          </button>
+          {!boardCtx.isLocked && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                closeContextMenu();
+                boardCtx.onRemoveFromBoard();
+              }}
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 transition-colors"
+            >
+              <XCircle className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate flex-1">
+                {locale === "en" ? "Remove from Board" : "このボードから除外"}
+              </span>
+            </button>
+          )}
+          <div className="h-px bg-border/40 my-1" />
+        </>
+      )}
+
+      {/* 共通ファイル・プラグインアクション群 */}
       {actions.map((action) => {
         const IconComponent = action.icon ? ICON_MAP[action.icon] : null;
         const isTrash = action.id === "action.trash_file";
@@ -212,7 +323,7 @@ export const ContextMenu: React.FC = () => {
       >
         <Settings className="w-3.5 h-3.5 flex-shrink-0" />
         <span className="truncate">
-          {locale === "en" ? "Menu Settings..." : "メニュー設定..."}
+          {locale === "en" ? "Plugins & Menu Settings..." : "プラグイン・メニュー設定..."}
         </span>
       </button>
     </div>
