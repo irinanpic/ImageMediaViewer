@@ -160,6 +160,28 @@ export class SharedPageCacheManager {
     return Array.from(this.cache.keys());
   }
 
+  /**
+   * 現在キャッシュされている全ページの画像IDをページインデックス昇順で取得する
+   *
+   * 変更理由: Ctrl+A 全選択時に `0..totalImages` ループで `getImageByIndex` を呼ぶと、
+   * 10万枚規模で10万回のMap delete/set（LRU更新）が走りUIスレッドがブロックされるのを防ぐため。
+   *
+   * @returns キャッシュ済み全画像のID配列
+   */
+  public getAllLoadedIds(): number[] {
+    const sortedPageIndices = Array.from(this.cache.keys()).sort((a, b) => a - b);
+    const ids: number[] = [];
+    for (const pageIdx of sortedPageIndices) {
+      const records = this.cache.get(pageIdx);
+      if (records) {
+        for (const rec of records) {
+          ids.push(rec.id);
+        }
+      }
+    }
+    return ids;
+  }
+
   public clear() {
     this.cache.clear();
     this.fetchingPages.clear();
@@ -177,7 +199,7 @@ export const sharedCache = new SharedPageCacheManager();
  * およびインクリメンタル差分リロード。コンポーネント間で同一キャッシュを共有し、
  * TimelineToolbar や ImageViewerModal でも即時に画像情報を参照できるようにする。
  *
- * @returns { getImageByIndex, requestIndices, revalidatePages, ensureIndex, versionTick }
+ * @returns { getImageByIndex, getAllLoadedIds, requestIndices, revalidatePages, ensureIndex, versionTick }
  */
 export function usePagedImages() {
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
@@ -342,5 +364,9 @@ export function usePagedImages() {
     [getImageByIndex, selectedFolderId, timelineSort]
   );
 
-  return { getImageByIndex, requestIndices, ensureIndex, versionTick };
+  const getAllLoadedIds = useCallback((): number[] => {
+    return sharedCache.getAllLoadedIds();
+  }, []);
+
+  return { getImageByIndex, getAllLoadedIds, requestIndices, ensureIndex, versionTick };
 }

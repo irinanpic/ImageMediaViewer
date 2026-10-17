@@ -63,3 +63,20 @@
   - フロントエンド Vitest テスト: **63 / 63 tests passed** (全テスト成功)
   - TypeScript & Vite ビルド: **エラー 0 件 (正常終了)**
 
+---
+
+### M2: リリース前品質チェック改修 & 10万枚規模・長時間稼働最終仕上げ
+- **実施日**: 2026-10-17
+- **バックエンド & プラグイン最適化**:
+  - `ThumbBinaryLruCache` 世代カウンタ方式により Mutex ロック内の `get` / `put` / `remove` を $O(N)$ 線形探索から **償却 $O(1)$** へ改善。
+  - `thumb_lookup_cache` に上限（PC: 20,000件 / モバイル: 5,000件）を導入し、長時間稼働時のヒープ肥大化を防止。
+  - `walker.rs` の走査ループ中における 1.5秒ごとの `bump_catalog_version()` / `catalog-changed` 発火を廃止し、走査完了時の1回に集約。走査中の `timeline_summary_cache` / `thumb_lookup_cache` 全消去と `GROUP BY` 再集計スパイクを解消。
+  - `.clip` プラグイン（`plugins-src/clipstudio`）および `DynamicFormatPlugin`（`runtime.rs`）に `(path, file_size, mtime)` キーの短命リングキャッシュ（最大8件）を導入し、メタデータ抽出と直後のサムネイル生成での二重抽出を排除（スキャン＋サムネイル生成のI/O・CPU負荷を半減）。
+  - `server.rs` の変更検知を単一 `File::open` + プラグイン対応メタデータ抽出に統一し、`/api/timeline/summary` にインメモリキャッシュを適用。
+- **フロントエンド & モバイルUX最適化**:
+  - `GridCell.tsx` の `loadedThumbUrls` に最大 10,000 件の FIFO 上限を設定。
+  - `SharedPageCacheManager.getAllLoadedIds()` を新設し、`Ctrl+A` 全選択時の `totalImages` ループと LRU 順序破壊を解消。
+  - `action.trash_file` に確認ダイアログ（モバイルでは物理完全削除の警告）と削除後のビューア・選択状態クリーンアップを実装。
+  - Android 11+ Scoped Storage 向けの `MANAGE_EXTERNAL_STORAGE` 権限確認・設定誘導コマンド、および `extractNativeLibs="true"` / `useLegacyPackaging = true` によるプラグイン `.so` 確実展開を構成。
+
+

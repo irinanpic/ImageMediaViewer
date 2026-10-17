@@ -11,9 +11,13 @@ use crate::models::{ThumbProgress, TimelineSort, TimelineSummary};
 use crate::pipeline::ThumbnailPipeline;
 
 /// サムネイル WebP バイナリのインメモリ LRU キャッシュ（PC: 2,048枚 ≒ 約60〜80MB / モバイル: 512枚 ≒ 約15〜20MB）
+///
+/// 変更理由: VecDeque の線形探索 `position()` による $O(N)$ ロック保持を解消するため、
+/// アクセス世代カウンタ（`access_counter`）を用いた遅延破棄方式により `get` / `put` / `remove` をすべて償却 $O(1)$ 化。
 struct ThumbBinaryLruCache {
-    map: HashMap<String, Arc<Vec<u8>>>,
-    order: VecDeque<String>,
+    map: HashMap<String, (Arc<Vec<u8>>, u64)>,
+    order: VecDeque<(String, u64)>,
+    access_counter: u64,
     max_items: usize,
 }
 
@@ -22,50 +26,74 @@ impl ThumbBinaryLruCache {
         Self {
             map: HashMap::new(),
             order: VecDeque::new(),
+            access_counter: 0,
             max_items,
         }
     }
 
-    /// キャッシュから取得し、真のLRUとしてアクセス順序を末尾（最新）に更新する
+    /// キャッシュから取得し、アクセス世代を更新してキュー末尾に積む（償却 O(1)）
     fn get(&mut self, hash: &str) -> Option<Arc<Vec<u8>>> {
-        let val = self.map.get(hash)?.clone();
-        if let Some(pos) = self.order.iter().position(|k| k == hash) {
-            self.order.remove(pos);
-            self.order.push_back(hash.to_string());
-        }
+        let entry = self.map.get_mut(hash)?;
+        self.access_counter = self.access_counter.wrapping_add(1);
+        let gen = self.access_counter;
+        entry.1 = gen;
+        let val = Arc::clone(&entry.0);
+        self.order.push_back((hash.to_string(), gen));
+        self.compact_order_if_needed();
         Some(val)
     }
 
-    /// キャッシュに格納する（既存時は順序更新、上限到達時は最古エントリを削除）
+    /// キャッシュに格納する（既存時は世代更新、上限到達時は有効な最古エントリを削除：償却 O(1)）
     fn put(&mut self, hash: String, data: Arc<Vec<u8>>) {
-        if self.map.contains_key(&hash) {
-            self.map.insert(hash.clone(), data);
-            if let Some(pos) = self.order.iter().position(|k| k == &hash) {
-                self.order.remove(pos);
-            }
-            self.order.push_back(hash);
+        self.access_counter = self.access_counter.wrapping_add(1);
+        let gen = self.access_counter;
+
+        if let Some(entry) = self.map.get_mut(&hash) {
+            entry.0 = data;
+            entry.1 = gen;
+            self.order.push_back((hash, gen));
+            self.compact_order_if_needed();
             return;
         }
 
         while self.map.len() >= self.max_items {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
+            if let Some((oldest_key, oldest_gen)) = self.order.pop_front() {
+                // map内の最新世代と一致する場合のみ実際に削除（古い世代の履歴は読み飛ばす）
+                if self.map.get(&oldest_key).map(|(_, g)| *g) == Some(oldest_gen) {
+                    self.map.remove(&oldest_key);
+                }
             } else {
                 break;
             }
         }
-        self.order.push_back(hash.clone());
-        self.map.insert(hash, data);
+
+        self.order.push_back((hash.clone(), gen));
+        self.map.insert(hash, (data, gen));
+        self.compact_order_if_needed();
     }
 
-    /// キャッシュから削除する（マップと順序リストの両方から整合的に削除）
+    /// キャッシュから削除する（O(1)：order内の古いタプルはpop時に自然破棄される）
     fn remove(&mut self, hash: &str) {
         self.map.remove(hash);
-        if let Some(pos) = self.order.iter().position(|k| k == hash) {
-            self.order.remove(pos);
+    }
+
+    /// order キューが古い世代履歴で肥大化しすぎないよう定期的にコンパクションする
+    fn compact_order_if_needed(&mut self) {
+        let limit = self.max_items.saturating_mul(4).max(64);
+        if self.order.len() > limit {
+            let map_ref = &self.map;
+            self.order
+                .retain(|(k, g)| map_ref.get(k).map(|(_, cur_g)| *cur_g == *g).unwrap_or(false));
         }
     }
 }
+
+/// thumb_lookup_cache の最大保持件数（PC: 20,000件 / モバイル: 5,000件）
+const MAX_LOOKUP_CACHE_ITEMS: usize = if cfg!(target_os = "android") {
+    5_000
+} else {
+    20_000
+};
 
 /// アプリケーション全体で共有されるグローバル状態
 ///
@@ -288,8 +316,11 @@ impl AppState {
             Err(_) => None,
         }?;
 
-        // 3. 書き込みロックでキャッシュに追加
+        // 3. 書き込みロックでキャッシュに追加（上限超過時はクリアしてメモリ無制限膨張を防止）
         if let Ok(mut cache) = self.thumb_lookup_cache.write() {
+            if cache.len() >= MAX_LOOKUP_CACHE_ITEMS {
+                cache.clear();
+            }
             cache.insert(id, src.clone());
         }
 
@@ -299,6 +330,9 @@ impl AppState {
     /// 実アクセス時にファイル更新が検知された際、インメモリメタデータキャッシュを最新情報で上書きする
     pub fn update_cached_thumb_source(&self, src: ThumbSource) {
         if let Ok(mut cache) = self.thumb_lookup_cache.write() {
+            if cache.len() >= MAX_LOOKUP_CACHE_ITEMS && !cache.contains_key(&src.id) {
+                cache.clear();
+            }
             cache.insert(src.id, src);
         }
     }
@@ -320,5 +354,37 @@ impl AppState {
         if let Ok(mut cache) = self.thumb_binary_cache.lock() {
             cache.put(hash, bytes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thumb_binary_lru_cache_o1_eviction_and_order() {
+        let mut cache = ThumbBinaryLruCache::new(3);
+        let d1 = Arc::new(vec![1u8]);
+        let d2 = Arc::new(vec![2u8]);
+        let d3 = Arc::new(vec![3u8]);
+        let d4 = Arc::new(vec![4u8]);
+
+        cache.put("h1".to_string(), Arc::clone(&d1));
+        cache.put("h2".to_string(), Arc::clone(&d2));
+        cache.put("h3".to_string(), Arc::clone(&d3));
+
+        // h1 にアクセスして最新化 -> 最古は h2 になるはず
+        assert_eq!(cache.get("h1"), Some(Arc::clone(&d1)));
+
+        // h4 を追加すると上限3のため最古の h2 が削除される
+        cache.put("h4".to_string(), Arc::clone(&d4));
+        assert!(cache.get("h2").is_none());
+        assert_eq!(cache.get("h1"), Some(Arc::clone(&d1)));
+        assert_eq!(cache.get("h3"), Some(Arc::clone(&d3)));
+        assert_eq!(cache.get("h4"), Some(Arc::clone(&d4)));
+
+        // remove の検証
+        cache.remove("h3");
+        assert!(cache.get("h3").is_none());
     }
 }

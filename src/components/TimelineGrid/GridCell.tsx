@@ -12,7 +12,8 @@ interface GridCellProps {
   size: number;
 }
 
-// メモリに読み込み完了したサムネイルURLのグローバルキャッシュ
+// メモリに読み込み完了したサムネイルURLのグローバルキャッシュ（最大10,000件でFIFO破棄）
+const MAX_LOADED_THUMB_URLS = 10000;
 const loadedThumbUrls = new Set<string>();
 
 /**
@@ -291,6 +292,12 @@ export const GridCell: React.FC<GridCellProps> = React.memo(
             decoding="async"
             draggable={false}
             onLoad={() => {
+              if (!loadedThumbUrls.has(thumbUrl) && loadedThumbUrls.size >= MAX_LOADED_THUMB_URLS) {
+                const oldest = loadedThumbUrls.values().next().value;
+                if (oldest !== undefined) {
+                  loadedThumbUrls.delete(oldest);
+                }
+              }
               loadedThumbUrls.add(thumbUrl);
               setIsLoaded(true);
             }}

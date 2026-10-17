@@ -1006,4 +1006,42 @@ flowchart TD
 * **パスコピーの即時フィードバック**:
   * クリップボードコピー成功時にバイブレーション（30ms）と画面下部への自動消去型トースト通知を表示し、操作完了を明示。
 
+---
+
+## 15. リリース品質強化および 10 万枚規模・長時間稼働向け最終最適化
+
+### 15.1 ファイル削除の安全性と状態整合性 (`registry.ts`)
+* **誤削除防止の確認ダイアログとモバイル文言の明確化**:
+  * `action.trash_file` の実行先頭で確認ダイアログ（`window.confirm`）を必須化。
+  * デスクトップ環境では「ゴミ箱へ移動」、モバイル環境（Android / iOS）では物理削除となるためラベルを「端末から削除 (Delete from Device)」に切り替え、復元不能である旨を警告。
+* **ビューア・複数選択状態の自動同期**:
+  * 削除完了時、`activeImageId === record.id` の場合は全画面ビューアを即座にクローズ（`closeViewer()`）し、削除済み画像の残留表示を防止。
+  * `selectedImageIds` に削除対象 ID が含まれている場合は選択配列から自動除外。
+
+### 15.2 Android 11+ Scoped Storage における独自形式走査権限とネイティブライブラリ展開 (`AndroidMediaPlugin.kt`, `AndroidManifest.xml`, `build.gradle.kts`)
+* **オンデマンド「すべてのファイルへのアクセス (`MANAGE_EXTERNAL_STORAGE`)」権限導線**:
+  * 起動時は標準の `READ_MEDIA_IMAGES` 権限のみを要求して UX を損なわず、`AddFolderModal` および `ContextMenuSettingsModal`（プラグイン管理タブ）に「すべてのファイルへのアクセス設定を開く (`checkAllFilesAccess` / `requestAllFilesAccess`)」ボタンを提供。
+  * Android 11（API 30）以降の FUSE ファイルシステム層による非標準拡張子（`.clip` 等）の隠蔽や他アプリ作成ファイルの削除制限を、ユーザーの明示的な操作で解除可能にした。
+* **`libimv_clipstudio.so` の確実な実ファイル展開**:
+  * `AndroidManifest.xml` に `android:extractNativeLibs="true"`、`build.gradle.kts` に `packaging { jniLibs { useLegacyPackaging = true } }` を設定し、`nativeLibraryDir` への `.so` 展開を保証。
+
+### 15.3 Android 戻るジェスチャー・モーダル階層の完全統合 (`useBackNavigation.ts`, `AddFolderModal.tsx`, `ContextMenuSettingsModal.tsx`)
+* `useBackNavigation.ts` の管理レイヤー最上位に `contextMenu`（右クリック/長押しメニュー）および `contextMenuSettings`（プラグイン・右クリック設定モーダル）を追加。
+* `AddFolderModal` および `ContextMenuSettingsModal` に `Escape` キーおよび背景（バックドロップ）クリックによるクローズハンドラを統一実装。
+
+### 15.4 10 万枚規模・長時間稼働に向けたキャッシュ・I/O 最適化 (`state.rs`, `walker.rs`, `server.rs`, `GridCell.tsx`, `usePagedImages.ts`, `clipstudio`)
+* **インメモリ LRU キャッシュの償却 $O(1)$ 化と上限管理 (`state.rs`)**:
+  * `ThumbBinaryLruCache` にアクセス世代カウンタ（`access_counter: u64`）を導入し、`VecDeque::position` の $O(N)$ 線形探索を排除して `get` / `put` / `remove` をすべて償却 $O(1)$ 化。
+  * `thumb_lookup_cache` に上限（デスクトップ: 20,000 件 / モバイル: 5,000 件）を設定し、無制限肥大化を防止。
+* **走査中の中間キャッシュ全消去・再集計スパイクの抑止 (`walker.rs`)**:
+  * `ScanPhase::Indexing` ループ中の 1.5 秒ごとの `bump_catalog_version()` および `catalog-changed` 発火を廃止し、走査中は `scan-progress` のみを通知。完了時（`Cleanup` 後）の 1 回のみカタログバージョンを更新することで、走査中の `GROUP BY` 再計算とキャッシュ全消去を防止。
+* **フロントエンド `loadedThumbUrls` の FIFO 上限管理と `Ctrl+A` 高速化 (`GridCell.tsx`, `usePagedImages.ts`, `VirtualTimeline.tsx`)**:
+  * `GridCell.tsx` の `loadedThumbUrls` Set に最大 10,000 件の FIFO 上限を設定。
+  * `SharedPageCacheManager` に LRU 順序を崩さずキャッシュ済み全画像 ID をページ昇順で一括返却する `getAllLoadedIds()` を実装し、`Ctrl+A` 時の `0..totalImages` ループを排除。
+* **プラグイン（`.clip` 等）のプレビュー短命リングキャッシュ (`plugins-src/clipstudio/src/lib.rs`, `runtime.rs`)**:
+  * `(path, file_size, mtime_secs)` をキーとする最大 8 件の短命リングキャッシュを導入し、走査時の寸法取得（`extract_metadata`）と直後のサムネイル生成（`generate_thumbnail`）における二重の SQLite デシリアライズ・PNG 抽出を排除。
+* **HTTP サーバー (`server.rs`) の更新検知統一**:
+  * `/thumbs/:id` と `/raw/:id` の実ファイル変更検知を単一 `File::open` + `calculate_quick_hash_from_file` + `extract_metadata_from_file_with_plugins` に統一し、`/api/timeline/summary` にも `timeline_summary_cache` を適用。
+
+
 

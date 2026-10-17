@@ -8,8 +8,8 @@ use tracing::{error, info, warn};
 
 use crate::error::AppError;
 use crate::models::GetImagesPayload;
-use crate::pipeline::exif::extract_metadata;
-use crate::pipeline::hash::calculate_quick_hash;
+use crate::pipeline::exif::extract_metadata_from_file_with_plugins;
+use crate::pipeline::hash::calculate_quick_hash_from_file;
 use crate::pipeline::thumbnail::get_thumbnail_path;
 use crate::pipeline::JobPriority;
 use crate::scanner::walker::{is_sub_directory, normalize_path};
@@ -406,52 +406,59 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         .unwrap_or(0);
 
                     if cur_size != source.file_size || cur_mtime != source.file_mtime {
-                        // ファイルが更新されている！更新有無をチェックしてDB更新
-                        if let Ok(new_hash) = calculate_quick_hash(file_path, cur_size) {
-                            let new_meta = extract_metadata(file_path, cur_mtime);
-                            let conn = state.db.writer();
-                            let _ = crate::db::repo::update_image_on_file_changed(
-                                &conn,
-                                source.id,
-                                cur_size,
-                                cur_mtime,
-                                &new_hash,
-                                new_meta.width,
-                                new_meta.height,
-                                new_meta.orientation,
-                            );
+                        // ファイルが更新されている！更新有無をチェックしてDB更新（File::openを1回に集約＆プラグイン対応）
+                        if let Ok(mut file) = std::fs::File::open(file_path) {
+                            if let Ok(new_hash) = calculate_quick_hash_from_file(&mut file, cur_size) {
+                                let new_meta = extract_metadata_from_file_with_plugins(
+                                    file_path,
+                                    &mut file,
+                                    cur_mtime,
+                                    Some(&state.format_plugins),
+                                );
+                                let conn = state.db.writer();
+                                let _ = crate::db::repo::update_image_on_file_changed(
+                                    &conn,
+                                    source.id,
+                                    cur_size,
+                                    cur_mtime,
+                                    &new_hash,
+                                    new_meta.width,
+                                    new_meta.height,
+                                    new_meta.orientation,
+                                );
 
-                            let old_hash = source.quick_hash.clone();
-                            source.file_size = cur_size;
-                            source.file_mtime = cur_mtime;
-                            source.quick_hash = new_hash;
-                            source.width = new_meta.width;
-                            source.height = new_meta.height;
-                            source.orientation = new_meta.orientation;
-                            source.thumb_status = 0;
+                                let old_hash = source.quick_hash.clone();
+                                source.file_size = cur_size;
+                                source.file_mtime = cur_mtime;
+                                source.quick_hash = new_hash;
+                                source.width = new_meta.width;
+                                source.height = new_meta.height;
+                                source.orientation = new_meta.orientation;
+                                source.thumb_status = 0;
 
-                            state.update_cached_thumb_source(source.clone());
+                                state.update_cached_thumb_source(source.clone());
 
-                            // 低優先度（JobPriority::Low）で新サムネイル生成キューに投入（表示優先）
-                            state.thumb_pipeline.enqueue_source(&source, JobPriority::Low);
+                                // 低優先度（JobPriority::Low）で新サムネイル生成キューに投入（表示優先）
+                                state.thumb_pipeline.enqueue_source(&source, JobPriority::Low);
 
-                            // 表示優先: 既存の旧サムネイルが存在する場合は即座に返却（スピナーにしない）
-                            if let Some(cached_bytes) = state.get_thumbnail_bytes(&old_hash) {
-                                respond_cors(request, image_response((*cached_bytes).clone(), "image/webp"), origin_ref);
+                                // 表示優先: 既存の旧サムネイルが存在する場合は即座に返却（スピナーにしない）
+                                if let Some(cached_bytes) = state.get_thumbnail_bytes(&old_hash) {
+                                    respond_cors(request, image_response((*cached_bytes).clone(), "image/webp"), origin_ref);
+                                    return;
+                                }
+                                if let Ok(Some(bytes)) = state.thumb_store.get(&old_hash) {
+                                    let arc_bytes = Arc::new(bytes);
+                                    respond_cors(request, image_response((*arc_bytes).clone(), "image/webp"), origin_ref);
+                                    return;
+                                }
+
+                                // 既存キャッシュが存在しない場合のみ 503 を返却
+                                let mut resp = Response::from_string("Thumbnail updating").with_status_code(StatusCode(503));
+                                resp.add_header(Header::from_bytes(&b"Retry-After"[..], &b"1"[..]).unwrap());
+                                resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store, no-cache, must-revalidate"[..]).unwrap());
+                                respond_cors(request, resp, origin_ref);
                                 return;
                             }
-                            if let Ok(Some(bytes)) = state.thumb_store.get(&old_hash) {
-                                let arc_bytes = Arc::new(bytes);
-                                respond_cors(request, image_response((*arc_bytes).clone(), "image/webp"), origin_ref);
-                                return;
-                            }
-
-                            // 既存キャッシュが存在しない場合のみ 503 を返却
-                            let mut resp = Response::from_string("Thumbnail updating").with_status_code(StatusCode(503));
-                            resp.add_header(Header::from_bytes(&b"Retry-After"[..], &b"1"[..]).unwrap());
-                            resp.add_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store, no-cache, must-revalidate"[..]).unwrap());
-                            respond_cors(request, resp, origin_ref);
-                            return;
                         }
                     }
                 }
@@ -492,7 +499,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                 let orig_path = PathBuf::from(&orig_path_str);
                 // 1. 実ファイルが存在する場合は原寸ファイルを配信
                 if orig_path.exists() && orig_path.is_file() {
-                    // 原寸アクセス時も更新をチェック
+                    // 原寸アクセス時も更新をチェック（File::openを1回に集約＆プラグイン対応）
                     if let Ok(meta) = std::fs::metadata(&orig_path) {
                         let cur_mtime = meta
                             .modified()
@@ -502,32 +509,39 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                             .unwrap_or(0);
                         if cur_mtime != orig_mtime {
                             // 更新検知時はメタデータ更新をトリガー
-                            if let Ok(new_hash) = calculate_quick_hash(&orig_path, meta.len()) {
-                                let new_meta = extract_metadata(&orig_path, cur_mtime);
-                                let conn = state.db.writer();
-                                let _ = crate::db::repo::update_image_on_file_changed(
-                                    &conn,
-                                    id,
-                                    meta.len(),
-                                    cur_mtime,
-                                    &new_hash,
-                                    new_meta.width,
-                                    new_meta.height,
-                                    new_meta.orientation,
-                                );
+                            if let Ok(mut file) = std::fs::File::open(&orig_path) {
+                                if let Ok(new_hash) = calculate_quick_hash_from_file(&mut file, meta.len()) {
+                                    let new_meta = extract_metadata_from_file_with_plugins(
+                                        &orig_path,
+                                        &mut file,
+                                        cur_mtime,
+                                        Some(&state.format_plugins),
+                                    );
+                                    let conn = state.db.writer();
+                                    let _ = crate::db::repo::update_image_on_file_changed(
+                                        &conn,
+                                        id,
+                                        meta.len(),
+                                        cur_mtime,
+                                        &new_hash,
+                                        new_meta.width,
+                                        new_meta.height,
+                                        new_meta.orientation,
+                                    );
 
-                                // 旧サムネイルキャッシュを無効化し、新サムネイルを高優先度で再生成キューに投入
-                                state.invalidate_thumbnail_cache(&hash);
-                                if let Some(mut updated_src) = state.get_thumb_source_cached(id) {
-                                    updated_src.file_size = meta.len();
-                                    updated_src.file_mtime = cur_mtime;
-                                    updated_src.quick_hash = new_hash.clone();
-                                    updated_src.width = new_meta.width;
-                                    updated_src.height = new_meta.height;
-                                    updated_src.orientation = new_meta.orientation;
-                                    updated_src.thumb_status = 0;
-                                    state.update_cached_thumb_source(updated_src.clone());
-                                    state.thumb_pipeline.enqueue_source(&updated_src, JobPriority::Low);
+                                    // 旧サムネイルキャッシュを無効化し、新サムネイルを再生成キューに投入
+                                    state.invalidate_thumbnail_cache(&hash);
+                                    if let Some(mut updated_src) = state.get_thumb_source_cached(id) {
+                                        updated_src.file_size = meta.len();
+                                        updated_src.file_mtime = cur_mtime;
+                                        updated_src.quick_hash = new_hash.clone();
+                                        updated_src.width = new_meta.width;
+                                        updated_src.height = new_meta.height;
+                                        updated_src.orientation = new_meta.orientation;
+                                        updated_src.thumb_status = 0;
+                                        state.update_cached_thumb_source(updated_src.clone());
+                                        state.thumb_pipeline.enqueue_source(&updated_src, JobPriority::Low);
+                                    }
                                 }
                             }
                         }
@@ -717,13 +731,21 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                             }
                         });
 
+                        let effective_sort = sort.unwrap_or(crate::models::TimelineSort::Folder);
                         let current_version = state.current_catalog_version();
-                        match state.db.reader() {
-                            Ok(conn) => match crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, sort) {
-                                Ok(summary) => json_response(&summary, 200),
+                        if let Some(cached) = state.get_cached_timeline_summary(folder_id, effective_sort, current_version) {
+                            json_response(&cached, 200)
+                        } else {
+                            match state.db.reader() {
+                                Ok(conn) => match crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, Some(effective_sort)) {
+                                    Ok(summary) => {
+                                        state.put_cached_timeline_summary(folder_id, effective_sort, current_version, summary.clone());
+                                        json_response(&summary, 200)
+                                    }
+                                    Err(e) => error_response(AppError::from(e), 500),
+                                },
                                 Err(e) => error_response(AppError::from(e), 500),
-                            },
-                            Err(e) => error_response(AppError::from(e), 500),
+                            }
                         }
                     }
 

@@ -3,11 +3,31 @@
 //! 変更理由: アプリ本体コアから特定のソフトウェア形式（ClipStudio）およびSQLite BLOB走査ロジックを
 //! 分離し、独立してビルド・配布・ロード可能なC-ABI動的ライブラリおよびCLIバイナリとして提供するため。
 
+use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::raw::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
+
+/// 走査時の `extract_clip_metadata` と直後の `extract_clip_preview`（サムネイル生成）で
+/// 同一 `.clip` ファイルの SQLite デシリアライズが2回走るのを防ぐための短命リングキャッシュ（最大8件）
+const PREVIEW_CACHE_CAPACITY: usize = 8;
+
+struct PreviewCacheEntry {
+    path: PathBuf,
+    file_size: u64,
+    mtime_secs: i64,
+    png_bytes: Vec<u8>,
+}
+
+static PREVIEW_CACHE: OnceLock<Mutex<VecDeque<PreviewCacheEntry>>> = OnceLock::new();
+
+fn get_preview_cache() -> &'static Mutex<VecDeque<PreviewCacheEntry>> {
+    PREVIEW_CACHE.get_or_init(|| Mutex::new(VecDeque::with_capacity(PREVIEW_CACHE_CAPACITY)))
+}
 
 /// マジックヘッダシグネチャ (CSFCHUNK)
 pub const CSF_MAGIC: &[u8] = b"CSFCHUNK";
@@ -99,11 +119,53 @@ pub fn extract_png_dimensions(png_bytes: &[u8]) -> Option<(u32, u32)> {
 ///
 /// 変更理由: CLIP STUDIO PAINT形式内部のSQLiteデータベースからプレビューBLOBを抽出し、
 /// 破損時や非標準形式でもシグネチャ探索フォールバックにより確実に画像を取り出すため。
+/// また、直前のメタデータ抽出と直後のサムネイル生成で同一ファイルを2回連続デシリアライズしないよう、
+/// `(path, file_size, mtime)` をキーとした最大8件のリングキャッシュで再利用する。
 ///
 /// @param path .clip ファイルのパス
 /// @return 抽出されたPNGバイナリ
 pub fn extract_clip_preview(path: &Path) -> Result<Vec<u8>, String> {
     let mut file = File::open(path).map_err(|e| format!("ファイルオープン失敗: {}", e))?;
+
+    let (file_size, mtime_secs) = match file.metadata() {
+        Ok(meta) => {
+            let sz = meta.len();
+            let mt = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (sz, mt)
+        }
+        Err(_) => (0, 0),
+    };
+
+    if file_size > 0 {
+        if let Ok(cache) = get_preview_cache().lock() {
+            if let Some(hit) = cache.iter().find(|e| {
+                e.file_size == file_size && e.mtime_secs == mtime_secs && e.path == path
+            }) {
+                return Ok(hit.png_bytes.clone());
+            }
+        }
+    }
+
+    let store_in_cache = |bytes: &Vec<u8>| {
+        if file_size > 0 && bytes.len() <= 16 * 1024 * 1024 {
+            if let Ok(mut cache) = get_preview_cache().lock() {
+                if cache.len() >= PREVIEW_CACHE_CAPACITY {
+                    cache.pop_front();
+                }
+                cache.push_back(PreviewCacheEntry {
+                    path: path.to_path_buf(),
+                    file_size,
+                    mtime_secs,
+                    png_bytes: bytes.clone(),
+                });
+            }
+        }
+    };
 
     // 1. CSFCHUNK マジックヘッダ検証
     let mut header = [0u8; 8];
@@ -147,7 +209,11 @@ pub fn extract_clip_preview(path: &Path) -> Result<Vec<u8>, String> {
                     let db_len = if page_count > 0 && page_size >= 512 {
                         page_size * page_count
                     } else {
-                        let file_len = file.metadata().map_err(|e| e.to_string())?.len();
+                        let file_len = if file_size > 0 {
+                            file_size
+                        } else {
+                            file.metadata().map_err(|e| e.to_string())?.len()
+                        };
                         file_len.saturating_sub(pos).min(100 * 1024 * 1024)
                     };
 
@@ -178,6 +244,7 @@ pub fn extract_clip_preview(path: &Path) -> Result<Vec<u8>, String> {
                     if let Ok(mut stmt) = conn.prepare("SELECT ImageData FROM CanvasPreview LIMIT 1") {
                         if let Ok(blob) = stmt.query_row([], |row| row.get::<_, Vec<u8>>(0)) {
                             if !blob.is_empty() {
+                                store_in_cache(&blob);
                                 return Ok(blob);
                             }
                         }
@@ -195,6 +262,7 @@ pub fn extract_clip_preview(path: &Path) -> Result<Vec<u8>, String> {
                 if file.seek(SeekFrom::Start(start_pos)).is_ok() {
                     let mut buf = vec![0u8; total_len as usize];
                     if file.read_exact(&mut buf).is_ok() {
+                        store_in_cache(&buf);
                         return Ok(buf);
                     }
                 }

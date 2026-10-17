@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
 import android.webkit.MimeTypeMap
 import android.widget.Toast
@@ -14,6 +16,7 @@ import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
+import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
 import java.io.File
 
@@ -40,7 +43,8 @@ class TrashFileArgs {
  * 変更理由: Android 7+ (API 24+) における FileUriExposedException の回避、
  * FileProvider による安全な content:// URI 生成、OS アプリ選択シート（Intent Chooser）の表示、
  * DocumentsContract を用いた Files アプリ内フォルダのダイレクト表示、
- * および Scoped Storage 環境下での確実なファイル削除を実現するため。
+ * Scoped Storage 環境下での確実なファイル削除、および .clip 等の独自形式走査・削除に必要な
+ * MANAGE_EXTERNAL_STORAGE（全ファイルアクセス）権限の任意導線を実現するため。
  */
 @TauriPlugin
 class AndroidMediaPlugin(private val activity: Activity) : Plugin(activity) {
@@ -191,7 +195,7 @@ class AndroidMediaPlugin(private val activity: Activity) : Plugin(activity) {
       // 3. フォールバック: ストレージ設定の表示
       if (!opened) {
         try {
-          val settingsIntent = Intent(android.provider.Settings.ACTION_INTERNAL_STORAGE_SETTINGS).apply {
+          val settingsIntent = Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
           }
           activity.startActivity(settingsIntent)
@@ -259,11 +263,77 @@ class AndroidMediaPlugin(private val activity: Activity) : Plugin(activity) {
       if (deleted || !file.exists()) {
         invoke.resolve()
       } else {
-        invoke.reject("ファイルの削除権限がありませんでした")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+          invoke.reject("ファイルの削除には「すべてのファイルへのアクセス」権限が必要です。フォルダ追加画面またはプラグイン設定画面から許可してください。")
+        } else {
+          invoke.reject("ファイルの削除権限がありませんでした")
+        }
       }
     } catch (e: Exception) {
       Log.e("AndroidMediaPlugin", "trashFile failed: ${e.message}", e)
       invoke.reject("ファイルの削除に失敗しました: ${e.message}")
+    }
+  }
+
+  /**
+   * Android 11+ (API 30+) における「すべてのファイルへのアクセス（MANAGE_EXTERNAL_STORAGE）」権限の付与状態を確認する
+   *
+   * 変更理由: Scoped Storage 環境下において .clip 等の独自形式ファイルの走査や、
+   * 他アプリが作成したファイルの削除が可能かどうかをフロントエンドUIで判定できるようにするため。
+   *
+   * @param invoke Tauri Invoke ハンドラ
+   */
+  @Command
+  fun checkAllFilesAccess(invoke: Invoke) {
+    val granted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      Environment.isExternalStorageManager()
+    } else {
+      true
+    }
+    val ret = JSObject()
+    ret.put("granted", granted)
+    invoke.resolve(ret)
+  }
+
+  /**
+   * Android 11+ (API 30+) の「すべてのファイルへのアクセス」設定画面を明示的に開く
+   *
+   * 変更理由: 起動時の強制遷移を廃しつつ、ユーザーが .clip 走査やファイル削除を必要とした際に
+   * 任意のボタン操作からスムーズに権限設定画面を開けるようにするため。
+   *
+   * @param invoke Tauri Invoke ハンドラ
+   */
+  @Command
+  fun requestAllFilesAccess(invoke: Invoke) {
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (!Environment.isExternalStorageManager()) {
+          try {
+            val intent = Intent(
+              Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+              Uri.parse("package:${activity.packageName}")
+            ).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            activity.startActivity(intent)
+          } catch (_: Exception) {
+            val fallbackIntent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            activity.startActivity(fallbackIntent)
+          }
+        }
+        val ret = JSObject()
+        ret.put("granted", Environment.isExternalStorageManager())
+        invoke.resolve(ret)
+      } else {
+        val ret = JSObject()
+        ret.put("granted", true)
+        invoke.resolve(ret)
+      }
+    } catch (e: Exception) {
+      Log.e("AndroidMediaPlugin", "requestAllFilesAccess failed: ${e.message}", e)
+      invoke.reject("権限設定画面の起動に失敗しました: ${e.message}")
     }
   }
 }

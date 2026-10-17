@@ -174,4 +174,25 @@ describe("SharedPageCacheManager (共有LRUキャッシュマネージャー)", 
     manager.syncScope(2, "takenAtDesc");
     expect(manager.has(0)).toBe(false);
   });
+
+  it("getAllLoadedIds がページインデックス昇順で全キャッシュ済みIDを返し、LRU順序を崩さないこと", () => {
+    const manager = new SharedPageCacheManager();
+    manager.syncScope(null, "folder");
+
+    // ページ2を先に、ページ0を後にセット
+    manager.set(2, [
+      { id: 201, takenAt: 100, width: 100, height: 100, rev: 1 },
+      { id: 202, takenAt: 100, width: 100, height: 100, rev: 1 },
+    ]);
+    manager.set(0, [
+      { id: 1, takenAt: 100, width: 100, height: 100, rev: 1 },
+      { id: 2, takenAt: 100, width: 100, height: 100, rev: 1 },
+    ]);
+
+    const ids = manager.getAllLoadedIds();
+    // ページ昇順（ページ0 -> ページ2）でIDが返ること
+    expect(ids).toEqual([1, 2, 201, 202]);
+    // Map の内部キー順（LRU順：2 -> 0）が崩れていないこと
+    expect(manager.getCachedPageIndices()).toEqual([2, 0]);
+  });
 });

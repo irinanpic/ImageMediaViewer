@@ -703,6 +703,44 @@ pub async fn request_storage_permissions(#[allow(unused_variables)] app: AppHand
     }
 }
 
+/// Android 11+ (API 30+) の「すべてのファイルへのアクセス（MANAGE_EXTERNAL_STORAGE）」権限状態を確認する
+///
+/// 変更理由: Scoped Storage 環境下において .clip 等の独自形式ファイルの走査や、
+/// 他アプリが作成したファイルの削除が可能かどうかをフロントエンドUIで判定するため。
+///
+/// @param app Tauri AppHandle
+/// @return 全ファイルアクセス権限が付与されている場合は true
+#[command]
+pub async fn check_all_files_access(#[allow(unused_variables)] app: AppHandle) -> Result<bool, AppError> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::check_all_files_access(&app)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(true)
+    }
+}
+
+/// Android 11+ (API 30+) の「すべてのファイルへのアクセス」権限設定画面を明示的に開く
+///
+/// 変更理由: 起動時の強制設定画面遷移を行わず、ユーザーがフォルダ追加モーダルまたは
+/// プラグイン設定モーダルから任意に全ファイルアクセス権限を許可できるようにするため。
+///
+/// @param app Tauri AppHandle
+/// @return 現在の全ファイルアクセス権限状態
+#[command]
+pub async fn request_all_files_access(#[allow(unused_variables)] app: AppHandle) -> Result<bool, AppError> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android_native::request_all_files_access(&app)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Ok(true)
+    }
+}
+
 /// ファイルをOS既定の関連付けアプリケーションで開く
 ///
 /// 変更理由: アクションプラグイン「既定のアプリで開く」のバックエンド処理。

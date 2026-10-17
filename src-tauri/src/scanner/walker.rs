@@ -250,7 +250,6 @@ pub fn scan_folder_core(
     }
 
     let mut processed_count = 0u64;
-    let mut last_catalog_emit = std::time::Instant::now();
 
     let chunk_size = if is_background { 100 } else { BATCH_SIZE };
 
@@ -306,6 +305,9 @@ pub fn scan_folder_core(
         }
 
         processed_count += chunk.len() as u64;
+        // 変更理由: 走査ループ中に bump_catalog_version() を呼ぶと thumb_lookup_cache と timeline_summary_cache が
+        // 毎回全消去され、10万枚規模で重い GROUP BY 再計算とページ再フェッチのスパイクが発生するため、
+        // ループ中は scan-progress のみ通知し、カタログ変更通知は Cleanup 完了後の1回に集約する。
         if let Some(app) = app {
             let _ = app.emit(
                 "scan-progress",
@@ -316,16 +318,6 @@ pub fn scan_folder_core(
                     processed: processed_count,
                 },
             );
-
-            // カタログ変更通知 (1.5〜2.0秒間隔でスロットル)
-            if last_catalog_emit.elapsed() >= std::time::Duration::from_millis(1500) {
-                let ver = state.bump_catalog_version();
-                let _ = app.emit("catalog-changed", serde_json::json!({ "version": ver }));
-                last_catalog_emit = std::time::Instant::now();
-            }
-        } else if last_catalog_emit.elapsed() >= std::time::Duration::from_millis(1500) {
-            state.bump_catalog_version();
-            last_catalog_emit = std::time::Instant::now();
         }
 
         // バックグラウンド走査時: バッチ毎に30ms休止し、CPUコアの過熱とファンの回転を防止

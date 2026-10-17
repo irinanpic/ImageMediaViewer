@@ -106,3 +106,47 @@ pub fn trash_file(
 
     Ok(())
 }
+
+/// Android 11+ (API 30+) の「すべてのファイルへのアクセス（MANAGE_EXTERNAL_STORAGE）」権限状態を確認する
+#[cfg(target_os = "android")]
+pub fn check_all_files_access(
+    app: &tauri::AppHandle,
+) -> Result<bool, crate::error::AppError> {
+    let handle = app
+        .try_state::<AndroidMediaHandle<tauri::Wry>>()
+        .ok_or_else(|| crate::error::AppError::internal("AndroidMediaPlugin が初期化されていません"))?;
+
+    #[derive(serde::Deserialize)]
+    struct AccessResp {
+        granted: bool,
+    }
+
+    let resp = handle
+        .0
+        .run_mobile_plugin::<AccessResp>("checkAllFilesAccess", serde_json::json!({}))
+        .map_err(|e| crate::error::AppError::internal(format!("権限状態の確認に失敗: {}", e)))?;
+
+    Ok(resp.granted)
+}
+
+/// Android 11+ (API 30+) の「すべてのファイルへのアクセス」権限設定画面を開く
+#[cfg(target_os = "android")]
+pub fn request_all_files_access(
+    app: &tauri::AppHandle,
+) -> Result<bool, crate::error::AppError> {
+    let handle = app
+        .try_state::<AndroidMediaHandle<tauri::Wry>>()
+        .ok_or_else(|| crate::error::AppError::internal("AndroidMediaPlugin が初期化されていません"))?;
+
+    #[derive(serde::Deserialize)]
+    struct AccessResp {
+        granted: bool,
+    }
+
+    let resp = handle
+        .0
+        .run_mobile_plugin::<AccessResp>("requestAllFilesAccess", serde_json::json!({}))
+        .map_err(|e| crate::error::AppError::internal(format!("権限設定画面の起動に失敗: {}", e)))?;
+
+    Ok(resp.granted)
+}

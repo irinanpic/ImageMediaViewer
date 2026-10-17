@@ -21,7 +21,7 @@ export const VirtualTimeline: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { rows, columns } = useTimelineLayout(containerRef);
   const isScrollingFast = useScrollVelocity(containerRef);
-  const { getImageByIndex, requestIndices, versionTick } = usePagedImages();
+  const { getImageByIndex, getAllLoadedIds, requestIndices, versionTick } = usePagedImages();
   const cellSize = useAppStore((state) => state.cellSize);
   const setCellSize = useAppStore((state) => state.setCellSize);
   const totalImages = useAppStore((state) => state.totalImages);
@@ -356,14 +356,10 @@ export const VirtualTimeline: React.FC = () => {
         }
       }
 
-      // Ctrl + A ですべて選択（現在ロード済み画像、または最大500件）
+      // Ctrl + A ですべて選択（現在ロード済みページ内の全画像IDをLRU順序を崩さず一括取得）
       if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
         e.preventDefault();
-        const allLoadedIds: number[] = [];
-        for (let i = 0; i < totalImages; i++) {
-          const rec = getImageByIndex(i);
-          if (rec) allLoadedIds.push(rec.id);
-        }
+        const allLoadedIds = getAllLoadedIds();
         if (allLoadedIds.length > 0) {
           setSelectedImageIds(allLoadedIds);
         }
@@ -429,6 +425,7 @@ export const VirtualTimeline: React.FC = () => {
       selectedImageIds,
       columns,
       getImageByIndex,
+      getAllLoadedIds,
       openViewer,
       setSelectedCellIndex,
       setSelectedImageIds,

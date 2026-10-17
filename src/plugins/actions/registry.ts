@@ -4,6 +4,8 @@ import type { ImageDetail } from "../../types/generated/ImageDetail";
 import type { AppSettings, CustomContextMenuItem } from "../../types/settings";
 import type { PluginActionDefinition } from "../../types/generated/PluginActionDefinition";
 import { backendApi } from "../../lib/ipc";
+import { isMobileEnvironment } from "../../lib/thumbUrl";
+import { useAppStore } from "../../store";
 
 /**
  * 指定されたプラグインIDまたはアクションIDが有効化パターンリストに合致するか判定する
@@ -113,13 +115,51 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
   },
   {
     id: "action.trash_file",
-    label: (locale) => (locale === "en" ? "Move to Trash" : "ゴミ箱へ移動"),
+    label: (locale) => {
+      if (isMobileEnvironment()) {
+        return locale === "en" ? "Delete from Device" : "端末から削除";
+      }
+      return locale === "en" ? "Move to Trash" : "ゴミ箱へ移動";
+    },
     icon: "Trash2",
     order: 90,
     isAvailable: (_record, enabledPlugins) =>
       isPluginIdEnabled("action.trash_file", enabledPlugins),
     execute: async (context) => {
+      const storeState = useAppStore.getState();
+      const locale = storeState.locale ?? "ja";
+      const isMobile = isMobileEnvironment();
+      const fileName =
+        context.detail?.filePath?.split(/[\\/]/).pop() ||
+        `#${context.record.id}`;
+
+      if (typeof window !== "undefined" && typeof window.confirm === "function") {
+        const confirmMessage = isMobile
+          ? locale === "en"
+            ? `Permanently delete "${fileName}" from your device?\n(This action cannot be undone.)`
+            : `「${fileName}」を端末から完全に削除しますか？\n（この操作は元に戻せません）`
+          : locale === "en"
+          ? `Move "${fileName}" to the Trash?`
+          : `「${fileName}」をゴミ箱へ移動しますか？`;
+
+        if (!window.confirm(confirmMessage)) {
+          return;
+        }
+      }
+
       await backendApi.trashFile(context.record.id);
+
+      // 削除完了後にビューアで表示中であれば閉じ、複数選択に含まれていれば除外する
+      const latestState = useAppStore.getState();
+      if (latestState.activeImageId === context.record.id) {
+        latestState.closeViewer();
+      }
+      if (latestState.selectedImageIds.includes(context.record.id)) {
+        latestState.setSelectedImageIds(
+          latestState.selectedImageIds.filter((id) => id !== context.record.id)
+        );
+      }
+
       if (context.refreshTimeline) {
         context.refreshTimeline();
       }

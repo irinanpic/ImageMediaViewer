@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
 
 use crate::pipeline::exif::ExtractedMetadata;
 use super::extractor::{
@@ -10,6 +12,17 @@ use super::extractor::{
 };
 use super::format::ImageFormatPlugin;
 use super::manifest::{ExtractorConfig, PluginManifest};
+
+/// メタデータ抽出直後のサムネイル生成で同一プラグインファイルの再抽出を回避する短命リングキャッシュ上限
+const PLUGIN_PREVIEW_CACHE_CAP: usize = 8;
+
+struct PluginPreviewCacheEntry {
+    path: PathBuf,
+    file_size: u64,
+    mtime_secs: i64,
+    bytes: Vec<u8>,
+    mime: String,
+}
 
 /// マニフェスト（plugin.json）駆動の動的画像フォーマットプラグイン
 ///
@@ -20,6 +33,7 @@ pub struct DynamicFormatPlugin {
     pub manifest: PluginManifest,
     pub plugin_dir: PathBuf,
     binary_host: Option<BinaryPluginHost>,
+    preview_cache: Mutex<VecDeque<PluginPreviewCacheEntry>>,
 }
 
 impl DynamicFormatPlugin {
@@ -47,6 +61,7 @@ impl DynamicFormatPlugin {
             manifest,
             plugin_dir,
             binary_host,
+            preview_cache: Mutex::new(VecDeque::with_capacity(PLUGIN_PREVIEW_CACHE_CAP)),
         }
     }
 
@@ -70,19 +85,43 @@ impl DynamicFormatPlugin {
         Ok(())
     }
 
-    /// マニフェストの設定に基づいて画像バイナリとMIMEタイプを抽出する
+    /// マニフェストの設定に基づいて画像バイナリとMIMEタイプを抽出する（短命キャッシュ付き）
     fn extract_image_bytes(
         &self,
         path: &Path,
         file_opt: Option<&mut File>,
     ) -> Result<(Vec<u8>, String), String> {
+        let (file_size, mtime_secs) = match std::fs::metadata(path) {
+            Ok(meta) => {
+                let sz = meta.len();
+                let mt = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                (sz, mt)
+            }
+            Err(_) => (0, 0),
+        };
+
+        if file_size > 0 {
+            if let Ok(cache) = self.preview_cache.lock() {
+                if let Some(hit) = cache.iter().find(|e| {
+                    e.file_size == file_size && e.mtime_secs == mtime_secs && e.path == path
+                }) {
+                    return Ok((hit.bytes.clone(), hit.mime.clone()));
+                }
+            }
+        }
+
         let extractor = self
             .manifest
             .extractor
             .as_ref()
             .ok_or_else(|| "マニフェストにextractorが定義されていません".to_string())?;
 
-        match extractor {
+        let result = match extractor {
             ExtractorConfig::Binary { .. } => {
                 if let Some(ref host) = self.binary_host {
                     host.extract_preview(path)
@@ -139,7 +178,26 @@ impl DynamicFormatPlugin {
                 let mime = format!("image/{}", output_format);
                 Ok((bytes, mime))
             }
+        };
+
+        if let Ok((ref bytes, ref mime)) = result {
+            if file_size > 0 && bytes.len() <= 16 * 1024 * 1024 {
+                if let Ok(mut cache) = self.preview_cache.lock() {
+                    if cache.len() >= PLUGIN_PREVIEW_CACHE_CAP {
+                        cache.pop_front();
+                    }
+                    cache.push_back(PluginPreviewCacheEntry {
+                        path: path.to_path_buf(),
+                        file_size,
+                        mtime_secs,
+                        bytes: bytes.clone(),
+                        mime: mime.clone(),
+                    });
+                }
+            }
         }
+
+        result
     }
 }
 

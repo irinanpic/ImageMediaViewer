@@ -40,6 +40,10 @@ export const ContextMenuSettingsModal: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [hasAllFilesAccess, setHasAllFilesAccess] = useState<boolean>(true);
+
+  const isMobileEnv =
+    typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
   const fetchPlugins = useCallback(async () => {
     setIsLoadingPlugins(true);
@@ -62,10 +66,38 @@ export const ContextMenuSettingsModal: React.FC = () => {
       setErrorMsg(null);
       setSuccessMsg(null);
       fetchPlugins();
+      if (isMobileEnv) {
+        backendApi
+          .checkAllFilesAccess()
+          .then((granted) => setHasAllFilesAccess(granted))
+          .catch(() => {});
+      }
     }
-  }, [isOpen, appSettings, fetchPlugins]);
+  }, [isOpen, appSettings, fetchPlugins, isMobileEnv]);
+
+  // Escapeキー押下でモーダルを閉じる
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, close]);
 
   if (!isOpen) return null;
+
+  const handleRequestAllFilesAccess = async () => {
+    try {
+      const granted = await backendApi.requestAllFilesAccess();
+      setHasAllFilesAccess(granted);
+    } catch (err) {
+      console.warn("すべてのファイルアクセス権限画面の起動に失敗:", err);
+    }
+  };
 
   // プラグインの有効/無効（ON/OFF）トグル切り替え
   const handleTogglePlugin = async (plugin: InstalledPluginInfo, nextEnabled: boolean) => {
@@ -280,9 +312,13 @@ export const ContextMenuSettingsModal: React.FC = () => {
     <div
       role="dialog"
       aria-modal="true"
+      onClick={close}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
     >
-      <div className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden text-textPrimary">
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-surface border border-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden text-textPrimary"
+      >
         {/* ヘッダー */}
         <div className="px-6 pt-4 pb-3 border-b border-border/60 flex items-center justify-between">
           <div>
@@ -361,6 +397,43 @@ export const ContextMenuSettingsModal: React.FC = () => {
         {/* タブ1: プラグイン管理 */}
         {activeTab === "plugins" && (
           <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            {/* Android 環境での独自形式 (.clip 等) スキャン権限案内 */}
+            {isMobileEnv && (
+              <div className="p-3 rounded-lg bg-surfaceLight/50 border border-border/80 flex flex-col gap-2">
+                <p className="text-[11px] text-textSecondary leading-relaxed">
+                  {locale === "en"
+                    ? "On Android 11+, custom format files (.clip, etc.) and deleting files created by other apps require 'All files access'."
+                    : "Android 11以降で独自形式ファイル（.clip 等）を検出・削除するには「すべてのファイルへのアクセス」権限が必要です。"}
+                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-[11px] font-medium ${
+                      hasAllFilesAccess ? "text-emerald-400" : "text-amber-400"
+                    }`}
+                  >
+                    {hasAllFilesAccess
+                      ? locale === "en"
+                        ? "All Files Access: Granted"
+                        : "すべてのファイルへのアクセス: 許可済み"
+                      : locale === "en"
+                      ? "All Files Access: Not Granted"
+                      : "すべてのファイルへのアクセス: 未許可"}
+                  </span>
+                  {!hasAllFilesAccess && (
+                    <button
+                      type="button"
+                      onClick={handleRequestAllFilesAccess}
+                      className="px-2.5 py-1 bg-accent/20 hover:bg-accent/30 text-accent border border-accent/40 rounded text-xs font-medium transition"
+                    >
+                      {locale === "en"
+                        ? "Open Permission Settings..."
+                        : "権限設定を開く..."}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* 簡単インポート＆フォルダ操作ツールバー */}
             <div className="flex flex-wrap items-center justify-between gap-2 bg-surfaceLight/30 p-3 rounded-lg border border-border/60">
               <div className="flex flex-wrap items-center gap-2">

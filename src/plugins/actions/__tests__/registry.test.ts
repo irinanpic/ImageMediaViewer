@@ -221,4 +221,50 @@ describe("ContextMenuRegistry & Plugins", () => {
       true
     );
   });
+
+  it("action.trash_file が確認ダイアログキャンセル時に削除せず、承認時にビューアと選択状態を同期クリーンアップすること", async () => {
+    const { vi } = await import("vitest");
+    const { useAppStore } = await import("../../../store");
+    const { backendApi } = await import("../../../lib/ipc");
+
+    const trashAction = builtInActionPlugins.find((p) => p.id === "action.trash_file")!;
+    expect(trashAction).toBeDefined();
+
+    const trashSpy = vi.spyOn(backendApi, "trashFile").mockResolvedValue(undefined);
+    const hadWindow = typeof globalThis.window !== "undefined";
+    if (!hadWindow) {
+      (globalThis as unknown as { window: Record<string, unknown> }).window = {};
+    }
+    const origConfirm = window.confirm;
+
+    try {
+      // 1. キャンセル時は trashFile が呼ばれないこと
+      window.confirm = vi.fn().mockReturnValue(false);
+      useAppStore.setState({
+        isViewerOpen: true,
+        activeImageId: 1,
+        selectedImageIds: [1, 2],
+      });
+
+      await trashAction.execute({ record: dummyRecord, detail: dummyJpgDetail });
+      expect(trashSpy).not.toHaveBeenCalled();
+      expect(useAppStore.getState().isViewerOpen).toBe(true);
+      expect(useAppStore.getState().selectedImageIds).toEqual([1, 2]);
+
+      // 2. 承認時は trashFile が呼ばれ、activeImageId が一致していればビューアを閉じ、selectedImageIds から除外されること
+      window.confirm = vi.fn().mockReturnValue(true);
+      await trashAction.execute({ record: dummyRecord, detail: dummyJpgDetail });
+      expect(trashSpy).toHaveBeenCalledWith(1);
+      expect(useAppStore.getState().isViewerOpen).toBe(false);
+      expect(useAppStore.getState().activeImageId).toBeNull();
+      expect(useAppStore.getState().selectedImageIds).toEqual([2]);
+    } finally {
+      if (hadWindow) {
+        window.confirm = origConfirm;
+      } else {
+        delete (globalThis as unknown as { window?: unknown }).window;
+      }
+      trashSpy.mockRestore();
+    }
+  });
 });

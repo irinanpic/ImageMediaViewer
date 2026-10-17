@@ -30,11 +30,27 @@ export const AddFolderModal: React.FC<AddFolderModalProps> = ({
   const [customPath, setCustomPath] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [allFilesGranted, setAllFilesGranted] = useState<boolean>(false);
 
-  // プラットフォーム推奨プリセットの取得
+  // プラットフォーム推奨プリセットおよび全ファイルアクセス権限状態の取得
   useEffect(() => {
     if (!isOpen) return;
     setError(null);
+    backendApi
+      .checkAllFilesAccess()
+      .then((granted) => setAllFilesGranted(Boolean(granted)))
+      .catch(() => setAllFilesGranted(false));
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        backendApi
+          .checkAllFilesAccess()
+          .then((granted) => setAllFilesGranted(Boolean(granted)))
+          .catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+
     backendApi.getPlatformInfo()
       .then((info) => {
         if (info.presets && info.presets.length > 0) {
@@ -58,9 +74,35 @@ export const AddFolderModal: React.FC<AddFolderModalProps> = ({
           { name: "📥 ダウンロード (Download)", path: "/storage/emulated/0/Download", exists: true },
         ]);
       });
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [isOpen]);
 
+  // Escapeキーで閉じる
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
+
+  const handleRequestAllFilesAccess = async () => {
+    try {
+      const granted = await backendApi.requestAllFilesAccess();
+      setAllFilesGranted(Boolean(granted));
+    } catch (err: any) {
+      setError(err?.message || String(err));
+    }
+  };
 
   // プリセットクリック時の処理
   const handleSelectPreset = async (path: string) => {
@@ -95,7 +137,10 @@ export const AddFolderModal: React.FC<AddFolderModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn"
+    >
       <div
         className="w-full max-w-lg bg-neutral-900 border border-neutral-800 rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
@@ -178,11 +223,24 @@ export const AddFolderModal: React.FC<AddFolderModalProps> = ({
             </form>
           </div>
 
-          {/* 権限に関する注釈 */}
-          <div className="p-3 bg-neutral-800/30 border border-neutral-800/50 rounded-lg">
+          {/* 権限に関する注釈および全ファイルアクセス設定ボタン */}
+          <div className="p-3 bg-neutral-800/30 border border-neutral-800/50 rounded-lg space-y-2.5">
             <p className="text-xs text-neutral-400 leading-relaxed">
               {t("sidebar.mobilePermissionNotice")}
             </p>
+            {allFilesGranted ? (
+              <div className="text-xs text-emerald-400 font-medium">
+                {t("sidebar.mobileAllFilesGranted")}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRequestAllFilesAccess}
+                className="w-full py-2 px-3 text-xs font-medium bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 rounded-lg transition-colors"
+              >
+                {t("sidebar.mobileGrantAllFilesBtn")}
+              </button>
+            )}
           </div>
         </div>
 

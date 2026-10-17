@@ -334,6 +334,18 @@ export const backendApi = {
     callIpc<boolean>("request_storage_permissions"),
 
   /**
+   * Android 11+ における「すべてのファイルへのアクセス」権限状態を確認する
+   */
+  checkAllFilesAccess: (): Promise<boolean> =>
+    callIpc<boolean>("check_all_files_access"),
+
+  /**
+   * Android 11+ における「すべてのファイルへのアクセス」権限設定画面を開く
+   */
+  requestAllFilesAccess: (): Promise<boolean> =>
+    callIpc<boolean>("request_all_files_access"),
+
+  /**
    * ファイルをOS既定の関連付けアプリケーションで開く
    * @param params id または path
    */

@@ -17,6 +17,10 @@ export function useBackNavigation() {
   const closeAddToBoardModal = useAppStore((state) => state.closeAddToBoardModal);
   const isLogModalOpen = useAppStore((state) => state.isLogModalOpen);
   const closeLogModal = useAppStore((state) => state.closeLogModal);
+  const isContextMenuSettingsOpen = useAppStore((state) => state.isContextMenuSettingsOpen);
+  const closeContextMenuSettings = useAppStore((state) => state.closeContextMenuSettings);
+  const isContextMenuOpen = useAppStore((state) => state.contextMenu.isOpen);
+  const closeContextMenu = useAppStore((state) => state.closeContextMenu);
   const selectedImageIds = useAppStore((state) => state.selectedImageIds);
   const clearSelectedImageIds = useAppStore((state) => state.clearSelectedImageIds);
   const currentView = useAppStore((state) => state.currentView);
@@ -32,6 +36,8 @@ export function useBackNavigation() {
   if (isViewerOpen) activeLayers.push("viewer");
   if (isAddToBoardModalOpen) activeLayers.push("addToBoard");
   if (isLogModalOpen) activeLayers.push("log");
+  if (isContextMenuSettingsOpen) activeLayers.push("contextMenuSettings");
+  if (isContextMenuOpen) activeLayers.push("contextMenu");
 
   const historyPushedCountRef = useRef(0);
   const isProgrammaticBackRef = useRef(false);
@@ -78,6 +84,12 @@ export function useBackNavigation() {
       if (!topLayer) return;
 
       switch (topLayer) {
+        case "contextMenu":
+          closeContextMenu();
+          break;
+        case "contextMenuSettings":
+          closeContextMenuSettings();
+          break;
         case "log":
           closeLogModal();
           break;
@@ -105,6 +117,8 @@ export function useBackNavigation() {
     };
   }, [
     activeLayers,
+    closeContextMenu,
+    closeContextMenuSettings,
     closeLogModal,
     closeAddToBoardModal,
     closeViewer,

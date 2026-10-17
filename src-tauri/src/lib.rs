@@ -284,6 +284,8 @@ pub fn run() {
             commands::set_locale,
             commands::get_platform_info,
             commands::request_storage_permissions,
+            commands::check_all_files_access,
+            commands::request_all_files_access,
             commands::open_file_with_default_app,
             commands::show_in_folder,
             commands::open_file_with_app,
