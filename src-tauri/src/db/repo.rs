@@ -43,13 +43,21 @@ pub fn add_watched_folder(conn: &Connection, path: &str, added_at: i64) -> Resul
 
 /// 監視対象フォルダを削除
 ///
-/// 変更理由: ON DELETE CASCADEにより紐づくimagesレコードも一括削除される
+/// 変更理由: ON DELETE CASCADEにより紐づくimagesレコードも一括削除されるが、
+/// ムードボード（board_items）上に配置されている画像は消去せずスタンドアロン（folder_id = 0）へ退避する。
 ///
 /// @param conn DB書き込み接続
 /// @param id フォルダID
 /// @return 成功時Ok(())
 pub fn remove_watched_folder(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM watched_folders WHERE id = ?1;", params![id])?;
+    if id <= 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE images SET folder_id = 0 WHERE folder_id = ?1 AND EXISTS (SELECT 1 FROM board_items bi WHERE bi.image_id = images.id);",
+        params![id],
+    )?;
+    conn.execute("DELETE FROM watched_folders WHERE id = ?1 AND id > 0;", params![id])?;
     Ok(())
 }
 
@@ -65,7 +73,7 @@ pub fn delete_image(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// 登録済み監視フォルダ一覧を取得
+/// 登録済み監視フォルダ一覧を取得（システム予約の id = 0 は除外）
 ///
 /// @param conn DB接続
 /// @return フォルダ一覧
@@ -75,6 +83,7 @@ pub fn get_watched_folders(conn: &Connection) -> Result<Vec<WatchedFolder>> {
                 COALESCE(SUM(CASE WHEN i.thumb_status = 1 THEN 1 ELSE 0 END), 0) AS thumb_cnt
          FROM watched_folders f
          LEFT JOIN images i ON f.id = i.folder_id
+         WHERE f.id > 0
          GROUP BY f.id, f.path
          ORDER BY f.id ASC;",
     )?;
@@ -136,6 +145,7 @@ pub fn upsert_images(conn: &mut Connection, records: &[NewImageRecord]) -> Resul
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12
              )
              ON CONFLICT(file_path) DO UPDATE SET
+                folder_id = CASE WHEN excluded.folder_id > 0 THEN excluded.folder_id ELSE images.folder_id END,
                 file_size = excluded.file_size,
                 file_mtime = excluded.file_mtime,
                 taken_at = excluded.taken_at,
@@ -228,6 +238,7 @@ pub fn get_timeline_images(
         let sql = format!(
             "SELECT id, taken_at, width, height, file_mtime
              FROM images
+             WHERE folder_id > 0
              {}
              LIMIT ?1 OFFSET ?2;",
             order_sql
@@ -253,6 +264,7 @@ pub fn get_timeline_images(
 /// セクション別件数サマリと総件数を取得
 ///
 /// 変更理由: 仕様書§4「表示ソート順に応じたセクションバケット（日付またはフォルダ単位）集計」
+/// スタンドアロン画像（folder_id = 0）はタイムライン表示対象外とする。
 ///
 /// @param conn DB読み取り接続
 /// @param folder_id フォルダ絞り込み
@@ -275,7 +287,7 @@ pub fn get_timeline_summary(
             total = if let Some(fid) = folder_id {
                 conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
             } else {
-                conn.query_row("SELECT COUNT(*) FROM images;", [], |row| row.get(0))?
+                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
             };
 
             if let Some(fid) = folder_id {
@@ -301,6 +313,7 @@ pub fn get_timeline_summary(
                     "SELECT f.path, COUNT(i.id) AS cnt
                      FROM watched_folders f
                      INNER JOIN images i ON f.id = i.folder_id
+                     WHERE f.id > 0
                      GROUP BY f.id, f.path
                      HAVING cnt > 0
                      ORDER BY f.id ASC;",
@@ -319,7 +332,7 @@ pub fn get_timeline_summary(
             total = if let Some(fid) = folder_id {
                 conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
             } else {
-                conn.query_row("SELECT COUNT(*) FROM images;", [], |row| row.get(0))?
+                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
             };
 
             if let Some(fid) = folder_id {
@@ -343,6 +356,7 @@ pub fn get_timeline_summary(
                 let mut stmt = conn.prepare_cached(
                     "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
                      FROM images
+                     WHERE folder_id > 0
                      GROUP BY day
                      ORDER BY day ASC;",
                 )?;
@@ -361,7 +375,7 @@ pub fn get_timeline_summary(
             total = if let Some(fid) = folder_id {
                 conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
             } else {
-                conn.query_row("SELECT COUNT(*) FROM images;", [], |row| row.get(0))?
+                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
             };
 
             let title = if sort == TimelineSort::NameAsc {
@@ -380,7 +394,7 @@ pub fn get_timeline_summary(
             total = if let Some(fid) = folder_id {
                 conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
             } else {
-                conn.query_row("SELECT COUNT(*) FROM images;", [], |row| row.get(0))?
+                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
             };
 
             if let Some(fid) = folder_id {
@@ -404,6 +418,7 @@ pub fn get_timeline_summary(
                 let mut stmt = conn.prepare_cached(
                     "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
                      FROM images
+                     WHERE folder_id > 0
                      GROUP BY day
                      ORDER BY day DESC;",
                 )?;
@@ -673,16 +688,16 @@ pub fn update_thumb_status_batch(
     Ok((actual_success, actual_failed))
 }
 
-/// サムネイル生成完了・失敗・全体数を集計
+/// サムネイル生成完了・失敗・全体数を集計（タイムライン対象の folder_id > 0 のみ集計）
 ///
 /// 変更理由: 完了（1）だけでなく失敗件数（2）も取得し、
 /// UIステータスバーで「進まない」と誤認されるのを防ぎ、失敗件数を明確にユーザーへ提示する
 ///
 /// @return (完了数, 失敗数, 総画像数)
 pub fn get_thumb_progress(conn: &Connection) -> Result<(u64, u64, u64)> {
-    let total: i64 = conn.query_row("SELECT COUNT(*) FROM images;", [], |r| r.get(0))?;
-    let done: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE thumb_status = 1;", [], |r| r.get(0))?;
-    let failed: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE thumb_status = 2;", [], |r| r.get(0))?;
+    let total: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |r| r.get(0))?;
+    let done: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0 AND thumb_status = 1;", [], |r| r.get(0))?;
+    let failed: i64 = conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0 AND thumb_status = 2;", [], |r| r.get(0))?;
     Ok((done as u64, failed as u64, total as u64))
 }
 
@@ -870,20 +885,51 @@ pub fn add_board_items(
     image_ids: &[i64],
     now: i64,
 ) -> Result<Vec<crate::models::BoardItem>> {
+    add_board_items_at(conn, board_id, image_ids, None, None, now)
+}
+
+/// ボードの指定座標に複数画像を追加（座標未指定時は (40.0, 40.0) を起点にグリッド配置）
+///
+/// 変更理由: ムードボードへの直接ドラッグ＆ドロップやクリップボード貼り付け時に、
+/// ドロップ位置・ポインタ位置を起点として画像アイテムを配置できるようにするため。
+///
+/// @param conn DB書き込み接続
+/// @param board_id ボードID
+/// @param image_ids 追加する画像ID配列
+/// @param base_x 配置起点のX座標（オプション）
+/// @param base_y 配置起点のY座標（オプション）
+/// @param now 現在時刻UNIX秒
+/// @return ボード上の全アイテム一覧
+pub fn add_board_items_at(
+    conn: &Connection,
+    board_id: i64,
+    image_ids: &[i64],
+    base_x: Option<f64>,
+    base_y: Option<f64>,
+    now: i64,
+) -> Result<Vec<crate::models::BoardItem>> {
     let max_z: i32 = conn
         .query_row(
-            "SELECT COALESCE(MAX(z_index), 0) FROM board_items WHERE board_id = ?1;",
+            "SELECT COALESCE(MAX(z_index), 0) FROM (
+                SELECT z_index FROM board_items WHERE board_id = ?1
+                UNION ALL
+                SELECT z_index FROM board_notes WHERE board_id = ?1
+            );",
             params![board_id],
             |r| r.get(0),
         )
         .unwrap_or(0);
 
+    let start_x = base_x.unwrap_or(40.0);
+    let start_y = base_y.unwrap_or(40.0);
+    let center_first = base_x.is_some() && base_y.is_some();
+
     let mut current_z = max_z + 1;
-    let mut offset_x = 40.0;
-    let mut offset_y = 40.0;
+    let mut offset_x = start_x;
+    let mut offset_y = start_y;
 
     for (idx, &img_id) in image_ids.iter().enumerate() {
-        // 画像の元解像度を取得（なければ標準250px）
+        // 画像の元解像度を取得（なければ標準280px）
         let (w, h) = conn
             .query_row(
                 "SELECT width, height FROM images WHERE id = ?1;",
@@ -898,6 +944,18 @@ pub fn add_board_items(
             _ => 280.0,
         };
 
+        // 座標指定時は1枚目の中心が指定座標になるよう調整
+        let item_x = if center_first && idx == 0 && image_ids.len() == 1 {
+            start_x - width / 2.0
+        } else {
+            offset_x
+        };
+        let item_y = if center_first && idx == 0 && image_ids.len() == 1 {
+            start_y - height / 2.0
+        } else {
+            offset_y
+        };
+
         conn.execute(
             "INSERT INTO board_items (
                 board_id, image_id, x, y, width, height, scale, rotation, z_index,
@@ -906,19 +964,137 @@ pub fn add_board_items(
                 ?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0.0, ?7,
                 0.0, 0.0, 1.0, 1.0, 1.0, 0, ?8, ?9
             );",
-            params![board_id, img_id, offset_x, offset_y, width, height, current_z, now, now],
+            params![board_id, img_id, item_x, item_y, width, height, current_z, now, now],
         )?;
 
         current_z += 1;
         offset_x += width + 24.0;
         if (idx + 1) % 4 == 0 {
-            offset_x = 40.0;
+            offset_x = start_x;
             offset_y += 320.0;
         }
     }
 
     conn.execute("UPDATE boards SET updated_at = ?1 WHERE id = ?2;", params![now, board_id])?;
     get_board_items(conn, board_id)
+}
+
+/// 指定ファイルパスが既存の監視フォルダ（id > 0）配下に属するか判定し、該当すればその folder_id、なければ 0 を返す
+///
+/// 変更理由: ムードボードへ直接ドロップされた画像が既に監視対象フォルダ内の画像であれば
+/// そのフォルダに紐づけ、監視外の画像であればスタンドアロン（folder_id = 0）として登録するため。
+///
+/// @param conn DB接続
+/// @param file_path 正規化された画像ファイルパス
+/// @return 該当する folder_id（該当なしは 0）
+pub fn find_matching_watched_folder_id(conn: &Connection, file_path: &str) -> Result<i64> {
+    let folders = get_watched_folders(conn)?;
+    let target = Path::new(file_path);
+    let mut best_match: Option<(i64, usize)> = None;
+
+    for f in folders {
+        let folder_path = Path::new(&f.path);
+        if target.starts_with(folder_path) {
+            let len = f.path.len();
+            if best_match.map_or(true, |(_, best_len)| len > best_len) {
+                best_match = Some((f.id, len));
+            }
+        }
+    }
+
+    Ok(best_match.map(|(id, _)| id).unwrap_or(0))
+}
+
+/// 単一の画像レコードを登録または更新し、その画像IDを返す
+///
+/// 変更理由: ムードボードへの直接ファイルドロップやクリップボード貼り付け時に、
+/// 1件ずつまた少数件の画像を即時DB登録して image_id を取得するため。
+///
+/// @param conn DB書き込み接続
+/// @param record 登録する画像メタデータ
+/// @return 登録または既存レコードの images.id
+pub fn upsert_single_image_and_get_id(conn: &Connection, record: &NewImageRecord) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO images (
+            folder_id, file_path, file_size, file_mtime, taken_at,
+            taken_at_source, width, height, orientation, format,
+            quick_hash, thumb_status, indexed_at
+         ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12
+         )
+         ON CONFLICT(file_path) DO UPDATE SET
+            folder_id = CASE WHEN excluded.folder_id > 0 THEN excluded.folder_id ELSE images.folder_id END,
+            file_size = excluded.file_size,
+            file_mtime = excluded.file_mtime,
+            taken_at = excluded.taken_at,
+            taken_at_source = excluded.taken_at_source,
+            width = excluded.width,
+            height = excluded.height,
+            orientation = excluded.orientation,
+            format = excluded.format,
+            quick_hash = excluded.quick_hash,
+            thumb_status = CASE WHEN images.file_mtime <> excluded.file_mtime THEN 0 ELSE images.thumb_status END,
+            indexed_at = excluded.indexed_at;",
+        params![
+            record.folder_id,
+            record.file_path,
+            record.file_size as i64,
+            record.file_mtime,
+            record.taken_at,
+            record.taken_at_source,
+            record.width,
+            record.height,
+            record.orientation,
+            record.format,
+            record.quick_hash,
+            record.indexed_at,
+        ],
+    )?;
+
+    let id: i64 = conn.query_row(
+        "SELECT id FROM images WHERE file_path = ?1;",
+        params![record.file_path],
+        |r| r.get(0),
+    )?;
+    Ok(id)
+}
+
+/// どのボードからも参照されなくなったクリップボード由来画像（folder_id = 0）をDBから削除し、削除対象情報を返す
+///
+/// 変更理由: クリップボードから直接貼り付けられた一時保存画像がムードボード上から削除された際、
+/// 不要なDBレコード・サムネイル・内部保存ファイルが蓄積するのを防止するため。
+///
+/// @param conn DB書き込み接続
+/// @param clipboard_dir クリップボード画像保存ディレクトリ
+/// @return 削除された (image_id, file_path, quick_hash) の一覧
+pub fn cleanup_orphan_clipboard_images(
+    conn: &Connection,
+    clipboard_dir: &Path,
+) -> Result<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT i.id, i.file_path, i.quick_hash
+         FROM images i
+         WHERE i.folder_id = 0
+           AND NOT EXISTS (SELECT 1 FROM board_items bi WHERE bi.image_id = i.id);"
+    )?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    })?;
+
+    let mut to_delete = Vec::new();
+    for row in rows {
+        let (id, file_path, quick_hash) = row?;
+        if Path::new(&file_path).starts_with(clipboard_dir) {
+            to_delete.push((id, file_path, quick_hash));
+        }
+    }
+
+    for (id, _, _) in &to_delete {
+        conn.execute("DELETE FROM images WHERE id = ?1;", params![id])?;
+    }
+
+    Ok(to_delete)
 }
 
 /// ボードアイテムの変形・位置・クリッピングを更新
@@ -1543,6 +1719,148 @@ mod tests {
         delete_bookmark(&conn, "bm_test_1").expect("しおり削除失敗");
         let after = get_bookmarks(&conn).expect("削除後しおり一覧取得失敗");
         assert_eq!(after.len(), 0);
+    }
+
+    #[test]
+    fn test_standalone_moodboard_images_and_lifecycle() {
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let mut conn = db.writer();
+
+        // 1. 初期状態でシステム予約の folder_id = 0 は監視フォルダ一覧に含まれないことを確認
+        let folders = get_watched_folders(&conn).expect("監視フォルダ一覧取得失敗");
+        assert_eq!(folders.len(), 0);
+
+        // 2. スタンドアロン画像（folder_id = 0）を2件登録（外部ドロップ画像＋クリップボード画像）
+        let drop_img_id = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: 0,
+                file_path: "D:/unwatched/ref_pose.png".to_string(),
+                file_size: 10240,
+                file_mtime: 1700000000,
+                taken_at: 1700000000,
+                taken_at_source: 1,
+                width: Some(800),
+                height: Some(600),
+                orientation: 1,
+                format: Some("png".to_string()),
+                quick_hash: "hash_drop_1".to_string(),
+                indexed_at: 1700000000,
+            },
+        )
+        .expect("ドロップ画像の登録失敗");
+
+        let clip_dir = Path::new("D:/appdata/clipboard_images");
+        let clip_img_id = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: 0,
+                file_path: "D:/appdata/clipboard_images/clip_abc123.png".to_string(),
+                file_size: 4096,
+                file_mtime: 1700000001,
+                taken_at: 1700000001,
+                taken_at_source: 1,
+                width: Some(400),
+                height: Some(300),
+                orientation: 1,
+                format: Some("png".to_string()),
+                quick_hash: "hash_clip_1".to_string(),
+                indexed_at: 1700000001,
+            },
+        )
+        .expect("クリップボード画像の登録失敗");
+
+        // 3. タイムラインやサムネイル全体進捗にスタンドアロン画像が混入しないことを確認
+        let tl_images = get_timeline_images(&conn, 0, 100, None, None).expect("タイムライン取得失敗");
+        assert_eq!(tl_images.len(), 0);
+        for sort in [
+            TimelineSort::TakenAtDesc,
+            TimelineSort::TakenAtAsc,
+            TimelineSort::Folder,
+            TimelineSort::NameAsc,
+            TimelineSort::NameDesc,
+        ] {
+            let summary = get_timeline_summary(&conn, None, 1, Some(sort)).expect("サマリ取得失敗");
+            assert_eq!(summary.total, 0);
+            assert_eq!(summary.buckets.len(), 0);
+        }
+        let (_, _, thumb_total) = get_thumb_progress(&conn).expect("進捗取得失敗");
+        assert_eq!(thumb_total, 0);
+
+        // 4. ボードを作成して2件を座標指定で配置
+        let board = create_board(
+            &conn,
+            &CreateBoardPayload {
+                name: "資料ボード".to_string(),
+                background_color: None,
+            },
+            1700000010,
+        )
+        .expect("ボード作成失敗");
+
+        let items = add_board_items_at(
+            &conn,
+            board.id,
+            &[drop_img_id, clip_img_id],
+            Some(200.0),
+            Some(300.0),
+            1700000011,
+        )
+        .expect("ボードアイテム追加失敗");
+        assert_eq!(items.len(), 2);
+
+        // 5. 後から親フォルダ D:/unwatched が監視フォルダ登録＆走査された場合、folder_id が昇格しボード配置も維持されることを確認
+        let watched = add_watched_folder(&conn, "D:/unwatched", 1700000020).expect("監視フォルダ追加失敗");
+        upsert_images(
+            &mut conn,
+            &[NewImageRecord {
+                folder_id: watched.id,
+                file_path: "D:/unwatched/ref_pose.png".to_string(),
+                file_size: 10240,
+                file_mtime: 1700000000,
+                taken_at: 1700000000,
+                taken_at_source: 1,
+                width: Some(800),
+                height: Some(600),
+                orientation: 1,
+                format: Some("png".to_string()),
+                quick_hash: "hash_drop_1".to_string(),
+                indexed_at: 1700000021,
+            }],
+        )
+        .expect("バッチUPSERT失敗");
+
+        let detail = get_image_detail(&conn, drop_img_id)
+            .expect("詳細取得失敗")
+            .expect("画像が存在しない");
+        assert_eq!(detail.folder_id, watched.id);
+
+        // タイムラインには昇格した1件のみ表示される
+        let tl_after = get_timeline_images(&conn, 0, 100, None, None).expect("タイムライン取得失敗");
+        assert_eq!(tl_after.len(), 1);
+        assert_eq!(tl_after[0].id, drop_img_id);
+
+        // 6. 監視フォルダを解除しても、ムードボード上に配置されている画像は folder_id = 0 に退避して残ることを確認
+        remove_watched_folder(&conn, watched.id).expect("監視フォルダ削除失敗");
+        let detail_after_remove = get_image_detail(&conn, drop_img_id)
+            .expect("詳細取得失敗")
+            .expect("ボード上の画像が誤って削除された");
+        assert_eq!(detail_after_remove.folder_id, 0);
+        let board_items_after = get_board_items(&conn, board.id).expect("ボードアイテム取得失敗");
+        assert_eq!(board_items_after.len(), 2);
+
+        // 7. クリップボード画像をボードから削除すると、cleanup_orphan_clipboard_images で回収され、通常の外部ファイルは消えないことを確認
+        let clip_board_item = board_items_after
+            .iter()
+            .find(|i| i.image_id == clip_img_id)
+            .unwrap();
+        delete_board_item(&conn, clip_board_item.id).expect("ボードアイテム削除失敗");
+
+        let cleaned = cleanup_orphan_clipboard_images(&conn, clip_dir).expect("クリーンアップ失敗");
+        assert_eq!(cleaned.len(), 1);
+        assert_eq!(cleaned[0].0, clip_img_id);
+        assert!(get_image_detail(&conn, clip_img_id).unwrap().is_none());
+        assert!(get_image_detail(&conn, drop_img_id).unwrap().is_some());
     }
 }
 

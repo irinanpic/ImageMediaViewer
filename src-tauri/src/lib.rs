@@ -270,6 +270,8 @@ pub fn run() {
             commands::delete_board,
             commands::get_board_items,
             commands::add_board_items,
+            commands::add_dropped_files_to_board,
+            commands::add_clipboard_image_to_board,
             commands::update_board_item,
             commands::delete_board_item,
             commands::get_board_notes,

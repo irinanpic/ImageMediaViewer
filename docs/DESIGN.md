@@ -286,9 +286,15 @@ src/
 CREATE TABLE watched_folders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL UNIQUE,          -- 正規化済みディレクトリパス
-    last_scanned_at INTEGER NOT NULL    -- 最終走査日時 (UNIXエポック秒)
+    added_at INTEGER NOT NULL,          -- 追加日時 (UNIXエポック秒)
+    last_scanned_at INTEGER             -- 最終走査日時 (UNIXエポック秒)
 );
+-- Migration v8: ムードボード直接配置・クリップボード貼り付け画像用のシステム予約レコード
+-- INSERT OR IGNORE INTO watched_folders (id, path, added_at, last_scanned_at) VALUES (0, '__moodboard_standalone__', 0, NULL);
 ```
+* **スタンドアロン画像管理 (`folder_id = 0`, Migration v8)**:
+  * 監視フォルダに含まれない外部ドロップ画像およびクリップボード貼り付け画像は `folder_id = 0` として `images` テーブルに登録。
+  * タイムライン一覧（`get_timeline_images`）、日別/フォルダ別サマリ（`get_timeline_summary`）、監視フォルダ一覧（`get_watched_folders`）、および全体サムネイル進捗（`get_thumb_progress`）では `folder_id > 0`（`f.id > 0`）をフィルタ条件とすることで、タイムラインに一切混入させずに `thumb://` / `original://` プロトコルやフォーマットプラグイン機構を共通利用できる。
 
 #### ② `images` (画像メタデータ)
 ```sql

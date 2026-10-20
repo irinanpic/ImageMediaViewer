@@ -48,8 +48,19 @@ export const ImageViewerModal: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  // 現在の画像レコード取得
-  const currentRecord = activeImageIndex !== null ? getImageByIndex(activeImageIndex) : null;
+  // 現在の画像レコード取得（ムードボード等からの単一画像表示モード時は detail / activeImageId からフォールバック構築）
+  const currentRecord =
+    activeImageIndex !== null
+      ? getImageByIndex(activeImageIndex)
+      : activeImageId !== null
+      ? {
+          id: activeImageId,
+          takenAt: detail?.takenAt ?? 0,
+          width: detail?.width ?? null,
+          height: detail?.height ?? null,
+          rev: detail?.rev ?? 0,
+        }
+      : null;
 
   // 前後への移動処理
   const handlePrev = async () => {

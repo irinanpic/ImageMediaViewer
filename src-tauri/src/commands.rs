@@ -437,14 +437,198 @@ pub async fn update_board(
     Ok(serde_json::json!({ "success": true }))
 }
 
+/// どのボードからも参照されなくなったクリップボード保存画像をDB・サムネイル・ディスクからクリーンアップする
+///
+/// 変更理由: クリップボード貼り付け画像がボードから削除された際、孤立した一時ファイルやDBレコードを自動回収するため。
+///
+/// @param state アプリケーション共有状態
+pub fn cleanup_orphan_clipboard_files(state: &AppState) {
+    let raw_clip_dir = state.data_dir.join("clipboard_images");
+    let norm_clip_dir = PathBuf::from(normalize_path(&raw_clip_dir.to_string_lossy()));
+    let cleaned = {
+        let writer = state.db.writer();
+        crate::db::repo::cleanup_orphan_clipboard_images(&writer, &norm_clip_dir).unwrap_or_default()
+    };
+    for (_id, file_path, quick_hash) in cleaned {
+        let _ = std::fs::remove_file(&file_path);
+        state.remove_thumb_from_memory(&quick_hash);
+        let _ = state.thumb_store.delete(&quick_hash);
+    }
+}
+
+/// ドロップされた外部ファイル（またはフォルダ直下の画像）をインデックスし、ムードボードの指定座標へ配置する共通処理
+///
+/// 変更理由: 監視フォルダに含まれない画像ファイルでもタイムラインに混入させず（folder_id = 0）、
+/// ムードボード上に直接ドロップして配置・表示できるようにするため。
+///
+/// @param state アプリケーション共有状態
+/// @param board_id 追加先ボードID
+/// @param paths ドロップされたファイルまたはフォルダのパス一覧
+/// @param x 配置先のキャンバスX座標（オプション）
+/// @param y 配置先のキャンバスY座標（オプション）
+/// @return 更新後のボード内全アイテム一覧
+pub fn register_dropped_paths_to_board_core(
+    state: &AppState,
+    board_id: i64,
+    paths: Vec<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<Vec<BoardItem>, AppError> {
+    let mut target_files: Vec<PathBuf> = Vec::new();
+
+    for raw in paths {
+        let p = PathBuf::from(raw.trim());
+        if !p.exists() {
+            continue;
+        }
+        if p.is_file() {
+            if crate::scanner::walker::is_supported_image(&p, &state.format_plugins) {
+                target_files.push(p);
+            }
+        } else if p.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&p) {
+                let mut dir_files: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|ep| ep.is_file() && crate::scanner::walker::is_supported_image(ep, &state.format_plugins))
+                    .collect();
+                dir_files.sort();
+                target_files.extend(dir_files);
+            }
+        }
+    }
+
+    if target_files.is_empty() {
+        return Err(AppError::invalid_argument("対応する画像ファイルが見つかりませんでした"));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let mut prepared_records: Vec<crate::db::repo::NewImageRecord> = Vec::with_capacity(target_files.len());
+
+    for file_path in &target_files {
+        let norm_path = normalize_path(&file_path.to_string_lossy());
+        let meta = std::fs::metadata(file_path)
+            .map_err(|e| AppError::io(format!("ファイル情報の取得に失敗: {}", e)))?;
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(now);
+
+        let mut file = std::fs::File::open(file_path)
+            .map_err(|e| AppError::io(format!("ファイルのオープンに失敗: {}", e)))?;
+        let quick_hash = crate::pipeline::hash::calculate_quick_hash_from_file(&mut file, size)
+            .map_err(|e| AppError::io(format!("ハッシュ計算に失敗: {}", e)))?;
+        let img_meta = crate::pipeline::exif::extract_metadata_from_file_with_plugins(
+            file_path,
+            &mut file,
+            mtime,
+            Some(&state.format_plugins),
+        );
+
+        prepared_records.push(crate::db::repo::NewImageRecord {
+            folder_id: 0, // 後続のDB書き込み時に監視フォルダ該当判定を行う
+            file_path: norm_path,
+            file_size: size,
+            file_mtime: mtime,
+            taken_at: img_meta.taken_at,
+            taken_at_source: img_meta.taken_at_source,
+            width: img_meta.width,
+            height: img_meta.height,
+            orientation: img_meta.orientation,
+            format: img_meta.format,
+            quick_hash,
+            indexed_at: now,
+        });
+    }
+
+    let mut image_ids = Vec::with_capacity(prepared_records.len());
+    let mut thumbs_to_enqueue = Vec::new();
+
+    let items = {
+        let writer = state.db.writer();
+        for mut rec in prepared_records {
+            rec.folder_id = crate::db::repo::find_matching_watched_folder_id(&writer, &rec.file_path)?;
+            let img_id = crate::db::repo::upsert_single_image_and_get_id(&writer, &rec)?;
+            image_ids.push(img_id);
+            if let Ok(Some(src)) = crate::db::repo::get_thumb_source(&writer, img_id) {
+                if src.thumb_status != 1 {
+                    thumbs_to_enqueue.push(src);
+                }
+            }
+        }
+        crate::db::repo::add_board_items_at(&writer, board_id, &image_ids, x, y, now)?
+    };
+
+    for src in thumbs_to_enqueue {
+        state.thumb_pipeline.enqueue_source(&src, JobPriority::High);
+    }
+
+    Ok(items)
+}
+
+/// クリップボード上の画像バイナリをアプリ管理領域へ保存し、ムードボードの指定座標へ配置する共通処理
+///
+/// 変更理由: どこにもファイルとして保存されていないクリップボード上の画像を、
+/// ムードボード上に直接貼り付けて永続的に表示・管理できるようにするため。
+///
+/// @param state アプリケーション共有状態
+/// @param board_id 追加先ボードID
+/// @param image_bytes 画像バイナリデータ
+/// @param extension 拡張子（"png", "jpg", "webp" 等、省略時は "png"）
+/// @param x 配置先のキャンバスX座標（オプション）
+/// @param y 配置先のキャンバスY座標（オプション）
+/// @return 更新後のボード内全アイテム一覧
+pub fn register_clipboard_image_to_board_core(
+    state: &AppState,
+    board_id: i64,
+    image_bytes: &[u8],
+    extension: Option<&str>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<Vec<BoardItem>, AppError> {
+    if image_bytes.is_empty() {
+        return Err(AppError::invalid_argument("クリップボードの画像データが空です"));
+    }
+
+    let ext = extension
+        .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|s| matches!(s.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"))
+        .unwrap_or_else(|| "png".to_string());
+
+    let hash_hex = blake3::hash(image_bytes).to_hex().to_string();
+    let clip_dir = state.data_dir.join("clipboard_images");
+    std::fs::create_dir_all(&clip_dir)
+        .map_err(|e| AppError::io(format!("クリップボード保存用フォルダの作成に失敗: {}", e)))?;
+
+    let file_path = clip_dir.join(format!("clip_{}.{}", &hash_hex[..32], ext));
+    if !file_path.exists() {
+        std::fs::write(&file_path, image_bytes)
+            .map_err(|e| AppError::io(format!("クリップボード画像の保存に失敗: {}", e)))?;
+    }
+
+    register_dropped_paths_to_board_core(
+        state,
+        board_id,
+        vec![file_path.to_string_lossy().to_string()],
+        x,
+        y,
+    )
+}
+
 /// ムードボードを削除
 #[command]
 pub async fn delete_board(
     state: State<'_, Arc<AppState>>,
     id: i64,
 ) -> Result<serde_json::Value, AppError> {
-    let writer = state.db.writer();
-    crate::db::repo::delete_board(&writer, id)?;
+    {
+        let writer = state.db.writer();
+        crate::db::repo::delete_board(&writer, id)?;
+    }
+    cleanup_orphan_clipboard_files(&state);
     Ok(serde_json::json!({ "success": true }))
 }
 
@@ -472,6 +656,63 @@ pub async fn add_board_items(
     Ok(items)
 }
 
+/// ムードボードへ直接ドロップされた画像ファイル群を登録・配置する
+///
+/// @param state アプリケーション共有状態
+/// @param board_id ボードID
+/// @param paths ドロップされたファイルパス配列
+/// @param x 配置先X座標（オプション）
+/// @param y 配置先Y座標（オプション）
+/// @return ボード内アイテム一覧
+#[command]
+pub async fn add_dropped_files_to_board(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+    paths: Vec<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<Vec<BoardItem>, AppError> {
+    let state_clone = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        register_dropped_paths_to_board_core(&state_clone, board_id, paths, x, y)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("ドロップ処理タスク失敗: {}", e)))?
+}
+
+/// クリップボード上の画像をムードボードへ直接貼り付け・配置する
+///
+/// @param state アプリケーション共有状態
+/// @param board_id ボードID
+/// @param image_bytes 画像バイナリ配列
+/// @param extension 画像拡張子（省略時は "png"）
+/// @param x 配置先X座標（オプション）
+/// @param y 配置先Y座標（オプション）
+/// @return ボード内アイテム一覧
+#[command]
+pub async fn add_clipboard_image_to_board(
+    state: State<'_, Arc<AppState>>,
+    board_id: i64,
+    image_bytes: Vec<u8>,
+    extension: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<Vec<BoardItem>, AppError> {
+    let state_clone = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        register_clipboard_image_to_board_core(
+            &state_clone,
+            board_id,
+            &image_bytes,
+            extension.as_deref(),
+            x,
+            y,
+        )
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("クリップボード貼り付けタスク失敗: {}", e)))?
+}
+
 /// ボード内の画像アイテム（位置・サイズ等）を更新
 #[command]
 pub async fn update_board_item(
@@ -492,8 +733,11 @@ pub async fn delete_board_item(
     state: State<'_, Arc<AppState>>,
     id: i64,
 ) -> Result<serde_json::Value, AppError> {
-    let writer = state.db.writer();
-    crate::db::repo::delete_board_item(&writer, id)?;
+    {
+        let writer = state.db.writer();
+        crate::db::repo::delete_board_item(&writer, id)?;
+    }
+    cleanup_orphan_clipboard_files(&state);
     Ok(serde_json::json!({ "success": true }))
 }
 

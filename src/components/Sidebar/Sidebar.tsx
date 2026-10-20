@@ -72,6 +72,10 @@ export const Sidebar: React.FC = () => {
       .then(({ getCurrentWebview }) => {
         getCurrentWebview()
           .onDragDropEvent((event) => {
+            // ムードボード表示中は MoodboardCanvas 側のドロップハンドラ（直接画像配置）へ委譲する
+            if (useAppStore.getState().currentView === "board") {
+              return;
+            }
             if (event.payload.type === "drop") {
               const paths = event.payload.paths;
               if (paths && paths.length > 0) {

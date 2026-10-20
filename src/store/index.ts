@@ -33,6 +33,7 @@ const DEFAULT_TRANSFORM: ViewerTransformState = {
 export interface BoardItemContextMenuProps {
   boardItemId: number;
   isLocked: boolean;
+  onViewImage?: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
   onToggleFlipH: () => void;
@@ -76,7 +77,7 @@ interface AppStoreState {
   activeImageIndex: number | null;
   isViewerOpen: boolean;
   transform: ViewerTransformState;
-  openViewer: (id: number, index: number) => void;
+  openViewer: (id: number, index?: number | null) => void;
   closeViewer: () => void;
   setViewerIndex: (id: number, index: number) => void;
   rotateClockwise: () => void;
@@ -245,10 +246,10 @@ export const useAppStore = create<AppStoreState>((set) => ({
   activeImageIndex: null,
   isViewerOpen: false,
   transform: DEFAULT_TRANSFORM,
-  openViewer: (id, index) =>
+  openViewer: (id, index = null) =>
     set({
       activeImageId: id,
-      activeImageIndex: index,
+      activeImageIndex: index ?? null,
       isViewerOpen: true,
       transform: DEFAULT_TRANSFORM,
     }),

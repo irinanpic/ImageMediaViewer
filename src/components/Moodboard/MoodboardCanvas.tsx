@@ -5,10 +5,13 @@ import {
   ChevronsDown,
   ChevronsUp,
   ChevronUp,
+  ClipboardPaste,
   Crop,
   Edit3,
+  Eye,
   FlipHorizontal,
   FlipVertical,
+  ImagePlus,
   Info,
   Layers,
   LayoutGrid,
@@ -23,7 +26,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
-import { getOriginalImageUrl, getThumbnailUrl } from "../../lib/thumbUrl";
+import { getOriginalImageUrl, getThumbnailUrl, isTauriEnvironment } from "../../lib/thumbUrl";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
@@ -60,10 +63,13 @@ export const MoodboardCanvas: React.FC = () => {
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const setBoards = useAppStore((state) => state.setBoards);
   const openContextMenu = useAppStore((state) => state.openContextMenu);
+  const openViewer = useAppStore((state) => state.openViewer);
   const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isSpacePressedRef = useRef(false);
+  const lastPointerClientPosRef = useRef<{ x: number; y: number } | null>(null);
+  const [isExternalFileDragOver, setIsExternalFileDragOver] = useState<boolean>(false);
 
   const [board, setBoard] = useState<Board | null>(null);
   const [items, setItems] = useState<BoardItem[]>([]);
@@ -371,6 +377,9 @@ export const MoodboardCanvas: React.FC = () => {
         boardItemContext: {
           boardItemId: item.id,
           isLocked: item.isLocked,
+          onViewImage: () => {
+            openViewer(item.imageId, null);
+          },
           onBringToFront: () => {
             const currentItems = itemsRef.current;
             const maxZ = currentItems.reduce((max, it) => Math.max(max, it.zIndex), 0);
@@ -423,13 +432,14 @@ export const MoodboardCanvas: React.FC = () => {
                 setItems((prev) => prev.filter((it) => it.id !== item.id));
                 setSelectedItemId((curr) => (curr === item.id ? null : curr));
                 setIsCropping(false);
+                backendApi.getBoards().then(setBoards).catch(() => {});
               })
               .catch(console.error);
           },
         },
       });
     },
-    [flushSaveEditingNote, openContextMenu]
+    [flushSaveEditingNote, openContextMenu, openViewer, setBoards]
   );
 
   // アイテムのドラッグ移動開始
@@ -726,6 +736,8 @@ export const MoodboardCanvas: React.FC = () => {
   // ポインター・マウス移動（ドラッグ処理）
   const handlePointerMove = useCallback(
     (e: React.PointerEvent | React.MouseEvent) => {
+      lastPointerClientPosRef.current = { x: e.clientX, y: e.clientY };
+
       // タッチ長押し中に10px以上動いたら長押しメニューをキャンセル
       if (itemLongPressTimerRef.current) {
         const dist = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
@@ -1447,9 +1459,221 @@ export const MoodboardCanvas: React.FC = () => {
     }
   }, [scheduleSaveCamera]);
 
+  /**
+   * クライアント座標（省略時はキャンバス中央）をムードボード上のワールド座標へ変換する
+   */
+  const clientToWorldPos = useCallback(
+    (clientPos?: { x: number; y: number } | null): { x: number; y: number } => {
+      const container = containerRef.current;
+      const rect = container?.getBoundingClientRect();
+      const curPan = panRef.current;
+      const curZoom = zoomRef.current || 1;
+
+      if (
+        clientPos &&
+        rect &&
+        clientPos.x >= rect.left &&
+        clientPos.x <= rect.right &&
+        clientPos.y >= rect.top &&
+        clientPos.y <= rect.bottom
+      ) {
+        return {
+          x: Math.round((clientPos.x - rect.left - curPan.x) / curZoom),
+          y: Math.round((clientPos.y - rect.top - curPan.y) / curZoom),
+        };
+      }
+
+      const w = rect?.width || container?.clientWidth || 800;
+      const h = rect?.height || container?.clientHeight || 600;
+      return {
+        x: Math.round((w / 2 - curPan.x) / curZoom),
+        y: Math.round((h / 2 - curPan.y) / curZoom),
+      };
+    },
+    []
+  );
+
+  /**
+   * ボードアイテム追加後のステート更新および新規アイテム選択
+   */
+  const applyBoardItemsUpdate = useCallback(
+    (updatedItems: BoardItem[]) => {
+      const prevIds = new Set(itemsRef.current.map((it) => it.id));
+      const added = updatedItems.filter((it) => !prevIds.has(it.id));
+      setItems(updatedItems);
+      itemsRef.current = updatedItems;
+      if (added.length > 0) {
+        const lastAdded = added[added.length - 1];
+        setSelectedItemId(lastAdded.id);
+        setSelectedNoteId(null);
+      }
+      backendApi.getBoards().then(setBoards).catch(() => {});
+    },
+    [setBoards]
+  );
+
+  /**
+   * 外部からドロップされた画像ファイルパス群をボードへ登録・配置する
+   */
+  const handleDropFilePaths = useCallback(
+    async (paths: string[], clientPos?: { x: number; y: number } | null) => {
+      if (!activeBoardId || paths.length === 0) return;
+      const worldPos = clientToWorldPos(clientPos);
+      try {
+        const updatedItems = await backendApi.addDroppedFilesToBoard(
+          activeBoardId,
+          paths,
+          worldPos.x,
+          worldPos.y
+        );
+        applyBoardItemsUpdate(updatedItems);
+      } catch (err: any) {
+        alert(t("moodboard.dropFailed", { error: err?.message || String(err) }));
+      }
+    },
+    [activeBoardId, clientToWorldPos, applyBoardItemsUpdate, t]
+  );
+
+  /**
+   * クリップボードまたはブラウザFileオブジェクトの画像Blobをボードへ保存・配置する
+   */
+  const handlePasteImageBlob = useCallback(
+    async (blob: Blob, clientPos?: { x: number; y: number } | null) => {
+      if (!activeBoardId) return;
+      const worldPos = clientToWorldPos(clientPos ?? lastPointerClientPosRef.current);
+      try {
+        const arrayBuffer = await blob.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(arrayBuffer));
+        const mime = (blob.type || "").toLowerCase();
+        let ext = "png";
+        if (mime.includes("jpeg") || mime.includes("jpg")) ext = "jpg";
+        else if (mime.includes("webp")) ext = "webp";
+        else if (mime.includes("gif")) ext = "gif";
+        else if (mime.includes("bmp")) ext = "bmp";
+
+        const updatedItems = await backendApi.addClipboardImageToBoard(
+          activeBoardId,
+          bytes,
+          ext,
+          worldPos.x,
+          worldPos.y
+        );
+        applyBoardItemsUpdate(updatedItems);
+      } catch (err: any) {
+        alert(t("moodboard.pasteFailed", { error: err?.message || String(err) }));
+      }
+    },
+    [activeBoardId, clientToWorldPos, applyBoardItemsUpdate, t]
+  );
+
+  /**
+   * ツールバーの「貼り付け」ボタン押下時にクリップボードから画像を読み取って配置する
+   */
+  const handleToolbarPasteClick = useCallback(async () => {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      alert(t("moodboard.pasteEmpty"));
+      return;
+    }
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      for (const item of clipboardItems) {
+        const imgType = item.types.find((type) => type.startsWith("image/"));
+        if (imgType) {
+          const blob = await item.getType(imgType);
+          await handlePasteImageBlob(blob, null);
+          return;
+        }
+      }
+      alert(t("moodboard.pasteEmpty"));
+    } catch (err: any) {
+      alert(t("moodboard.pasteFailed", { error: err?.message || String(err) }));
+    }
+  }, [handlePasteImageBlob, t]);
+
+  // Tauri Webview ドラッグ＆ドロップイベント監視（外部画像ファイルの直接配置）
+  useEffect(() => {
+    if (!isTauriEnvironment() || !activeBoardId) return;
+
+    let unlistenFn: (() => void) | null = null;
+    import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) => {
+        getCurrentWebview()
+          .onDragDropEvent((event) => {
+            if (useAppStore.getState().currentView !== "board" || useAppStore.getState().isViewerOpen) {
+              setIsExternalFileDragOver(false);
+              return;
+            }
+            const payload = event.payload;
+            if (payload.type === "enter" || payload.type === "over") {
+              setIsExternalFileDragOver(true);
+            } else if (payload.type === "leave") {
+              setIsExternalFileDragOver(false);
+            } else if (payload.type === "drop") {
+              setIsExternalFileDragOver(false);
+              const paths = payload.paths;
+              if (paths && paths.length > 0) {
+                const dpr = window.devicePixelRatio || 1;
+                const clientPos = payload.position
+                  ? { x: payload.position.x / dpr, y: payload.position.y / dpr }
+                  : lastPointerClientPosRef.current;
+                handleDropFilePaths(paths, clientPos);
+              }
+            }
+          })
+          .then((unlisten) => {
+            unlistenFn = unlisten;
+          })
+          .catch(console.error);
+      })
+      .catch(console.error);
+
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, [activeBoardId, handleDropFilePaths]);
+
+  // クリップボード貼り付け (Ctrl+V / Paste イベント) の監視
+  useEffect(() => {
+    const handleWindowPaste = (e: ClipboardEvent) => {
+      if (useAppStore.getState().currentView !== "board" || useAppStore.getState().isViewerOpen) {
+        return;
+      }
+      if (editingNoteIdRef.current !== null) return;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl &&
+        (["INPUT", "TEXTAREA"].includes(activeEl.tagName) || activeEl.isContentEditable)
+      ) {
+        return;
+      }
+
+      const itemsList = e.clipboardData?.items;
+      if (!itemsList) return;
+
+      for (let i = 0; i < itemsList.length; i++) {
+        const item = itemsList[i];
+        if (item.type.startsWith("image/")) {
+          const blob = item.getAsFile();
+          if (blob) {
+            e.preventDefault();
+            handlePasteImageBlob(blob, lastPointerClientPosRef.current);
+            return;
+          }
+        }
+      }
+    };
+
+    window.addEventListener("paste", handleWindowPaste);
+    return () => {
+      window.removeEventListener("paste", handleWindowPaste);
+    };
+  }, [handlePasteImageBlob]);
+
   // キーボードショートカット（PureRef互換）
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // 単一画像ビューアモーダル表示中は裏のムードボード操作を無効化する
+      if (useAppStore.getState().isViewerOpen) return;
       if (["INPUT", "TEXTAREA"].includes((e.target as HTMLElement).tagName)) return;
 
       // 削除
@@ -1461,6 +1685,7 @@ export const MoodboardCanvas: React.FC = () => {
             backendApi.deleteBoardItem(selectedItemId).then(() => {
               setItems((prev) => prev.filter((it) => it.id !== selectedItemId));
               setSelectedItemId(null);
+              backendApi.getBoards().then(setBoards).catch(() => {});
             });
           }
         } else if (selectedNoteId !== null && editingNoteId === null) {
@@ -1604,6 +1829,41 @@ export const MoodboardCanvas: React.FC = () => {
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onContextMenu={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.preventDefault();
+          if (!isTauriEnvironment()) {
+            setIsExternalFileDragOver(true);
+          }
+        }
+      }}
+      onDragLeave={(e) => {
+        if (!isTauriEnvironment() && e.currentTarget === e.target) {
+          setIsExternalFileDragOver(false);
+        }
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        setIsExternalFileDragOver(false);
+        // Tauri環境では getCurrentWebview().onDragDropEvent 側で絶対パスとして処理されるためスキップ
+        if (isTauriEnvironment()) return;
+
+        const clientPos = { x: e.clientX, y: e.clientY };
+        const files = Array.from(e.dataTransfer.files);
+        const paths = files
+          .map((f) => (f as File & { path?: string }).path)
+          .filter((p): p is string => Boolean(p));
+        if (paths.length > 0) {
+          handleDropFilePaths(paths, clientPos);
+        } else {
+          for (const f of files) {
+            if (f.type.startsWith("image/")) {
+              handlePasteImageBlob(f, clientPos);
+            }
+          }
+        }
+      }}
       data-canvas-bg="true"
       style={{
         backgroundColor: board?.backgroundColor || "#1a1a20",
@@ -1612,6 +1872,19 @@ export const MoodboardCanvas: React.FC = () => {
       }}
       className="relative w-full h-full overflow-hidden select-none"
     >
+      {/* 外部画像ファイルドラッグ中のドロップガイドオーバーレイ */}
+      {isExternalFileDragOver && (
+        <div className="absolute inset-3 z-50 pointer-events-none rounded-2xl border-2 border-dashed border-accent bg-accent/10 backdrop-blur-[2px] flex flex-col items-center justify-center gap-2 text-center p-6 animate-in fade-in duration-100">
+          <ImagePlus className="w-10 h-10 text-accent animate-bounce" />
+          <p className="text-sm font-semibold text-textPrimary">
+            {t("moodboard.dropFilesOverlayTitle")}
+          </p>
+          <p className="text-xs text-textSecondary">
+            {t("moodboard.dropFilesOverlayDesc")}
+          </p>
+        </div>
+      )}
+
       {/* 上部ツールバー: モバイル時はスリム一体型、大画面時は独立デュアル配置 */}
       {isCompact ? (
         <div
@@ -1639,8 +1912,17 @@ export const MoodboardCanvas: React.FC = () => {
             </span>
           </div>
 
-          {/* 右側: メモ追加、自動整列、ズーム倍率＆リセット */}
+          {/* 右側: 貼り付け、メモ追加、自動整列、ズーム倍率＆リセット */}
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={handleToolbarPasteClick}
+              className="flex items-center gap-1 text-xs text-textPrimary bg-surfaceLight/60 hover:bg-surfaceLight border border-border/60 px-2 py-1 rounded transition active:scale-95 shrink-0"
+              title={t("moodboard.pasteTooltip")}
+            >
+              <ClipboardPaste className="w-3.5 h-3.5 text-accent" />
+              <span className="hidden sm:inline">{t("moodboard.pasteBtn")}</span>
+            </button>
+
             <button
               onClick={handleCreateNote}
               className="flex items-center gap-1 text-xs text-white bg-accent hover:bg-accent/90 px-2 py-1 rounded shadow-sm transition active:scale-95 font-medium shrink-0"
@@ -1708,6 +1990,16 @@ export const MoodboardCanvas: React.FC = () => {
             </div>
 
             <div className="h-4 w-px bg-border/40" />
+
+            {/* クリップボード貼り付けボタン */}
+            <button
+              onClick={handleToolbarPasteClick}
+              className="flex items-center gap-1.5 text-xs text-textPrimary bg-surfaceLight/50 hover:bg-surfaceLight/80 border border-border/60 hover:border-accent px-3 py-1.5 rounded shadow-sm transition active:scale-98 cursor-pointer font-medium"
+              title={t("moodboard.pasteTooltip")}
+            >
+              <ClipboardPaste className="w-3.5 h-3.5 text-accent" />
+              {t("moodboard.pasteBtn")}
+            </button>
 
             {/* メモ追加ボタン */}
             <button
@@ -1866,6 +2158,16 @@ export const MoodboardCanvas: React.FC = () => {
               <FlipVertical className="w-3.5 h-3.5" />
             </button>
           </div>
+
+          {/* 画像単体表示ボタン */}
+          <button
+            onClick={() => openViewer(selectedItem.imageId, null)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded text-xs transition cursor-pointer bg-surfaceLight/40 hover:bg-surfaceLight/80 text-textSecondary hover:text-textPrimary"
+            title={t("moodboard.viewImageMenu")}
+          >
+            <Eye className="w-3.5 h-3.5 text-accent" />
+            <span>{t("moodboard.viewImageMenu")}</span>
+          </button>
 
           {/* 詳細情報表示ボタン (I) */}
           <button

@@ -1060,6 +1060,66 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         }
                     }
 
+                    (Method::Post, p) if p.starts_with("/api/boards/") && p.ends_with("/drop_files") => {
+                        let id_str = p.trim_start_matches("/api/boards/").trim_end_matches("/drop_files");
+                        if let Ok(board_id) = id_str.parse::<i64>() {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            #[derive(serde::Deserialize)]
+                            #[serde(rename_all = "camelCase")]
+                            struct DropFilesReq {
+                                paths: Vec<String>,
+                                x: Option<f64>,
+                                y: Option<f64>,
+                            }
+                            match serde_json::from_str::<DropFilesReq>(&body_str) {
+                                Ok(req) => {
+                                    match crate::commands::register_dropped_paths_to_board_core(state, board_id, req.paths, req.x, req.y) {
+                                        Ok(items) => json_response(&items, 200),
+                                        Err(e) => error_response(e, 400),
+                                    }
+                                }
+                                Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Post, p) if p.starts_with("/api/boards/") && p.ends_with("/paste_image") => {
+                        let id_str = p.trim_start_matches("/api/boards/").trim_end_matches("/paste_image");
+                        if let Ok(board_id) = id_str.parse::<i64>() {
+                            let mut body_str = String::new();
+                            let _ = request.as_reader().read_to_string(&mut body_str);
+                            #[derive(serde::Deserialize)]
+                            #[serde(rename_all = "camelCase")]
+                            struct PasteImageReq {
+                                image_bytes: Vec<u8>,
+                                extension: Option<String>,
+                                x: Option<f64>,
+                                y: Option<f64>,
+                            }
+                            match serde_json::from_str::<PasteImageReq>(&body_str) {
+                                Ok(req) => {
+                                    match crate::commands::register_clipboard_image_to_board_core(
+                                        state,
+                                        board_id,
+                                        &req.image_bytes,
+                                        req.extension.as_deref(),
+                                        req.x,
+                                        req.y,
+                                    ) {
+                                        Ok(items) => json_response(&items, 200),
+                                        Err(e) => error_response(e, 400),
+                                    }
+                                }
+                                Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
                     (Method::Put, p) if p.starts_with("/api/boards/") => {
                         let id_str = p.trim_start_matches("/api/boards/");
                         if let Ok(id) = id_str.parse::<i64>() {
@@ -1084,9 +1144,15 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                     (Method::Delete, p) if p.starts_with("/api/boards/") => {
                         let id_str = p.trim_start_matches("/api/boards/");
                         if let Ok(id) = id_str.parse::<i64>() {
-                            let writer = state.db.writer();
-                            match crate::db::repo::delete_board(&writer, id) {
-                                Ok(_) => json_response(&serde_json::json!({ "success": true }), 200),
+                            let res = {
+                                let writer = state.db.writer();
+                                crate::db::repo::delete_board(&writer, id)
+                            };
+                            match res {
+                                Ok(_) => {
+                                    crate::commands::cleanup_orphan_clipboard_files(state);
+                                    json_response(&serde_json::json!({ "success": true }), 200)
+                                }
                                 Err(e) => error_response(AppError::from(e), 500),
                             }
                         } else {
@@ -1119,9 +1185,15 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                     (Method::Delete, p) if p.starts_with("/api/board_items/") => {
                         let id_str = p.trim_start_matches("/api/board_items/");
                         if let Ok(id) = id_str.parse::<i64>() {
-                            let writer = state.db.writer();
-                            match crate::db::repo::delete_board_item(&writer, id) {
-                                Ok(_) => json_response(&serde_json::json!({ "success": true }), 200),
+                            let res = {
+                                let writer = state.db.writer();
+                                crate::db::repo::delete_board_item(&writer, id)
+                            };
+                            match res {
+                                Ok(_) => {
+                                    crate::commands::cleanup_orphan_clipboard_files(state);
+                                    json_response(&serde_json::json!({ "success": true }), 200)
+                                }
                                 Err(e) => error_response(AppError::from(e), 500),
                             }
                         } else {

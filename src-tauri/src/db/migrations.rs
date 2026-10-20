@@ -275,5 +275,21 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("Completed migration v7 (user_version = 7)");
     }
 
+    if current_version < 8 {
+        info!("Applying migration v8...");
+        let tx = conn.transaction()?;
+
+        // ムードボード直接配置画像およびクリップボード貼り付け画像用のシステム予約フォルダ行（id = 0）
+        // 変更理由: 監視フォルダ（タイムライン）に含まれないスタンドアロン画像を、既存の外部キー制約（images.folder_id -> watched_folders.id）を保ったまま管理するため
+        tx.execute(
+            "INSERT OR IGNORE INTO watched_folders (id, path, added_at, last_scanned_at) VALUES (0, '__moodboard_standalone__', 0, NULL);",
+            [],
+        )?;
+
+        tx.pragma_update(None, "user_version", 8)?;
+        tx.commit()?;
+        info!("Completed migration v8 (user_version = 8)");
+    }
+
     Ok(())
 }

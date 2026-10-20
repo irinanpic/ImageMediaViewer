@@ -3,6 +3,7 @@ import {
   ChevronsDown,
   ChevronsUp,
   Copy,
+  Eye,
   ExternalLink,
   FlipHorizontal,
   FlipVertical,
@@ -195,6 +196,24 @@ export const ContextMenu: React.FC = () => {
           <div className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-textSecondary/70">
             {locale === "en" ? "Board Item" : "ボード配置操作"}
           </div>
+          <button
+            role="menuitem"
+            onClick={() => {
+              const targetId = contextMenu.record?.id;
+              closeContextMenu();
+              if (boardCtx.onViewImage) {
+                boardCtx.onViewImage();
+              } else if (targetId !== undefined) {
+                openViewer(targetId, null);
+              }
+            }}
+            className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-textPrimary transition-colors font-medium"
+          >
+            <Eye className="w-4 h-4 flex-shrink-0 text-accent" />
+            <span className="truncate flex-1">
+              {locale === "en" ? "View Image" : "画像を表示"}
+            </span>
+          </button>
           <button
             role="menuitem"
             onClick={() => {

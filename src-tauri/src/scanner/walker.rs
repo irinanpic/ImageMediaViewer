@@ -83,7 +83,7 @@ pub fn is_standard_image_extension(ext: &str) -> bool {
 }
 
 /// 拡張子が対応画像フォーマット（標準または有効化プラグイン形式）であるか判定
-fn is_supported_image(path: &Path, plugins: &crate::plugins::FormatPluginRegistry) -> bool {
+pub fn is_supported_image(path: &Path, plugins: &crate::plugins::FormatPluginRegistry) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {

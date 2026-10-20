@@ -205,6 +205,44 @@ export const backendApi = {
     callIpc<BoardItem[]>("add_board_items", { boardId, imageIds }),
 
   /**
+   * ムードボード上に直接ドロップされた外部画像ファイル群を登録・配置
+   * @param boardId ボードID
+   * @param paths ドロップされたファイルパス配列
+   * @param x 配置先キャンバスX座標（オプション）
+   * @param y 配置先キャンバスY座標（オプション）
+   */
+  addDroppedFilesToBoard: (
+    boardId: number,
+    paths: string[],
+    x?: number,
+    y?: number
+  ): Promise<BoardItem[]> =>
+    callIpc<BoardItem[]>("add_dropped_files_to_board", { boardId, paths, x, y }),
+
+  /**
+   * クリップボード上の画像をムードボード上に直接貼り付け・配置
+   * @param boardId ボードID
+   * @param imageBytes 画像バイナリ配列 (Uint8Array / number[])
+   * @param extension 画像拡張子（省略時は "png"）
+   * @param x 配置先キャンバスX座標（オプション）
+   * @param y 配置先キャンバスY座標（オプション）
+   */
+  addClipboardImageToBoard: (
+    boardId: number,
+    imageBytes: number[],
+    extension?: string,
+    x?: number,
+    y?: number
+  ): Promise<BoardItem[]> =>
+    callIpc<BoardItem[]>("add_clipboard_image_to_board", {
+      boardId,
+      imageBytes,
+      extension,
+      x,
+      y,
+    }),
+
+  /**
    * ボードアイテムの変形・位置・クリッピングを更新
    * @param id アイテムID
    * @param payload 更新ペイロード

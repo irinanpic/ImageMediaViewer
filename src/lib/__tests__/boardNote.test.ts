@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardNote, UpdateBoardNotePayload } from "../../types/board";
+import { useAppStore } from "../../store";
 
 /**
  * ムードボード付箋メモの複数行テキスト処理およびペイロード整合性テスト
@@ -61,5 +62,21 @@ describe("BoardNote multi-line text persistence", () => {
 
     expect(updatedNote.text).toBe(newText);
     expect(updatedNote.text.split("\n")).toEqual(["行A", "行B", "行C"]);
+  });
+
+  it("ムードボードからの「画像を表示」(openViewer(id, null)) で単一画像モードとしてビューアが起動すること", () => {
+    const store = useAppStore.getState();
+    store.closeViewer();
+    expect(useAppStore.getState().isViewerOpen).toBe(false);
+
+    // ムードボード上の画像IDのみ指定（タイムラインインデックス null）で起動
+    store.openViewer(999, null);
+    const afterOpen = useAppStore.getState();
+    expect(afterOpen.isViewerOpen).toBe(true);
+    expect(afterOpen.activeImageId).toBe(999);
+    expect(afterOpen.activeImageIndex).toBeNull();
+
+    store.closeViewer();
+    expect(useAppStore.getState().isViewerOpen).toBe(false);
   });
 });

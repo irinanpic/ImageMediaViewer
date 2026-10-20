@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Menu, Plus, RotateCw, SlidersHorizontal } from "lucide-react";
 import { BookmarkPopover } from "./BookmarkPopover";
-import { ConnectionStatusIndicator } from "../Common/ConnectionStatusIndicator";
 import { backendApi } from "../../lib/ipc";
 import { usePagedImages } from "../../hooks/usePagedImages";
 import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
@@ -10,10 +9,10 @@ import { useAppStore } from "../../store";
 import type { TimelineSort } from "../../types/generated/TimelineSort";
 
 /**
- * タイムライン表示ツールバー（表示順切替・ムードボード追加・現画面再読込・通信状態表示＆再接続）
+ * タイムライン表示ツールバー（表示順切替・ムードボード追加・現画面再読込）
  *
- * 変更理由: 上部サムネイルサイズスライダーを廃止してステータスバーへ一本化し、
- * 空いた上部右側に通信途絶検知・再接続（サーバー起動）コントローラーを配置する。
+ * 変更理由: Tauri ネイティブ IPC 一体型アーキテクチャへの完全移行に伴い、
+ * 旧HTTPサーバー用だった右上のサーバ接続ステータス表示（ConnectionStatusIndicator）と定期Pingポーリングを廃止。
  * また、モバイル環境では左端にハンバーガーメニュー（≡）を配置し、サイドバードロワーを呼び出せるようにする。
  */
 export const TimelineToolbar: React.FC = () => {
@@ -142,11 +141,6 @@ export const TimelineToolbar: React.FC = () => {
             {!isCompact && <span>{t("timeline.addToBoardCurrent")}</span>}
           </button>
         ) : null}
-      </div>
-
-      {/* 右側: 通信状態インジケータおよび再接続コントローラー */}
-      <div className="shrink-0 ml-2">
-        <ConnectionStatusIndicator />
       </div>
     </div>
   );
