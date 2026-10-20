@@ -66,6 +66,7 @@ interface AppStoreState {
   boards: Board[];
   activeBoardId: number | null;
   setBoards: (boards: Board[]) => void;
+  reorderBoards: (startIndex: number, endIndex: number) => void;
   setActiveBoardId: (id: number | null) => void;
   isAddToBoardModalOpen: boolean;
   addToBoardTargetImageIds: number[];
@@ -232,7 +233,35 @@ export const useAppStore = create<AppStoreState>((set) => ({
   setCurrentView: (currentView) => set({ currentView }),
   boards: [],
   activeBoardId: null,
-  setBoards: (boards) => set({ boards }),
+  setBoards: (boards) => {
+    try {
+      const savedOrder = JSON.parse(localStorage.getItem("imv_board_order") || "[]") as number[];
+      if (Array.isArray(savedOrder) && savedOrder.length > 0) {
+        const orderMap = new Map(savedOrder.map((id, idx) => [id, idx]));
+        boards.sort((a, b) => {
+          const idxA = orderMap.has(a.id) ? orderMap.get(a.id)! : 9999;
+          const idxB = orderMap.has(b.id) ? orderMap.get(b.id)! : 9999;
+          return idxA - idxB;
+        });
+      }
+    } catch {
+      // localStorageパース失敗時はそのまま
+    }
+    set({ boards });
+  },
+  reorderBoards: (startIndex, endIndex) =>
+    set((state) => {
+      const nextBoards = [...state.boards];
+      const [moved] = nextBoards.splice(startIndex, 1);
+      if (!moved) return state;
+      nextBoards.splice(endIndex, 0, moved);
+      try {
+        localStorage.setItem("imv_board_order", JSON.stringify(nextBoards.map((b) => b.id)));
+      } catch {
+        // localStorage保存失敗時は無視
+      }
+      return { boards: nextBoards };
+    }),
   setActiveBoardId: (activeBoardId) => set({ activeBoardId }),
   isAddToBoardModalOpen: false,
   addToBoardTargetImageIds: [],

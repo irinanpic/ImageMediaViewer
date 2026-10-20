@@ -38,6 +38,7 @@ export const Sidebar: React.FC = () => {
   const setCurrentView = useAppStore((state) => state.setCurrentView);
   const boards = useAppStore((state) => state.boards);
   const setBoards = useAppStore((state) => state.setBoards);
+  const reorderBoards = useAppStore((state) => state.reorderBoards);
   const totalImages = useAppStore((state) => state.totalImages);
   const thumbProgress = useAppStore((state) => state.thumbProgress);
   const activeBoardId = useAppStore((state) => state.activeBoardId);
@@ -100,6 +101,8 @@ export const Sidebar: React.FC = () => {
   // ドラッグ＆ドロップ並び替え用の状態
   const [draggedFolderIndex, setDraggedFolderIndex] = useState<number | null>(null);
   const [dragOverFolderIndex, setDragOverFolderIndex] = useState<number | null>(null);
+  const [draggedBoardIndex, setDraggedBoardIndex] = useState<number | null>(null);
+  const [dragOverBoardIndex, setDragOverBoardIndex] = useState<number | null>(null);
   const [isExternalDragOver, setIsExternalDragOver] = useState(false);
   // フォルダ選択処理（モバイル時はドロワーを自動で閉じる）
   const handleSelectFolder = (id: number | null) => {
@@ -316,7 +319,7 @@ export const Sidebar: React.FC = () => {
           const folderName = folder.path.split(/[\\/]/).filter(Boolean).pop() || folder.path;
           const isSelected = selectedFolderId === folder.id;
           const isOffline = folder.status === "offline";
-          const isDragOver = dragOverFolderIndex === index;
+          const isDragOver = dragOverFolderIndex === index && draggedFolderIndex !== null && draggedFolderIndex !== index;
           const isGenerating = folder.thumbCount !== undefined && folder.thumbCount < folder.imageCount;
           const isAllDone = folder.thumbCount !== undefined && folder.thumbCount >= folder.imageCount && folder.imageCount > 0;
 
@@ -327,6 +330,7 @@ export const Sidebar: React.FC = () => {
               onDragStart={(e) => {
                 setDraggedFolderIndex(index);
                 e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("application/x-imv-folder-index", String(index));
                 e.dataTransfer.setData("text/plain", String(index));
               }}
               onDragOver={(e) => {
@@ -336,7 +340,8 @@ export const Sidebar: React.FC = () => {
                   setDragOverFolderIndex(index);
                 }
               }}
-              onDragLeave={() => {
+              onDragLeave={(e) => {
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
                 if (dragOverFolderIndex === index) {
                   setDragOverFolderIndex(null);
                 }
@@ -344,8 +349,16 @@ export const Sidebar: React.FC = () => {
               onDrop={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                if (draggedFolderIndex !== null && draggedFolderIndex !== index) {
-                  reorderFolders(draggedFolderIndex, index);
+                const rawIndex =
+                  e.dataTransfer.getData("application/x-imv-folder-index") ||
+                  e.dataTransfer.getData("text/plain");
+                const fromIndex =
+                  rawIndex !== "" && !isNaN(Number(rawIndex))
+                    ? Number(rawIndex)
+                    : draggedFolderIndex;
+
+                if (fromIndex !== null && fromIndex !== index) {
+                  reorderFolders(fromIndex, index);
                 }
                 setDraggedFolderIndex(null);
                 setDragOverFolderIndex(null);
@@ -359,9 +372,11 @@ export const Sidebar: React.FC = () => {
                 isSelected
                   ? "bg-accent/20 text-accent font-medium border border-accent/40"
                   : "text-textSecondary hover:bg-surfaceLight hover:text-textPrimary"
-              } ${isDragOver ? "border-t-2 border-accent" : ""}`}
+              } ${draggedFolderIndex === index ? "opacity-40" : ""} ${
+                isDragOver ? "border-t-2 border-accent" : ""
+              }`}
             >
-              <div className="flex items-center gap-1.5 truncate flex-1 min-w-0" title={folder.path}>
+              <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pointer-events-none" title={folder.path}>
                 {/* ドラッグハンドル */}
                 <GripVertical className="w-3.5 h-3.5 text-textSecondary/40 group-hover:text-textSecondary/80 cursor-grab shrink-0 -ml-1" />
 
@@ -399,7 +414,10 @@ export const Sidebar: React.FC = () => {
               </div>
 
               {/* アクションボタン（モバイル環境または選択中は常時表示、PCホバー時も表示） */}
-              <div className={`${isMobileEnvironment() || isSelected ? "flex" : "hidden group-hover:flex"} items-center gap-0.5 shrink-0 ml-1.5`}>
+              <div
+                className={`${isMobileEnvironment() || isSelected ? "flex" : "hidden group-hover:flex"} items-center gap-0.5 shrink-0 ml-1.5 pointer-events-auto`}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
                 {index > 0 && (
                   <button
                     onClick={(e) => {
@@ -453,6 +471,7 @@ export const Sidebar: React.FC = () => {
         {/* 外部からのドラッグ＆ドロップ受け入れゾーン */}
         <div
           onDragOver={(e) => {
+            if (draggedFolderIndex !== null || draggedBoardIndex !== null) return;
             e.preventDefault();
             setIsExternalDragOver(true);
           }}
@@ -506,42 +525,120 @@ export const Sidebar: React.FC = () => {
                 {t("sidebar.noBoardsCreated")}
               </div>
             ) : (
-              boards.map((b) => {
+              boards.map((b, index) => {
                 const isSelected = currentView === "board" && activeBoardId === b.id;
+                const isDragOver =
+                  dragOverBoardIndex === index &&
+                  draggedBoardIndex !== null &&
+                  draggedBoardIndex !== index;
+
                 return (
                   <div
                     key={b.id}
+                    draggable
+                    onDragStart={(e) => {
+                      setDraggedBoardIndex(index);
+                      e.dataTransfer.effectAllowed = "move";
+                      e.dataTransfer.setData("application/x-imv-board-index", String(index));
+                      e.dataTransfer.setData("text/plain", String(index));
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      if (dragOverBoardIndex !== index) {
+                        setDragOverBoardIndex(index);
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                      if (dragOverBoardIndex === index) {
+                        setDragOverBoardIndex(null);
+                      }
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const rawIndex =
+                        e.dataTransfer.getData("application/x-imv-board-index") ||
+                        e.dataTransfer.getData("text/plain");
+                      const fromIndex =
+                        rawIndex !== "" && !isNaN(Number(rawIndex))
+                          ? Number(rawIndex)
+                          : draggedBoardIndex;
+
+                      if (fromIndex !== null && fromIndex !== index) {
+                        reorderBoards(fromIndex, index);
+                      }
+                      setDraggedBoardIndex(null);
+                      setDragOverBoardIndex(null);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedBoardIndex(null);
+                      setDragOverBoardIndex(null);
+                    }}
                     onClick={() => handleSelectBoard(b.id)}
-                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer group transition ${
+                    className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs cursor-pointer group transition relative ${
                       isSelected
                         ? "bg-accent/20 text-accent font-medium border border-accent/40"
                         : "text-textSecondary hover:bg-surfaceLight hover:text-textPrimary"
+                    } ${draggedBoardIndex === index ? "opacity-40" : ""} ${
+                      isDragOver ? "border-t-2 border-accent" : ""
                     }`}
                   >
-                    <div className="flex items-center gap-2 truncate flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pointer-events-none">
+                      <GripVertical className="w-3.5 h-3.5 text-textSecondary/40 group-hover:text-textSecondary/80 cursor-grab shrink-0 -ml-1" />
                       <LayoutGrid className="w-3.5 h-3.5 shrink-0 text-textSecondary group-hover:text-accent" />
                       <span className="truncate">{b.name}</span>
                       <span className="text-[10px] text-textSecondary/70 shrink-0">({b.itemCount})</span>
                     </div>
 
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        if (confirm(t("sidebar.deleteBoardConfirm", { name: b.name }))) {
-                          await backendApi.deleteBoard(b.id);
-                          const updated = await backendApi.getBoards();
-                          setBoards(updated);
-                          if (activeBoardId === b.id) {
-                            setCurrentView("timeline");
-                            setActiveBoardId(null);
-                          }
-                        }
-                      }}
-                      title={t("sidebar.deleteBoardTooltip")}
-                      className="hidden group-hover:block p-1 hover:text-red-400 transition ml-1"
+                    <div
+                      className="flex items-center gap-0.5 shrink-0 pointer-events-auto"
+                      onMouseDown={(e) => e.stopPropagation()}
                     >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                      {index > 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reorderBoards(index, index - 1);
+                          }}
+                          title="上へ移動"
+                          className="hidden group-hover:block p-1 hover:text-accent transition text-textSecondary"
+                        >
+                          <ChevronUp className="w-3 h-3" />
+                        </button>
+                      )}
+                      {index < boards.length - 1 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            reorderBoards(index, index + 1);
+                          }}
+                          title="下へ移動"
+                          className="hidden group-hover:block p-1 hover:text-accent transition text-textSecondary"
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      )}
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (confirm(t("sidebar.deleteBoardConfirm", { name: b.name }))) {
+                            await backendApi.deleteBoard(b.id);
+                            const updated = await backendApi.getBoards();
+                            setBoards(updated);
+                            if (activeBoardId === b.id) {
+                              setCurrentView("timeline");
+                              setActiveBoardId(null);
+                            }
+                          }
+                        }}
+                        title={t("sidebar.deleteBoardTooltip")}
+                        className="hidden group-hover:block p-1 hover:text-red-400 transition ml-1"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 );
               })

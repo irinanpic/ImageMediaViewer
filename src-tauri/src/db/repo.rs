@@ -749,6 +749,9 @@ pub fn increment_catalog_version(conn: &Connection) -> Result<i64> {
 // -----------------------------------------------------------------------------
 
 /// 全ボード一覧を取得（所属アイテム数も併せて集計）
+///
+/// 変更理由: 閲覧・カメラ位置の保存（pan/zoom）等によって `updated_at` が更新されても、
+/// サイドバーの一覧順序が勝手に跳ね上がる挙動を防止するため、作成順（`created_at ASC, id ASC`）で安定取得する。
 pub fn get_boards(conn: &Connection) -> Result<Vec<crate::models::Board>> {
     let mut stmt = conn.prepare_cached(
         "SELECT b.id, b.name, b.background_color, b.pan_x, b.pan_y, b.zoom,
@@ -756,7 +759,7 @@ pub fn get_boards(conn: &Connection) -> Result<Vec<crate::models::Board>> {
          FROM boards b
          LEFT JOIN board_items bi ON b.id = bi.board_id
          GROUP BY b.id
-         ORDER BY b.updated_at DESC, b.id DESC;"
+         ORDER BY b.created_at ASC, b.id ASC;"
     )?;
 
     let rows = stmt.query_map([], |r| {
@@ -1680,6 +1683,44 @@ mod tests {
         delete_board_note(&conn, note.id).expect("メモ削除失敗");
         let after_delete = get_board_notes(&conn, board.id).expect("削除後メモ一覧取得失敗");
         assert_eq!(after_delete.len(), 0);
+    }
+
+    #[test]
+    fn test_boards_stable_ordering() {
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let conn = db.writer();
+
+        // 1. ボードを3つ順番に作成
+        let b1 = create_board(&conn, &CreateBoardPayload { name: "Board A".to_string(), background_color: None }, 1000).expect("作成失敗");
+        let b2 = create_board(&conn, &CreateBoardPayload { name: "Board B".to_string(), background_color: None }, 2000).expect("作成失敗");
+        let b3 = create_board(&conn, &CreateBoardPayload { name: "Board C".to_string(), background_color: None }, 3000).expect("作成失敗");
+
+        let initial_boards = get_boards(&conn).expect("取得失敗");
+        assert_eq!(initial_boards.len(), 3);
+        assert_eq!(initial_boards[0].id, b1.id);
+        assert_eq!(initial_boards[1].id, b2.id);
+        assert_eq!(initial_boards[2].id, b3.id);
+
+        // 2. 先頭のボード（b1）を後から閲覧・パン操作し、updated_at が最も新しくなったとする
+        update_board(
+            &conn,
+            b1.id,
+            &crate::models::UpdateBoardPayload {
+                name: None,
+                background_color: None,
+                pan_x: Some(150.0),
+                pan_y: Some(250.0),
+                zoom: Some(1.5),
+            },
+            9999, // 最も新しい時刻
+        ).expect("更新失敗");
+
+        // 3. get_boards の結果が updated_at の影響を受けず、作成順（b1, b2, b3）で維持されることを検証
+        let boards_after_update = get_boards(&conn).expect("取得失敗");
+        assert_eq!(boards_after_update.len(), 3);
+        assert_eq!(boards_after_update[0].id, b1.id);
+        assert_eq!(boards_after_update[1].id, b2.id);
+        assert_eq!(boards_after_update[2].id, b3.id);
     }
 
     #[test]
