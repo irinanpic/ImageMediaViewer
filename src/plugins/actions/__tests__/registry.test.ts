@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   builtInActionPlugins,
   createCustomActionPlugin,
@@ -6,6 +6,7 @@ import {
   ContextMenuRegistry,
   isPluginIdEnabled,
 } from "../registry";
+import { backendApi } from "../../../lib/ipc";
 import type { ImageRecord } from "../../../types/generated/ImageRecord";
 import type { ImageDetail } from "../../../types/generated/ImageDetail";
 import type { AppSettings, CustomContextMenuItem } from "../../../types/settings";
@@ -39,6 +40,7 @@ describe("ContextMenuRegistry & Plugins", () => {
     format: "clip",
     takenAtSource: "mtime",
     originalAvailable: true,
+    sourceUrl: null,
   };
 
   const dummyJpgDetail: ImageDetail = {
@@ -53,6 +55,7 @@ describe("ContextMenuRegistry & Plugins", () => {
     format: "jpeg",
     takenAtSource: "mtime",
     originalAvailable: true,
+    sourceUrl: null,
   };
 
   it("本体 builtInActionPlugins には特定外部ソフト（ClipStudio等）がハードコードされていないこと", () => {
@@ -266,5 +269,32 @@ describe("ContextMenuRegistry & Plugins", () => {
       }
       trashSpy.mockRestore();
     }
+  });
+
+  it("sourceUrlが存在する場合にaction.open_source_urlが表示され、実行できること", async () => {
+    const webDetail: ImageDetail = {
+      ...dummyJpgDetail,
+      sourceUrl: "https://example.com/art.png",
+    };
+
+    const actionsWithoutUrl = ContextMenuRegistry.getAvailableActions(
+      dummyRecord,
+      null,
+      dummyJpgDetail
+    );
+    expect(actionsWithoutUrl.some((a) => a.id === "action.open_source_url")).toBe(false);
+
+    const actionsWithUrl = ContextMenuRegistry.getAvailableActions(
+      dummyRecord,
+      null,
+      webDetail
+    );
+    const sourceAction = actionsWithUrl.find((a) => a.id === "action.open_source_url");
+    expect(sourceAction).toBeDefined();
+
+    const openSpy = vi.spyOn(backendApi, "openSourceUrl").mockResolvedValue(undefined as never);
+    await sourceAction!.execute({ record: dummyRecord, detail: webDetail });
+    expect(openSpy).toHaveBeenCalledWith("https://example.com/art.png");
+    openSpy.mockRestore();
   });
 });

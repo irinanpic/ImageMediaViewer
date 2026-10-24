@@ -24,6 +24,7 @@ import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { WatchedFolder } from "../../types/generated/WatchedFolder";
 import { AddFolderModal } from "./AddFolderModal";
+import { extractDroppedDirectoryInfo } from "../../utils/webDropParser";
 
 export const Sidebar: React.FC = () => {
   const { t, locale, setLocale } = useTranslation();
@@ -206,47 +207,64 @@ export const Sidebar: React.FC = () => {
 
   // エクスプローラ等からのフォルダドロップ処理
   const handleExternalDrop = async (e: React.DragEvent) => {
+    if (draggedFolderIndex !== null || draggedBoardIndex !== null) return;
     e.preventDefault();
+    e.stopPropagation();
     setIsExternalDragOver(false);
 
+    // ★ 重要: 非同期 await 前に Directory Entry 取得を開始しておく
+    const dirInfoPromise = extractDroppedDirectoryInfo(e.dataTransfer);
     const files = Array.from(e.dataTransfer.files);
-    if (files.length === 0) return;
 
-    // 既存フォルダから親パスを推測して初期候補を生成
-    let parentHint = "";
-    if (folders.length > 0) {
-      const lastPath = folders[0].path;
-      const parts = lastPath.split(/[\\/]/).filter(Boolean);
-      if (parts.length > 1) {
-        parts.pop();
-        parentHint = parts.join("\\");
-      }
-    }
-
+    // 1. ファイルオブジェクトから直接ローカルパスが取得できる場合
+    let resolvedAny = false;
     for (const file of files) {
       const filePath = (file as any).path as string | undefined;
       if (filePath) {
-        // パスが取得できる場合（Electronや特定環境）
         await addFolderByPath(filePath);
-      } else {
-        // 通常のブラウザ環境ではセキュリティ制限でフルパスが取得できないためプロンプトで確認
-        const guessedName = file.name;
-        const suggestedPath = parentHint ? `${parentHint}\\${guessedName}` : `C:\\Pictures\\${guessedName}`;
-        const inputPath = prompt(
-          t("sidebar.dragDropPrompt", { name: guessedName }),
-          suggestedPath
-        );
-        if (inputPath) {
-          await addFolderByPath(inputPath);
-        }
+        resolvedAny = true;
       }
     }
+    if (resolvedAny) return;
+
+    // 2. DOM Directory Entryからフォルダ名と直下エントリ一覧を取得し、PC内の実パスを自動特定
+    try {
+      const dirInfo = await dirInfoPromise;
+      if (dirInfo) {
+        const added = await backendApi.resolveAndAddDroppedFolder(
+          dirInfo.folderName,
+          dirInfo.childNames
+        );
+        const updated = await backendApi.getWatchFolders();
+        useAppStore.getState().setFolders(updated);
+        useAppStore.getState().setSelectedFolderId(added.id);
+        return;
+      }
+    } catch (err: any) {
+      console.warn("フォルダ自動特定失敗:", err);
+    }
+
+    // 3. 自動特定できなかった場合のフォールバック（フォルダ追加モーダルを表示）
+    setIsAddFolderModalOpen(true);
   };
 
   if (!isSidebarOpen) return null;
 
   const sidebarContent = (
     <aside
+      onDragOver={(e) => {
+        if (draggedFolderIndex !== null || draggedBoardIndex !== null) return;
+        if (e.dataTransfer?.types?.includes("Files")) {
+          e.preventDefault();
+          setIsExternalDragOver(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setIsExternalDragOver(false);
+        }
+      }}
+      onDrop={handleExternalDrop}
       className={`${
         isCompact
           ? "fixed top-0 left-0 bottom-0 w-72 max-w-[85vw] bg-surface z-50 flex flex-col shadow-2xl border-r border-border animate-in slide-in-from-left duration-200"
@@ -347,6 +365,10 @@ export const Sidebar: React.FC = () => {
                 }
               }}
               onDrop={(e) => {
+                if (draggedFolderIndex === null && e.dataTransfer?.files?.length > 0) {
+                  handleExternalDrop(e);
+                  return;
+                }
                 e.preventDefault();
                 e.stopPropagation();
                 const rawIndex =

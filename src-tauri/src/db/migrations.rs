@@ -291,5 +291,22 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("Completed migration v8 (user_version = 8)");
     }
 
+    if current_version < 9 {
+        info!("Applying migration v9...");
+        let tx = conn.transaction()?;
+
+        // 画像の元Webページまたは元画像URLを保存するカラムを追加
+        // 変更理由: ブラウザからムードボードへドロップされたWeb画像の取得元URLを保持し、
+        // 右クリックメニューから元のWebページや画像を即座に開けるようにするため
+        tx.execute(
+            "ALTER TABLE images ADD COLUMN source_url TEXT;",
+            [],
+        )?;
+
+        tx.pragma_update(None, "user_version", 9)?;
+        tx.commit()?;
+        info!("Completed migration v9 (user_version = 9)");
+    }
+
     Ok(())
 }

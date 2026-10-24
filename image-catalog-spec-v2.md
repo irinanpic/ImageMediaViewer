@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS images (
     format          TEXT,                   -- 'jpeg','png','webp','gif','bmp'
     quick_hash      TEXT NOT NULL,          -- §5.3 のサンプリングBLAKE3。サムネキャッシュのキー
     thumb_status    INTEGER NOT NULL DEFAULT 0, -- 0:未生成 1:生成済 2:失敗
-    indexed_at      INTEGER NOT NULL
+    indexed_at      INTEGER NOT NULL,
+    source_url      TEXT                    -- マイグレーション v9: Webドロップ画像の元URL (http/https/data)
 );
 
 CREATE INDEX IF NOT EXISTS idx_images_timeline ON images (taken_at DESC, id DESC);
@@ -459,6 +460,10 @@ export interface BackendAPI {
   getImageDetail(id: number): Promise<ImageDetail>;
   prefetchThumbnails(ids: number[]): Promise<void>;   // 優先度 MID でキューへ
   revealInFileManager(id: number): Promise<void>;     // P1
+  // Web画像ドロップ・URL連携・フォルダ解決
+  addWebImageToBoard(boardId: number, options: { imageBytes?: number[]; extension?: string; sourceUrl?: string; x?: number; y?: number }): Promise<BoardItem[]>;
+  openSourceUrl(url: string): Promise<void>;
+  resolveAndAddDroppedFolder(folderName: string, childNames: string[]): Promise<WatchedFolder>;
 }
 
 // バックエンド → フロントエンド イベント
@@ -570,3 +575,55 @@ export interface BackendAPI {
 | **F-07 の回転状態の永続化** | 現仕様は「閉じたらリセット」。永続化が必要なら DB 拡張が要る |
 | **重複ファイルの扱い** | MVPは両方表示。F-15 で再検討 |
 | **P1機能の取捨選択** | 日付ジャンプ・フォルダ絞り込みなどの優先順位 |
+
+---
+
+## 14. Webブラウザ・外部からのドラッグ＆ドロップおよび出典URL保持仕様
+
+### 14.1 概要・目的
+Webブラウザ（Chrome / Firefox 等）やエクスプローラからムードボード上へ直接画像をドラッグ＆ドロップし、画像実体のローカル保存とともに、掲載されていたWebページの出典元URL（`source_url`）をDBへ記録・永続化する。右クリックメニューから既定のブラウザで出典ページを開くことができる。
+
+### 14.2 アーキテクチャとデータフロー
+
+```
+[Webブラウザ (Chrome/Firefox)]
+  │ (Drag & Drop: text/html, text/uri-list, files)
+  ▼
+[フロントエンド: webDropParser.ts]
+  ├── extractUrlsFromDataTransfer: imageUrl（ダウンロード対象）と sourceUrl（出典記事URL）を分離
+  ├── readBlobAsDataUrl: Base64 Data URL 文字列へ変換（number[] 廃止によるIPC高速化）
+  └── extractDroppedFileCandidates: ローカルファイル候補（name, size, lastModified）抽出
+  │
+  ├── (ローカルファイルの場合) ──> backendApi.resolveDroppedFilesToBoard
+  │                                  │ DB逆引き (find_image_by_filename_and_size)
+  │                                  │ または監視フォルダ/デスクトップ探索
+  │                                  └── 既存ID直接配置 / 正規パスインデックス (.clip対応)
+  │
+  └── (Web画像の場合) ───────────> backendApi.addWebImageToBoard
+                                     ├── Base64デコード または ureq HTTPダウンロード
+                                     ├── Content-Type ガード（text/html 拒否）
+                                     ├── 50MB 上限ガード
+                                     ├── web_clips/ へ連番・ハッシュ保存
+                                     └── DB images (folder_id=0, source_url) 登録
+```
+
+### 14.3 リリース品質・堅牢性設計
+1. **DataTransfer同期読み取りとWebドロップ最優先ルーティング**
+   - HTML5 D&D / Clipboard API では非同期 `await` 通過後に `DataTransfer` 内容がクリアされるため、イベント発生直後に同期的に `files`・`text/html`・`text/uri-list` 等を読み取る。
+   - Web URL または HTML フラグメントが存在する場合は `addWebImageToBoard` を最優先で実行し、Chrome 仮想ファイルがローカルファイル逆引きに横取りされて `source_url` が失われる問題を防ぐ。またブラウザでの「画像をコピー」→ `Ctrl+V` 貼り付け時にも `text/html` 内の出典 URL を保持する。
+2. **ローカルファイルの逆引き解決（`resolve_dropped_files_to_board`）**
+   - `dragDropEnabled: false` 環境下で DOM `File.path` が取得できない制約に対応。
+   - `name`, `size`, `lastModified` を元に DB または監視フォルダ配下を探索し、既存カタログ登録の再利用や正規パスでのインデックス（`.clip` 等の独自形式含む）を実施。不要なファイル複製を防止。
+3. **画像直リンクと出典記事URLの明確な分離・相対URL解決**
+   - `<a><img/></a>` 構造において、画像URL（`imageUrl`）と出典URL（`sourceUrl`）を分離抽出。相対パス（`href="/post/123"`）やプロトコル相対URL（`//cdn...`）、`srcset` 最大解像度URLを `text/uri-list` 等のベースURL基準で完全な `http(s)` URL へ解決。
+   - バックエンド HTTP ダウンロード時に `Referer` / `Accept` ヘッダ自動付与およびフォールバック再試行を行い、Content-Type が HTML の場合は即座に拒否し、50MB を超える不正ストリームを遮断。
+4. **ファイル名衝突防止と順次配置**
+   - 保存ファイル名に `AtomicU64` 連番カウンタを付与し、同一ハッシュは再利用。
+   - 複数ファイルドロップ時は `await` による順次登録と座標オフセット（`+ idx * 36px`）を適用し、同一座標への重なりを防止。
+5. **Base64転送によるIPC最適化**
+   - 巨大バイナリを `number[]` 配列で JSON 化するオーバーヘッドを排除し、Base64 文字列（`FileReader.readAsDataURL`）による高効率転送を実現。
+6. **整合性・カタログ進捗同期**
+   - 未対応の `avif` を拡張子ホワイトリストから除外。
+   - サムネイル生成失敗集計（`get_failed_thumb_images`）を `folder_id > 0` に統一。
+   - 画像削除（`trash_file`）直後に `get_thumb_progress` からサムネイル進捗カウンタを即時再同期し `thumb-progress` を通知。
+

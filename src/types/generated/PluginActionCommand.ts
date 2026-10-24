@@ -3,17 +3,16 @@
 /**
  * プラグインアクションのプロセス起動定義
  */
-export type PluginActionCommand = {
-  /**
-   * Windows向け実行パス候補（先頭から存在確認して実行）
-   */
-  windows: Array<string>;
-  /**
-   * デフォルト/POSIX向けコマンド名またはパス
-   */
-  default: string | null;
-  /**
-   * コマンド引数テンプレート（"{path}" が対象パスに置換）
-   */
-  args: Array<string>;
-};
+export type PluginActionCommand = { 
+/**
+ * Windows向け実行パス候補（先頭から存在確認して実行）
+ */
+windows: Array<string>, 
+/**
+ * デフォルト/POSIX向けコマンド名またはパス
+ */
+default: string | null, 
+/**
+ * コマンド引数テンプレート（"{path}" が対象パスに置換）
+ */
+args: Array<string>, };

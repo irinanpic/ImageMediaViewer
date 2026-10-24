@@ -23,6 +23,19 @@ import type {
 import type { Bookmark } from "../types/bookmark";
 import type { PluginActionDefinition } from "../types/generated/PluginActionDefinition";
 import type { InstalledPluginInfo } from "../types/generated/InstalledPluginInfo";
+
+export interface DroppedFileCandidate {
+  name: string;
+  size: number;
+  lastModified?: number;
+}
+
+export interface ResolveDroppedFilesResult {
+  items: BoardItem[];
+  unresolvedIndices?: number[];
+  unresolved_indices?: number[];
+}
+
 /**
  * Tauri ネイティブ IPC を呼び出す型安全ラッパー関数
  *
@@ -221,25 +234,119 @@ export const backendApi = {
 
   /**
    * クリップボード上の画像をムードボード上に直接貼り付け・配置
+   * 変更理由: Base64（imageData）による高速・省メモリ転送に対応し、従来のバイナリ配列（imageBytes）も互換維持。
    * @param boardId ボードID
-   * @param imageBytes 画像バイナリ配列 (Uint8Array / number[])
+   * @param payload または imageBytes
    * @param extension 画像拡張子（省略時は "png"）
    * @param x 配置先キャンバスX座標（オプション）
    * @param y 配置先キャンバスY座標（オプション）
    */
   addClipboardImageToBoard: (
     boardId: number,
-    imageBytes: number[],
+    payload:
+      | {
+          imageBytes?: number[];
+          imageData?: string;
+          extension?: string;
+          x?: number;
+          y?: number;
+        }
+      | number[],
     extension?: string,
     x?: number,
     y?: number
-  ): Promise<BoardItem[]> =>
-    callIpc<BoardItem[]>("add_clipboard_image_to_board", {
+  ): Promise<BoardItem[]> => {
+    if (Array.isArray(payload)) {
+      return callIpc<BoardItem[]>("add_clipboard_image_to_board", {
+        boardId,
+        imageBytes: payload,
+        extension,
+        x,
+        y,
+      });
+    }
+    return callIpc<BoardItem[]>("add_clipboard_image_to_board", {
       boardId,
-      imageBytes,
-      extension,
+      imageBytes: payload.imageBytes,
+      imageData: payload.imageData,
+      extension: payload.extension ?? extension,
+      x: payload.x ?? x,
+      y: payload.y ?? y,
+    });
+  },
+
+  /**
+   * Webブラウザからドロップされた画像バイナリ、Base64データ、またはURLを登録しムードボード上に配置
+   * 変更理由: imageUrl（画像直リンク）とsourceUrl（元記事URL）の分離、およびBase64（imageData）転送に対応。
+   * @param boardId ボードID
+   * @param options 画像データ・URL・配置座標
+   */
+  addWebImageToBoard: (
+    boardId: number,
+    options: {
+      imageBytes?: number[];
+      imageData?: string;
+      imageUrl?: string;
+      sourceUrl?: string;
+      extension?: string;
+      x?: number;
+      y?: number;
+    }
+  ): Promise<BoardItem[]> =>
+    callIpc<BoardItem[]>("add_web_image_to_board", {
+      boardId,
+      imageBytes: options.imageBytes,
+      imageData: options.imageData,
+      imageUrl: options.imageUrl,
+      sourceUrl: options.sourceUrl,
+      extension: options.extension,
+      x: options.x,
+      y: options.y,
+    }),
+
+  /**
+   * エクスプローラ等からドロップされたファイル群の実体や既存カタログ登録を逆引きし、ムードボードに配置する
+   *
+   * 変更理由: dragDropEnabled: false により DOM File からフルパスが得られない場合でも、
+   * ファイル名・サイズ・更新日時から既存画像やローカルパス（.clip含む）を特定して無駄な複製を防ぐため。
+   *
+   * @param boardId ボードID
+   * @param candidates ドロップされたファイル候補配列
+   * @param x 配置開始X座標（オプション）
+   * @param y 配置開始Y座標（オプション）
+   */
+  resolveDroppedFilesToBoard: (
+    boardId: number,
+    candidates: DroppedFileCandidate[],
+    x?: number,
+    y?: number
+  ): Promise<ResolveDroppedFilesResult> =>
+    callIpc<ResolveDroppedFilesResult>("resolve_dropped_files_to_board", {
+      boardId,
+      candidates,
       x,
       y,
+    }),
+
+  /**
+   * 画像の元URLをOSの既定ブラウザで開く
+   * @param url 開く対象のWeb URL (http/https)
+   */
+  openSourceUrl: (url: string): Promise<void> =>
+    callIpc<void>("open_source_url", { url }),
+
+  /**
+   * ドロップされたフォルダ名と直下エントリ一覧からPC内のローカルパスを特定し監視フォルダとして追加
+   * @param folderName フォルダ名
+   * @param childNames 直下の子エントリ名一覧
+   */
+  resolveAndAddDroppedFolder: (
+    folderName: string,
+    childNames: string[]
+  ): Promise<WatchedFolder> =>
+    callIpc<WatchedFolder>("resolve_and_add_dropped_folder", {
+      folderName,
+      childNames,
     }),
 
   /**

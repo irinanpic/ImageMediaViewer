@@ -102,6 +102,23 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     },
   },
   {
+    id: "action.open_source_url",
+    label: (locale) => (locale === "en" ? "Open Original Web Page" : "元のWebページを開く"),
+    icon: "ExternalLink",
+    order: 25,
+    isAvailable: (_record, _enabledPlugins, detail) => Boolean(detail?.sourceUrl),
+    execute: async (context) => {
+      let url = context.detail?.sourceUrl;
+      if (!url) {
+        const detail = await backendApi.getImageDetail(context.record.id);
+        url = detail.sourceUrl ?? undefined;
+      }
+      if (url) {
+        await backendApi.openSourceUrl(url);
+      }
+    },
+  },
+  {
     id: "action.add_to_board",
     label: (locale) => (locale === "en" ? "Add to Moodboard..." : "ボードに追加..."),
     icon: "LayoutGrid",

@@ -90,6 +90,7 @@ fn test_shared_hash_update_and_gc_integrity() {
                 format: Some("png".to_string()),
                 quick_hash: hash_orig.clone(),
                 indexed_at: mtime_orig,
+                source_url: None,
             }],
         )
         .unwrap();
@@ -109,6 +110,7 @@ fn test_shared_hash_update_and_gc_integrity() {
                 format: Some("png".to_string()),
                 quick_hash: hash_orig.clone(),
                 indexed_at: mtime_orig,
+                source_url: None,
             }],
         )
         .unwrap();

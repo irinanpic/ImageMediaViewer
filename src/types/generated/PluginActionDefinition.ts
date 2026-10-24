@@ -4,37 +4,36 @@ import type { PluginActionCommand } from "./PluginActionCommand";
 /**
  * プラグインが提供するコンテキストメニューアクション定義
  */
-export type PluginActionDefinition = {
-  /**
-   * アクション一意識別子 (例: "action.open_clip_studio")
-   */
-  id: string;
-  /**
-   * 親プラグイン識別子（ロード時に自動付与。例: "format.clipstudio"）
-   */
-  pluginId: string | null;
-  /**
-   * メニュー表示名（日本語）
-   */
-  name: string;
-  /**
-   * メニュー表示名（英語）
-   */
-  nameEn: string | null;
-  /**
-   * アイコン名 (Lucide アイコン名)
-   */
-  icon: string | null;
-  /**
-   * メニュー表示順序
-   */
-  order: number | null;
-  /**
-   * 有効化する拡張子リスト（空の場合はすべて）
-   */
-  extensions: Array<string>;
-  /**
-   * コマンド実行定義
-   */
-  command: PluginActionCommand | null;
-};
+export type PluginActionDefinition = { 
+/**
+ * アクション一意識別子 (例: "action.open_clip_studio")
+ */
+id: string, 
+/**
+ * 親プラグイン識別子（ロード時に自動付与。例: "format.clipstudio"）
+ */
+pluginId: string | null, 
+/**
+ * メニュー表示名（日本語）
+ */
+name: string, 
+/**
+ * メニュー表示名（英語）
+ */
+nameEn: string | null, 
+/**
+ * アイコン名 (Lucide アイコン名)
+ */
+icon: string | null, 
+/**
+ * メニュー表示順序
+ */
+order: number | null, 
+/**
+ * 有効化する拡張子リスト（空の場合はすべて）
+ */
+extensions: Array<string>, 
+/**
+ * コマンド実行定義
+ */
+command: PluginActionCommand | null, };

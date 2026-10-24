@@ -40,6 +40,7 @@ export interface BoardItemContextMenuProps {
   onToggleFlipV: () => void;
   onToggleLock: () => void;
   onRemoveFromBoard: () => void;
+  sourceUrl?: string | null;
 }
 
 interface AppStoreState {

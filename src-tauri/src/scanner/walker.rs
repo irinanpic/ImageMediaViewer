@@ -292,6 +292,7 @@ pub fn scan_folder_core(
                     format: meta.format,
                     quick_hash,
                     indexed_at: now,
+                    source_url: None,
                 })
             })
             .collect();

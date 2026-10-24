@@ -30,4 +30,8 @@ takenAtSource: TakenAtSource,
 /**
  * 元ファイルが現在アクセス可能か（オフライン判定）
  */
-originalAvailable: boolean, };
+originalAvailable: boolean, 
+/**
+ * Web等から取得した元の画像URL（Webドロップ由来の場合）
+ */
+sourceUrl: string | null, };

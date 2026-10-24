@@ -61,6 +61,8 @@ pub struct ImageDetail {
     pub taken_at_source: TakenAtSource,
     /// 元ファイルが現在アクセス可能か（オフライン判定）
     pub original_available: bool,
+    /// Web等から取得した元の画像URL（Webドロップ由来の場合）
+    pub source_url: Option<String>,
 }
 
 /// サムネイル生成に失敗した画像のレコード（原因分析・ログ確認用）
@@ -331,6 +333,8 @@ pub struct BoardItem {
     pub flip_v: bool,
     #[ts(type = "number")]
     pub rev: i64,
+    /// Web等から取得した元の画像URL（Webドロップ由来の場合）
+    pub source_url: Option<String>,
 }
 
 /// ボード新規作成ペイロード
@@ -530,6 +534,12 @@ mod tests {
     fn export_bindings_platform_info() {
         PresetFolder::export().expect("Failed to export PresetFolder bindings");
         PlatformInfo::export().expect("Failed to export PlatformInfo bindings");
+    }
+
+    #[test]
+    fn export_bindings_image_detail_and_board_item() {
+        ImageDetail::export().expect("Failed to export ImageDetail bindings");
+        BoardItem::export().expect("Failed to export BoardItem bindings");
     }
 }
 

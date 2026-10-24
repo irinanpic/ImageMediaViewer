@@ -38,6 +38,12 @@ import {
   calculateDistance,
   calculatePinchZoom,
 } from "../../utils/gestureMath";
+import {
+  extractWebDropImageData,
+  extractUrlsFromDataTransfer,
+  extractDroppedFileCandidates,
+  readBlobAsDataUrl,
+} from "../../utils/webDropParser";
 
 /** 付箋メモのカラーパレット定義 */
 const NOTE_COLORS = [
@@ -436,6 +442,7 @@ export const MoodboardCanvas: React.FC = () => {
               })
               .catch(console.error);
           },
+          sourceUrl: item.sourceUrl,
         },
       });
     },
@@ -1536,14 +1543,19 @@ export const MoodboardCanvas: React.FC = () => {
 
   /**
    * クリップボードまたはブラウザFileオブジェクトの画像Blobをボードへ保存・配置する
+   * 変更理由: Base64 Data URL による高効率・省メモリ転送に対応し、
+   * ブラウザから「画像をコピー」して貼り付けた場合も出典URL（sourceUrl）を保持可能にする。
    */
   const handlePasteImageBlob = useCallback(
-    async (blob: Blob, clientPos?: { x: number; y: number } | null) => {
+    async (
+      blob: Blob,
+      clientPos?: { x: number; y: number } | null,
+      sourceUrl?: string
+    ) => {
       if (!activeBoardId) return;
       const worldPos = clientToWorldPos(clientPos ?? lastPointerClientPosRef.current);
       try {
-        const arrayBuffer = await blob.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(arrayBuffer));
+        const dataUrl = await readBlobAsDataUrl(blob);
         const mime = (blob.type || "").toLowerCase();
         let ext = "png";
         if (mime.includes("jpeg") || mime.includes("jpg")) ext = "jpg";
@@ -1551,13 +1563,20 @@ export const MoodboardCanvas: React.FC = () => {
         else if (mime.includes("gif")) ext = "gif";
         else if (mime.includes("bmp")) ext = "bmp";
 
-        const updatedItems = await backendApi.addClipboardImageToBoard(
-          activeBoardId,
-          bytes,
-          ext,
-          worldPos.x,
-          worldPos.y
-        );
+        const updatedItems = sourceUrl
+          ? await backendApi.addWebImageToBoard(activeBoardId, {
+              imageData: dataUrl,
+              extension: ext,
+              sourceUrl,
+              x: worldPos.x,
+              y: worldPos.y,
+            })
+          : await backendApi.addClipboardImageToBoard(activeBoardId, {
+              imageData: dataUrl,
+              extension: ext,
+              x: worldPos.x,
+              y: worldPos.y,
+            });
         applyBoardItemsUpdate(updatedItems);
       } catch (err: any) {
         alert(t("moodboard.pasteFailed", { error: err?.message || String(err) }));
@@ -1647,8 +1666,14 @@ export const MoodboardCanvas: React.FC = () => {
         return;
       }
 
-      const itemsList = e.clipboardData?.items;
+      const clipboardData = e.clipboardData;
+      const itemsList = clipboardData?.items;
       if (!itemsList) return;
+
+      // ブラウザ上で「画像をコピー」された場合、text/html 内の元URLも同期抽出する
+      const { sourceUrl } = clipboardData
+        ? extractUrlsFromDataTransfer(clipboardData)
+        : { sourceUrl: undefined };
 
       for (let i = 0; i < itemsList.length; i++) {
         const item = itemsList[i];
@@ -1656,7 +1681,7 @@ export const MoodboardCanvas: React.FC = () => {
           const blob = item.getAsFile();
           if (blob) {
             e.preventDefault();
-            handlePasteImageBlob(blob, lastPointerClientPosRef.current);
+            handlePasteImageBlob(blob, lastPointerClientPosRef.current, sourceUrl);
             return;
           }
         }
@@ -1830,37 +1855,120 @@ export const MoodboardCanvas: React.FC = () => {
       onPointerCancel={handlePointerUp}
       onContextMenu={(e) => e.preventDefault()}
       onDragOver={(e) => {
-        if (e.dataTransfer?.types?.includes("Files")) {
+        // ファイルまたはURL、HTML等のドラッグを受け入れ
+        if (
+          e.dataTransfer?.types?.includes("Files") ||
+          e.dataTransfer?.types?.includes("text/uri-list") ||
+          e.dataTransfer?.types?.includes("text/html") ||
+          e.dataTransfer?.types?.includes("text/plain")
+        ) {
           e.preventDefault();
-          if (!isTauriEnvironment()) {
-            setIsExternalFileDragOver(true);
-          }
+          setIsExternalFileDragOver(true);
         }
       }}
       onDragLeave={(e) => {
-        if (!isTauriEnvironment() && e.currentTarget === e.target) {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setIsExternalFileDragOver(false);
         }
       }}
-      onDrop={(e) => {
-        if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+      onDrop={async (e) => {
         e.preventDefault();
         setIsExternalFileDragOver(false);
-        // Tauri環境では getCurrentWebview().onDragDropEvent 側で絶対パスとして処理されるためスキップ
-        if (isTauriEnvironment()) return;
+        if (!activeBoardId) return;
 
         const clientPos = { x: e.clientX, y: e.clientY };
-        const files = Array.from(e.dataTransfer.files);
-        const paths = files
+        const worldPos = clientToWorldPos(clientPos);
+
+        // ★ 重要: DataTransfer のデータは非同期 await 後にブラウザにより消去されるため、
+        // 最初の await より前にすべて同期的に読み取る
+        const dt = e.dataTransfer;
+        const files = Array.from(dt?.files || []);
+        const localPaths = files
           .map((f) => (f as File & { path?: string }).path)
           .filter((p): p is string => Boolean(p));
-        if (paths.length > 0) {
-          handleDropFilePaths(paths, clientPos);
-        } else {
-          for (const f of files) {
-            if (f.type.startsWith("image/")) {
-              handlePasteImageBlob(f, clientPos);
+        const webUrls = dt ? extractUrlsFromDataTransfer(dt) : {};
+        const htmlData = dt?.getData("text/html") || "";
+        const isWebDrop =
+          localPaths.length === 0 &&
+          Boolean(webUrls.imageUrl || webUrls.sourceUrl || htmlData.trim());
+
+        // 1. ローカルファイルのドラッグ（file.path が存在する場合：エクスプローラ等）
+        if (localPaths.length > 0) {
+          handleDropFilePaths(localPaths, clientPos);
+          return;
+        }
+
+        // 2. Webブラウザ（Chrome/Firefox等）からの画像D&D解析
+        // 変更理由: Chrome等では files に仮想ファイルが入るため、ローカルファイル逆引きより先に
+        // Webドロップ判定を行わないと source_url が失われてクリップボード画像扱いになる問題を防ぐ。
+        if (isWebDrop) {
+          try {
+            const webDrop = await extractWebDropImageData(dt);
+            if (
+              webDrop &&
+              (webDrop.imageData || webDrop.imageBytes || webDrop.imageUrl || webDrop.sourceUrl)
+            ) {
+              const updatedItems = await backendApi.addWebImageToBoard(activeBoardId, {
+                imageData: webDrop.imageData,
+                imageBytes: webDrop.imageBytes,
+                imageUrl: webDrop.imageUrl,
+                sourceUrl: webDrop.sourceUrl,
+                extension: webDrop.extension,
+                x: worldPos.x,
+                y: worldPos.y,
+              });
+              applyBoardItemsUpdate(updatedItems);
+              return;
             }
+          } catch (err: any) {
+            alert(t("moodboard.dropFailed", { error: err?.message || String(err) }));
+            return;
+          }
+        }
+
+        // 3. dragDropEnabled: false により file.path が取れないローカルファイルの逆引き解決
+        if (files.length > 0) {
+          try {
+            const candidates = extractDroppedFileCandidates(files);
+            const res = await backendApi.resolveDroppedFilesToBoard(
+              activeBoardId,
+              candidates,
+              worldPos.x,
+              worldPos.y
+            );
+            if (res && res.items) {
+              applyBoardItemsUpdate(res.items);
+            }
+            const unresolved = res.unresolvedIndices ?? res.unresolved_indices ?? [];
+            if (unresolved.length === 0) {
+              return;
+            }
+            // 未解決のファイルのみフォールバックで処理
+            for (const idx of unresolved) {
+              const f = files[idx];
+              if (f && f.type.startsWith("image/")) {
+                const offsetPos = {
+                  x: clientPos.x + idx * 36,
+                  y: clientPos.y + idx * 36,
+                };
+                await handlePasteImageBlob(f, offsetPos);
+              }
+            }
+            return;
+          } catch {
+            // resolve 失敗時はフォールバックへ進む
+          }
+        }
+
+        // 4. ブラウザFileオブジェクトからの最終フォールバック（画像Blob）
+        for (let idx = 0; idx < files.length; idx++) {
+          const f = files[idx];
+          if (f.type.startsWith("image/")) {
+            const offsetPos = {
+              x: clientPos.x + idx * 36,
+              y: clientPos.y + idx * 36,
+            };
+            await handlePasteImageBlob(f, offsetPos);
           }
         }
       }}

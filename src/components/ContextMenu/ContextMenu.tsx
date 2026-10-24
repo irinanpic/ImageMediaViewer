@@ -147,13 +147,13 @@ export const ContextMenu: React.FC = () => {
     return null;
   }
 
+  const boardCtx = contextMenu.boardItemContext;
+
   const actions = ContextMenuRegistry.getAvailableActions(
     contextMenu.record,
     appSettings,
     detail
-  );
-
-  const boardCtx = contextMenu.boardItemContext;
+  ).filter((action) => !(boardCtx && action.id === "action.open_source_url"));
 
   const handleActionClick = async (action: (typeof actions)[0]) => {
     closeContextMenu();
@@ -196,6 +196,24 @@ export const ContextMenu: React.FC = () => {
           <div className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-textSecondary/70">
             {locale === "en" ? "Board Item" : "ボード配置操作"}
           </div>
+          {(boardCtx.sourceUrl || detail?.sourceUrl) && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                const targetUrl = boardCtx.sourceUrl || detail?.sourceUrl;
+                closeContextMenu();
+                if (targetUrl) {
+                  backendApi.openSourceUrl(targetUrl).catch(console.error);
+                }
+              }}
+              className="w-full text-left px-3 py-1.5 flex items-center gap-2.5 hover:bg-accent/20 hover:text-accent text-accent transition-colors font-medium"
+            >
+              <ExternalLink className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate flex-1">
+                {locale === "en" ? "Open Original Web Page" : "元のWebページを開く"}
+              </span>
+            </button>
+          )}
           <button
             role="menuitem"
             onClick={() => {

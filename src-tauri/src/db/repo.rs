@@ -18,6 +18,8 @@ pub struct NewImageRecord {
     pub format: Option<String>,
     pub quick_hash: String,
     pub indexed_at: i64,
+    /// Webドロップ等で取得した元の画像URL
+    pub source_url: Option<String>,
 }
 
 /// 監視対象フォルダを追加
@@ -140,9 +142,9 @@ pub fn upsert_images(conn: &mut Connection, records: &[NewImageRecord]) -> Resul
             "INSERT INTO images (
                 folder_id, file_path, file_size, file_mtime, taken_at,
                 taken_at_source, width, height, orientation, format,
-                quick_hash, thumb_status, indexed_at
+                quick_hash, thumb_status, indexed_at, source_url
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13
              )
              ON CONFLICT(file_path) DO UPDATE SET
                 folder_id = CASE WHEN excluded.folder_id > 0 THEN excluded.folder_id ELSE images.folder_id END,
@@ -156,7 +158,8 @@ pub fn upsert_images(conn: &mut Connection, records: &[NewImageRecord]) -> Resul
                 format = excluded.format,
                 quick_hash = excluded.quick_hash,
                 thumb_status = CASE WHEN images.file_mtime <> excluded.file_mtime THEN 0 ELSE images.thumb_status END,
-                indexed_at = excluded.indexed_at;",
+                indexed_at = excluded.indexed_at,
+                source_url = COALESCE(excluded.source_url, images.source_url);",
         )?;
 
         for r in records {
@@ -173,6 +176,7 @@ pub fn upsert_images(conn: &mut Connection, records: &[NewImageRecord]) -> Resul
                 r.format,
                 r.quick_hash,
                 r.indexed_at,
+                r.source_url,
             ])?;
         }
     }
@@ -447,7 +451,7 @@ pub fn get_timeline_summary(
 pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, taken_at, width, height, file_mtime, folder_id, file_path,
-                file_size, format, taken_at_source
+                file_size, format, taken_at_source, source_url
          FROM images
          WHERE id = ?1;",
     )?;
@@ -475,6 +479,7 @@ pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail
             format: row.get(8)?,
             taken_at_source,
             original_available: exists,
+            source_url: row.get(10)?,
         }))
     } else {
         Ok(None)
@@ -701,12 +706,15 @@ pub fn get_thumb_progress(conn: &Connection) -> Result<(u64, u64, u64)> {
     Ok((done as u64, failed as u64, total as u64))
 }
 
-/// サムネイル生成に失敗した画像の一覧を取得
+/// サムネイル生成に失敗した画像の一覧を取得（folder_id > 0 の監視フォルダ配下に限定）
+///
+/// 変更理由: get_thumb_progress の集計条件（folder_id > 0）と統一し、
+/// ステータスバー件数とログモーダル一覧件数の整合性を保証するため。
 ///
 /// @param limit 上限件数
 /// @return 失敗した画像レコード配列
 pub fn get_failed_thumb_images(conn: &Connection, limit: usize) -> Result<Vec<crate::models::FailedImageRecord>> {
-    let sql = "SELECT id, file_path, format, file_size FROM images WHERE thumb_status = 2 ORDER BY id ASC LIMIT ?1;";
+    let sql = "SELECT id, file_path, format, file_size FROM images WHERE folder_id > 0 AND thumb_status = 2 ORDER BY id ASC LIMIT ?1;";
     let mut stmt = conn.prepare_cached(sql)?;
     let rows = stmt.query_map(params![limit as i64], |row| {
         Ok(crate::models::FailedImageRecord {
@@ -721,6 +729,54 @@ pub fn get_failed_thumb_images(conn: &Connection, limit: usize) -> Result<Vec<cr
         items.push(item?);
     }
     Ok(items)
+}
+
+/// ファイル名、ファイルサイズ、更新日時から既存の画像レコードを検索
+///
+/// 変更理由: ローカルファイルD&D時に既存の登録済み画像（監視フォルダ配下等）を特定し、
+/// 不要なファイル複製を防止するため。
+///
+/// @param conn DB接続
+/// @param filename ファイル名（例: "sample.png"）
+/// @param file_size ファイルサイズ（バイト）
+/// @param file_mtime 最終更新日時（UNIXエポック秒、オプション照合用）
+/// @return 一致した (id, file_path)
+pub fn find_image_by_filename_and_size(
+    conn: &Connection,
+    filename: &str,
+    file_size: u64,
+    file_mtime: Option<i64>,
+) -> Result<Option<(i64, String)>> {
+    let pattern1 = format!("%/{}", filename);
+    let pattern2 = format!("%\\{}", filename);
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, file_path, file_mtime FROM images
+         WHERE file_size = ?1 AND (file_path LIKE ?2 OR file_path LIKE ?3 OR file_path = ?4);",
+    )?;
+
+    let mut rows = stmt.query(params![file_size as i64, pattern1, pattern2, filename])?;
+    let mut candidates = Vec::new();
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let path: String = row.get(1)?;
+        let mtime: i64 = row.get(2)?;
+        candidates.push((id, path, mtime));
+    }
+
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    // 更新日時が一致する候補があれば最優先
+    if let Some(target_mtime) = file_mtime {
+        if let Some((id, path, _)) = candidates.iter().find(|(_, _, m)| (*m - target_mtime).abs() <= 2) {
+            return Ok(Some((*id, path.clone())));
+        }
+    }
+
+    let (id, path, _) = candidates.remove(0);
+    Ok(Some((id, path)))
 }
 
 /// カタログバージョンを取得
@@ -843,7 +899,7 @@ pub fn get_board_items(conn: &Connection, board_id: i64) -> Result<Vec<crate::mo
     let mut stmt = conn.prepare_cached(
         "SELECT bi.id, bi.board_id, bi.image_id, bi.x, bi.y, bi.width, bi.height,
                 bi.scale, bi.rotation, bi.z_index, bi.crop_x, bi.crop_y, bi.crop_w, bi.crop_h,
-                bi.opacity, bi.is_locked, bi.flip_h, bi.flip_v, i.file_mtime
+                bi.opacity, bi.is_locked, bi.flip_h, bi.flip_v, i.file_mtime, i.source_url
          FROM board_items bi
          JOIN images i ON bi.image_id = i.id
          WHERE bi.board_id = ?1
@@ -871,6 +927,7 @@ pub fn get_board_items(conn: &Connection, board_id: i64) -> Result<Vec<crate::mo
             flip_h: r.get::<_, i32>(16).unwrap_or(0) != 0,
             flip_v: r.get::<_, i32>(17).unwrap_or(0) != 0,
             rev: r.get(18)?,
+            source_url: r.get(19)?,
         })
     })?;
 
@@ -1021,9 +1078,9 @@ pub fn upsert_single_image_and_get_id(conn: &Connection, record: &NewImageRecord
         "INSERT INTO images (
             folder_id, file_path, file_size, file_mtime, taken_at,
             taken_at_source, width, height, orientation, format,
-            quick_hash, thumb_status, indexed_at
+            quick_hash, thumb_status, indexed_at, source_url
          ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13
          )
          ON CONFLICT(file_path) DO UPDATE SET
             folder_id = CASE WHEN excluded.folder_id > 0 THEN excluded.folder_id ELSE images.folder_id END,
@@ -1037,7 +1094,8 @@ pub fn upsert_single_image_and_get_id(conn: &Connection, record: &NewImageRecord
             format = excluded.format,
             quick_hash = excluded.quick_hash,
             thumb_status = CASE WHEN images.file_mtime <> excluded.file_mtime THEN 0 ELSE images.thumb_status END,
-            indexed_at = excluded.indexed_at;",
+            indexed_at = excluded.indexed_at,
+            source_url = COALESCE(excluded.source_url, images.source_url);",
         params![
             record.folder_id,
             record.file_path,
@@ -1051,6 +1109,7 @@ pub fn upsert_single_image_and_get_id(conn: &Connection, record: &NewImageRecord
             record.format,
             record.quick_hash,
             record.indexed_at,
+            record.source_url,
         ],
     )?;
 
@@ -1060,6 +1119,29 @@ pub fn upsert_single_image_and_get_id(conn: &Connection, record: &NewImageRecord
         |r| r.get(0),
     )?;
     Ok(id)
+}
+
+/// クイックハッシュとファイルサイズから既存の画像IDを検索
+///
+/// 変更理由: Webクリップ等で同一画像が既にDB（監視フォルダ等）に存在する場合に重複登録を避けるため
+/// @param conn DB接続
+/// @param quick_hash クイックハッシュ
+/// @param file_size ファイルサイズ（バイト）
+/// @return 既存画像ID（存在する場合）
+pub fn find_image_by_hash(
+    conn: &Connection,
+    quick_hash: &str,
+    file_size: u64,
+) -> Result<Option<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM images WHERE quick_hash = ?1 AND file_size = ?2 LIMIT 1;",
+    )?;
+    let mut rows = stmt.query(params![quick_hash, file_size as i64])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get(0)?))
+    } else {
+        Ok(None)
+    }
 }
 
 /// どのボードからも参照されなくなったクリップボード由来画像（folder_id = 0）をDBから削除し、削除対象情報を返す
@@ -1787,6 +1869,7 @@ mod tests {
                 format: Some("png".to_string()),
                 quick_hash: "hash_drop_1".to_string(),
                 indexed_at: 1700000000,
+                source_url: Some("https://example.com/pose.png".to_string()),
             },
         )
         .expect("ドロップ画像の登録失敗");
@@ -1807,6 +1890,7 @@ mod tests {
                 format: Some("png".to_string()),
                 quick_hash: "hash_clip_1".to_string(),
                 indexed_at: 1700000001,
+                source_url: None,
             },
         )
         .expect("クリップボード画像の登録失敗");
@@ -1867,6 +1951,7 @@ mod tests {
                 format: Some("png".to_string()),
                 quick_hash: "hash_drop_1".to_string(),
                 indexed_at: 1700000021,
+                source_url: None,
             }],
         )
         .expect("バッチUPSERT失敗");
@@ -1875,6 +1960,8 @@ mod tests {
             .expect("詳細取得失敗")
             .expect("画像が存在しない");
         assert_eq!(detail.folder_id, watched.id);
+        // COALESCE により元の source_url が維持されていることを確認
+        assert_eq!(detail.source_url, Some("https://example.com/pose.png".to_string()));
 
         // タイムラインには昇格した1件のみ表示される
         let tl_after = get_timeline_images(&conn, 0, 100, None, None).expect("タイムライン取得失敗");
@@ -1889,6 +1976,11 @@ mod tests {
         assert_eq!(detail_after_remove.folder_id, 0);
         let board_items_after = get_board_items(&conn, board.id).expect("ボードアイテム取得失敗");
         assert_eq!(board_items_after.len(), 2);
+        let drop_board_item = board_items_after
+            .iter()
+            .find(|i| i.image_id == drop_img_id)
+            .unwrap();
+        assert_eq!(drop_board_item.source_url, Some("https://example.com/pose.png".to_string()));
 
         // 7. クリップボード画像をボードから削除すると、cleanup_orphan_clipboard_images で回収され、通常の外部ファイルは消えないことを確認
         let clip_board_item = board_items_after

@@ -1,5 +1,5 @@
 import React from "react";
-import { FolderOpen, X } from "lucide-react";
+import { ExternalLink, FolderOpen, X } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { useTranslation } from "../../locales";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
@@ -81,6 +81,18 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
         <div className="text-[11px] text-textSecondary/80 break-all leading-tight max-h-12 overflow-y-auto pr-1">
           {detail.filePath}
         </div>
+        {detail.sourceUrl && (
+          <div className="pt-0.5">
+            <button
+              onClick={() => backendApi.openSourceUrl(detail.sourceUrl!)}
+              className="inline-flex items-center gap-1 text-[11px] text-accent hover:underline break-all text-left max-w-full"
+              title={detail.sourceUrl}
+            >
+              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+              <span className="truncate">{detail.sourceUrl}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* メタデータテーブル */}

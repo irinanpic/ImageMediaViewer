@@ -36,6 +36,7 @@ export interface BoardItem {
   flipH: boolean;
   flipV: boolean;
   rev: number;
+  sourceUrl?: string | null;
 }
 
 /**

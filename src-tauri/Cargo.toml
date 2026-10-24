@@ -47,6 +47,10 @@ thiserror = "2"
 ts-rs = { version = "10", features = ["chrono-impl"] }
 tiny_http = "0.12"
 dirs = "7.0.0"
+# 選定理由: ブラウザからURLのみドロップされたWeb画像を同期かつ軽量に取得するため（非同期tokioに依存せずspawn_blocking内で完結）
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# 選定理由: ブラウザからドロップされた data:image/... 形式のインライン画像を安全にバイナリデコードするため
+base64 = "0.22"
 
 # デスクトップ専用（Windows, macOS, Linux）の依存関係
 # モバイル環境（Android, iOS）では二重起動防止やデスクトップファイルマネージャー機能が非対応または不要なため分離

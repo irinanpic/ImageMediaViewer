@@ -3,4 +3,8 @@
 /**
  * ムードボード上の配置アイテム情報（非破壊変形・クリッピング対応）
  */
-export type BoardItem = { id: number, boardId: number, imageId: number, x: number, y: number, width: number, height: number, scale: number, rotation: number, zIndex: number, cropX: number, cropY: number, cropW: number, cropH: number, opacity: number, isLocked: boolean, flipH: boolean, flipV: boolean, rev: number, };
+export type BoardItem = { id: number, boardId: number, imageId: number, x: number, y: number, width: number, height: number, scale: number, rotation: number, zIndex: number, cropX: number, cropY: number, cropW: number, cropH: number, opacity: number, isLocked: boolean, flipH: boolean, flipV: boolean, rev: number, 
+/**
+ * Web等から取得した元の画像URL（Webドロップ由来の場合）
+ */
+sourceUrl: string | null, };
