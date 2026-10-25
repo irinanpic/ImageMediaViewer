@@ -32,9 +32,160 @@ pub enum TakenAtSource {
     Mtime,
 }
 
+/// タグ情報レコード
+///
+/// 変更理由: 画像へのタグ付与および詳細表示・タグ管理を実現するため
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct TagRecord {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
+    #[ts(type = "number")]
+    pub created_at: i64,
+}
+
+/// 付与枚数付きのタグ情報（サイドバー・フィルタ・タグ編集モーダル用）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct TagWithCount {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i32,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub image_count: i64,
+}
+
+/// 複数選択された画像群に対するタグの付与状態
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct ImageTagAssignment {
+    #[ts(type = "number")]
+    pub tag_id: i64,
+    pub name: String,
+    pub color: String,
+    /// "all": 対象全画像に付与済み, "some": 一部画像のみ付与済み, "none": 未付与
+    pub status: String,
+}
+
+/// 監視フォルダ配下のサブフォルダ階層エントリ
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct SubfolderEntry {
+    /// 監視ルートからの相対パス（例: "2024/Summer"）
+    pub relative_path: String,
+    /// 表示フォルダ名（例: "Summer"）
+    pub name: String,
+    /// 階層深さ（直下は 1）
+    pub depth: u32,
+    /// このサブフォルダおよび配下に含まれる画像総数
+    #[ts(type = "number")]
+    pub image_count: i64,
+}
+
+/// タイムライン検索・絞り込みフィルタ条件
+///
+/// 変更理由: ファイル名検索（AND/OR/NOT）、拡張子（含む/除外）、縦横比、サブフォルダ、
+/// およびタグ（AND/OR/NOT）による複合高速絞り込みをタイムラインに提供するため
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct TimelineFilter {
+    /// ファイル名検索クエリ（スペース区切り複数キーワード、`-word` でNOT除外）
+    #[serde(default)]
+    pub query: Option<String>,
+    /// ファイル名複数キーワードの結合モード: "and" (デフォルト) | "or"
+    #[serde(default)]
+    pub query_mode: Option<String>,
+    /// 含める拡張子リスト（小文字・ドットなし: ["png", "clip"] 等）
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
+    /// 除外する拡張子リスト（NOT条件）
+    #[serde(default)]
+    pub exclude_extensions: Option<Vec<String>>,
+    /// 縦横比フィルタ: "landscape" (横長) | "portrait" (縦長) | "square" (正方形)
+    #[serde(default)]
+    pub aspect_ratio: Option<String>,
+    /// サブフォルダ相対パス（例: "2024/Summer"）
+    #[serde(default)]
+    pub sub_folder_path: Option<String>,
+    /// 含めるタグIDリスト
+    #[serde(default)]
+    #[ts(type = "number[] | null")]
+    pub include_tag_ids: Option<Vec<i64>>,
+    /// 除外するタグIDリスト（NOT条件）
+    #[serde(default)]
+    #[ts(type = "number[] | null")]
+    pub exclude_tag_ids: Option<Vec<i64>>,
+    /// 含めるタグの結合モード: "and" (すべて含む) | "or" (いずれか含む)
+    #[serde(default)]
+    pub tag_mode: Option<String>,
+}
+
+impl TimelineFilter {
+    /// フィルタ条件が実質的に空（無指定）かどうかを判定する
+    pub fn is_empty(&self) -> bool {
+        let has_query = self
+            .query
+            .as_ref()
+            .map(|q| !q.trim().is_empty())
+            .unwrap_or(false);
+        let has_exts = self
+            .extensions
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let has_excl_exts = self
+            .exclude_extensions
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let has_aspect = self
+            .aspect_ratio
+            .as_ref()
+            .map(|a| matches!(a.as_str(), "landscape" | "portrait" | "square"))
+            .unwrap_or(false);
+        let has_sub = self
+            .sub_folder_path
+            .as_ref()
+            .map(|s| !s.trim().trim_matches(|c| c == '/' || c == '\\').is_empty())
+            .unwrap_or(false);
+        let has_inc_tags = self
+            .include_tag_ids
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let has_exc_tags = self
+            .exclude_tag_ids
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+
+        !(has_query || has_exts || has_excl_exts || has_aspect || has_sub || has_inc_tags || has_exc_tags)
+    }
+
+    /// インメモリキャッシュ（timeline_summary_cache）のキーとして使用する正規化文字列を生成する
+    pub fn cache_key(&self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
 /// 単一画像の詳細情報（詳細ビュー・情報パネル用）
 ///
-/// 変更理由: 仕様書§9のImageDetailインターフェースに準拠
+/// 変更理由: 仕様書§9のImageDetailインターフェースに準拠し、付与済みタグ一覧（tags）を追加
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../src/types/generated/")]
@@ -63,6 +214,9 @@ pub struct ImageDetail {
     pub original_available: bool,
     /// Web等から取得した元の画像URL（Webドロップ由来の場合）
     pub source_url: Option<String>,
+    /// この画像に付与されているタグ一覧
+    #[serde(default)]
+    pub tags: Vec<TagRecord>,
 }
 
 /// サムネイル生成に失敗した画像のレコード（原因分析・ログ確認用）
@@ -187,6 +341,9 @@ pub struct GetImagesPayload {
     pub folder_id: Option<i64>,
     /// 表示ソート順（オプション、デフォルトはTakenAtDesc）
     pub sort: Option<TimelineSort>,
+    /// 検索・拡張子・縦横比・サブフォルダ・タグによる複合絞り込み条件（オプション）
+    #[serde(default)]
+    pub filter: Option<TimelineFilter>,
 }
 
 
@@ -540,6 +697,12 @@ mod tests {
     fn export_bindings_image_detail_and_board_item() {
         ImageDetail::export().expect("Failed to export ImageDetail bindings");
         BoardItem::export().expect("Failed to export BoardItem bindings");
+        TagRecord::export().expect("Failed to export TagRecord bindings");
+        TagWithCount::export().expect("Failed to export TagWithCount bindings");
+        ImageTagAssignment::export().expect("Failed to export ImageTagAssignment bindings");
+        SubfolderEntry::export().expect("Failed to export SubfolderEntry bindings");
+        TimelineFilter::export().expect("Failed to export TimelineFilter bindings");
+        GetImagesPayload::export().expect("Failed to export GetImagesPayload bindings");
     }
 }
 

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { execSync } from "child_process";
 // @ts-expect-error scripts配下のNode用ESMスクリプトを単体テストで直接インポートして検証
 import { clearReadOnlyAttributes, cleanAllTargetReadOnly } from "../../../scripts/clean-target-readonly.mjs";
 
@@ -23,8 +22,14 @@ describe("clean-target-readonly 単体テスト", () => {
     fs.writeFileSync(testFile, "hello");
 
     if (process.platform === "win32") {
-      // 一旦 ReadOnly 属性を付加
-      execSync(`cmd.exe /c attrib +r "${path.join(testDir, "*")}" /s /d`, { stdio: "ignore" });
+      // 一旦 ReadOnly 属性 (0o444) を付加（Windows では FILE_ATTRIBUTE_READONLY が設定される）
+      fs.chmodSync(testFile, 0o444);
+      fs.chmodSync(testDir, 0o555);
+
+      // ReadOnly 状態では追記が失敗することを確認
+      expect(() => {
+        fs.appendFileSync(testFile, " should-fail");
+      }).toThrow();
 
       // 解除関数を実行
       clearReadOnlyAttributes(testDir);
@@ -37,9 +42,8 @@ describe("clean-target-readonly 単体テスト", () => {
 
     // クリーンアップ
     try {
-      if (process.platform === "win32") {
-        execSync(`cmd.exe /c attrib -r "${path.join(testDir, "*")}" /s /d`, { stdio: "ignore" });
-      }
+      fs.chmodSync(testFile, 0o666);
+      fs.chmodSync(testDir, 0o777);
       fs.rmSync(testDir, { recursive: true, force: true });
     } catch (_) {}
   });

@@ -627,3 +627,32 @@ Webブラウザ（Chrome / Firefox 等）やエクスプローラからムード
    - サムネイル生成失敗集計（`get_failed_thumb_images`）を `folder_id > 0` に統一。
    - 画像削除（`trash_file`）直後に `get_thumb_progress` からサムネイル進捗カウンタを即時再同期し `thumb-progress` を通知。
 
+---
+
+## 15. 画像本体クリップボードコピー・複合検索フィルタ・サブフォルダ階層・タグ管理仕様
+
+### 15.1 画像本体のクリップボードコピー（`action.copy_image` / `Ctrl+C`）
+- **概要**: タイムライン・画像ビューア・ムードボードの3画面共通で、右クリックメニュー「画像をコピー（`action.copy_image`, `order: 35`）」およびキーボードショートカット `Ctrl+C` / `Cmd+C` により、原寸画像本体（RGBA8ピクセルデータ）をOSのシステムクリップボードへ直接コピーする。
+- **実装方式**:
+  - デスクトップ環境（Windows / macOS / Linux）では `arboard` クレートを用いて `ImageData` をシステムクリップボードへセットする。
+  - 標準画像形式は `image::ImageReader` でデコード後に Exif Orientation を適用し、`.clip` 等のプラグイン形式は `FormatPluginRegistry::extract_original_preview` から抽出したプレビューPNGをデコードしてコピーする。
+
+### 15.2 ファイル名検索・拡張子・縦横比・タグ複合フィルタ ＆ サブフォルダ階層ツリー
+- **複合フィルタ条件（`TimelineFilter`）**:
+  - **ファイル名検索（`query`, `query_mode`）**: 空白区切りの複数キーワードを `AND` または `OR` で結合。先頭に `-` を付けたトークン（例: `-draft`）は `NOT LIKE` による除外条件として評価。
+  - **拡張子フィルタ（`extensions`, `exclude_extensions`）**: ツールバーのポップオーバーから各拡張子チップをクリックするごとに「未選択 → 含む → 除外(NOT) → 未選択」の3状態でサイクル遷移。`jpg` / `jpeg` 等の表記揺れはバックエンドで自動展開。
+  - **縦横比フィルタ（`aspect_ratio`）**: `landscape`（横長: `width > height`）、`portrait`（縦長: `height > width`）、`square`（正方形: `width = height`）で高速絞り込み。
+  - **タグフィルタ（`include_tag_ids`, `exclude_tag_ids`, `tag_mode`）**: 複数タグの `AND`（すべて含む）/ `OR`（いずれか含む）検索および `NOT`（特定タグを除外）検索に対応。
+  - **サブフォルダ階層ツリー（`get_subfolder_tree`, `sub_folder_path`）**: ディスクI/Oを一切伴わず `images` テーブルの `file_path` インデックススキャンのみでサブフォルダ階層と各階層の画像枚数を高速集計。サイドバーの監視フォルダ展開トグル（`▸`/`▾`）から任意の階層を選択可能。
+- **画面遷移時の状態・キャッシュ維持**:
+  - `filterState` と `savedTimelineScrollTop` を Zustand ストアで保持し、`SharedPageCacheManager.syncScope` にシリアライズ済み `filterKey` を組み込むことで、ビューア開閉やムードボード遷移を行っても検索条件・ページキャッシュ・スクロール位置がリセットされない。
+
+### 15.3 複数登録・一括付与可能なタグ機能（マイグレーション v10）
+- **DBスキーマ（`user_version = 10`）**:
+  - `tags` テーブル（`id`, `name UNIQUE COLLATE NOCASE`, `color`, `sort_order`, `created_at`）
+  - `image_tags` 中間テーブル（`PRIMARY KEY (tag_id, image_id)` ＋ 逆引きインデックス `idx_image_tags_image_id(image_id, tag_id)`）
+- **UI・操作導線**:
+  - 右クリックメニュー「タグを編集...（`action.edit_tags`）」、タイムライン複数選択アクションバーの「タグを一括追加」ボタン、および詳細情報パネル（`ImageDetailPanel`）の「`＋ 編集`」ボタンから `TagEditModal` を起動。
+  - 複数画像選択時には各タグの付与状態を `all`（全員付与: `☑`）・`some`（一部付与: `[-]`）・`none`（未付与: `☐`）の3状態で表示し、ワンクリックでの一括付与・一括解除、およびカラーパレット付きの即時新規タグ作成＆同時付与をサポートする。
+
+

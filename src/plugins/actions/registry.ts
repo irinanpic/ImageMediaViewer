@@ -34,6 +34,63 @@ export function isPluginIdEnabled(id: string, enabledPlugins: string[]): boolean
 }
 
 /**
+ * 画面下部に一時的なトースト通知を表示する共通ヘルパー
+ *
+ * 変更理由: パスコピー・画像本体コピー・ショートカット実行時の一貫した視覚フィードバックを提供するため。
+ *
+ * @param message 表示メッセージ
+ */
+export function showCopyToast(message: string): void {
+  if (typeof navigator !== "undefined" && navigator.vibrate) {
+    try {
+      navigator.vibrate(30);
+    } catch {}
+  }
+  if (typeof document !== "undefined") {
+    const existing = document.getElementById("imv-copy-toast");
+    if (existing) existing.remove();
+    const toast = document.createElement("div");
+    toast.id = "imv-copy-toast";
+    toast.className =
+      "fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] bg-surface/95 text-textPrimary px-4 py-2 rounded-lg shadow-2xl border border-accent/60 text-xs font-medium flex items-center gap-2 pointer-events-none transition-all duration-300 animate-in fade-in";
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      setTimeout(() => toast.remove(), 300);
+    }, 2000);
+  }
+}
+
+/**
+ * 指定された画像ID（またはファイルパス）の画像本体をシステムクリップボードへコピーしトースト通知する共通関数
+ *
+ * @param params imageId およびオプションの filePath
+ */
+export async function copyImageWithToast(params: {
+  imageId?: number;
+  filePath?: string;
+}): Promise<void> {
+  if (isMobileEnvironment()) return;
+  const locale = useAppStore.getState().locale ?? "ja";
+  try {
+    await backendApi.copyImageToClipboard(params);
+    showCopyToast(
+      locale === "en"
+        ? "🖼️ Copied image to clipboard"
+        : "🖼️ 画像をクリップボードにコピーしました"
+    );
+  } catch (err: any) {
+    console.error("画像クリップボードコピー失敗:", err);
+    showCopyToast(
+      locale === "en"
+        ? `⚠️ Failed to copy image: ${err?.message || err}`
+        : `⚠️ 画像のコピーに失敗しました: ${err?.message || err}`
+    );
+  }
+}
+
+/**
  * 組み込み標準アクションプラグイン群
  *
  * 変更理由: 仕様書§2.2(F-12)および右クリックメニュー標準機能の実装。
@@ -64,6 +121,20 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     },
   },
   {
+    id: "action.copy_image",
+    label: (locale) => (locale === "en" ? "Copy Image" : "画像をコピー"),
+    icon: "Image",
+    order: 35,
+    isAvailable: (_record, enabledPlugins) =>
+      !isMobileEnvironment() && isPluginIdEnabled("action.copy_image", enabledPlugins),
+    execute: async (context) => {
+      await copyImageWithToast({
+        imageId: context.record.id,
+        filePath: context.detail?.filePath,
+      });
+    },
+  },
+  {
     id: "action.copy_path",
     label: (locale) => (locale === "en" ? "Copy File Path" : "ファイルパスをコピー"),
     icon: "Copy",
@@ -78,26 +149,34 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
       }
       if (path && navigator.clipboard) {
         await navigator.clipboard.writeText(path);
-        if (typeof navigator !== "undefined" && navigator.vibrate) {
-          try {
-            navigator.vibrate(30);
-          } catch {}
-        }
-        if (typeof document !== "undefined") {
-          const existing = document.getElementById("imv-copy-toast");
-          if (existing) existing.remove();
-          const toast = document.createElement("div");
-          toast.id = "imv-copy-toast";
-          toast.className =
-            "fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] bg-surface/95 text-textPrimary px-4 py-2 rounded-lg shadow-2xl border border-accent/60 text-xs font-medium flex items-center gap-2 pointer-events-none transition-all duration-300 animate-in fade-in";
-          const fileName = path.split(/[\\/]/).pop() || path;
-          toast.textContent = `📋 パスをコピーしました: ${fileName}`;
-          document.body.appendChild(toast);
-          setTimeout(() => {
-            toast.style.opacity = "0";
-            setTimeout(() => toast.remove(), 300);
-          }, 2000);
-        }
+        const fileName = path.split(/[\\/]/).pop() || path;
+        const locale = useAppStore.getState().locale ?? "ja";
+        showCopyToast(
+          locale === "en"
+            ? `📋 Copied path: ${fileName}`
+            : `📋 パスをコピーしました: ${fileName}`
+        );
+      }
+    },
+  },
+  {
+    id: "action.edit_tags",
+    label: (locale) => (locale === "en" ? "Edit Tags..." : "タグを編集..."),
+    icon: "Tag",
+    order: 45,
+    isAvailable: (_record, enabledPlugins) =>
+      isPluginIdEnabled("action.edit_tags", enabledPlugins),
+    execute: async (context) => {
+      const storeState = useAppStore.getState();
+      const selected = storeState.selectedImageIds;
+      const targetIds =
+        selected.length > 1 && selected.includes(context.record.id)
+          ? selected
+          : [context.record.id];
+      if (context.openTagEditModal) {
+        context.openTagEditModal(targetIds);
+      } else {
+        storeState.openTagEditModal(targetIds);
       }
     },
   },

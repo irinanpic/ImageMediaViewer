@@ -17,6 +17,7 @@ import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { ImageDetailPanel } from "../Common/ImageDetailPanel";
+import { copyImageWithToast } from "../../plugins/actions/registry";
 import { getFileName } from "../../utils/path";
 import { useViewerGestures } from "./useViewerGestures";
 
@@ -29,6 +30,8 @@ export const ImageViewerModal: React.FC = () => {
   const totalImages = useAppStore((state) => state.totalImages);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
   const openContextMenu = useAppStore((state) => state.openContextMenu);
+  const catalogVersion = useAppStore((state) => state.catalogVersion);
+  const isTagEditModalOpen = useAppStore((state) => state.isTagEditModalOpen);
 
   const closeViewer = useAppStore((state) => state.closeViewer);
   const setViewerIndex = useAppStore((state) => state.setViewerIndex);
@@ -158,6 +161,15 @@ export const ImageViewerModal: React.FC = () => {
       .catch((err) => console.error("画像詳細取得失敗:", err));
   }, [activeImageId]);
 
+  // タグ更新時やカタログ変更時に現在の画像詳細を再取得してタグバッジを即時更新
+  useEffect(() => {
+    if (!activeImageId || !isViewerOpen) return;
+    backendApi
+      .getImageDetail(activeImageId)
+      .then((d) => setDetail(d))
+      .catch(() => {});
+  }, [activeImageId, isViewerOpen, catalogVersion, isTagEditModalOpen]);
+
   // 前後の画像プリロード
   useEffect(() => {
     if (activeImageIndex === null) return;
@@ -189,6 +201,15 @@ export const ImageViewerModal: React.FC = () => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // 入力フォーム等フォーカス中は無視
       if (["INPUT", "TEXTAREA"].includes((e.target as HTMLElement).tagName)) return;
+
+      // Ctrl + C / Cmd + C で表示中の画像本体をクリップボードへコピー
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        if (activeImageId) {
+          e.preventDefault();
+          copyImageWithToast({ imageId: activeImageId, filePath: detail?.filePath });
+        }
+        return;
+      }
 
       switch (e.key) {
         case "ArrowLeft":

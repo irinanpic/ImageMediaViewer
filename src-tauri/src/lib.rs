@@ -303,6 +303,14 @@ pub fn run() {
             commands::get_installed_plugins,
             commands::open_plugins_folder,
             commands::install_plugin,
+            commands::copy_image_to_clipboard,
+            commands::get_subfolder_tree,
+            commands::get_tags,
+            commands::create_tag,
+            commands::update_tag,
+            commands::delete_tag,
+            commands::get_tags_for_images,
+            commands::update_images_tags,
         ]);
 
     builder

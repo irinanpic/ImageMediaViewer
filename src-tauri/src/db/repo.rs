@@ -1,5 +1,10 @@
 use rusqlite::{params, Connection, Result};
-use crate::models::{DayBucket, FolderStatus, ImageDetail, ImageRecord, TakenAtSource, TimelineSort, TimelineSummary, WatchedFolder};
+use crate::models::{
+    DayBucket, FolderStatus, ImageDetail, ImageRecord, ImageTagAssignment, SubfolderEntry,
+    TagRecord, TagWithCount, TakenAtSource, TimelineFilter, TimelineSort, TimelineSummary,
+    WatchedFolder,
+};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 
@@ -184,13 +189,281 @@ pub fn upsert_images(conn: &mut Connection, records: &[NewImageRecord]) -> Resul
     Ok(())
 }
 
+/// ファイル名検索クエリを正のキーワード群と負（除外）のキーワード群に分解する
+///
+/// 変更理由: スペース（半角・全角）区切りの複数キーワード検索において、先頭に `-` または `!` が付いた
+/// トークンを除外（NOT）条件として抽出し、それ以外を AND/OR 条件として扱うため。
+pub fn parse_search_query_tokens(query: &str) -> (Vec<String>, Vec<String>) {
+    let mut positive = Vec::new();
+    let mut negative = Vec::new();
+
+    for token in query.split(|c: char| c.is_whitespace()) {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(neg) = trimmed.strip_prefix('-').or_else(|| trimmed.strip_prefix('!')) {
+            let neg_clean = neg.trim();
+            if !neg_clean.is_empty() {
+                negative.push(neg_clean.to_lowercase());
+            }
+        } else {
+            positive.push(trimmed.to_lowercase());
+        }
+    }
+
+    (positive, negative)
+}
+
+/// LIKE パターン用に特殊文字（`\`, `%`, `_`）をエスケープする
+fn escape_like_pattern(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 拡張子名を正規化し、jpeg/jpg などの同義フォーマット展開リストを返す
+fn expand_format_synonyms(ext: &str) -> Vec<String> {
+    let clean = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    match clean.as_str() {
+        "jpg" | "jpeg" => vec!["jpg".to_string(), "jpeg".to_string()],
+        "tif" | "tiff" => vec!["tif".to_string(), "tiff".to_string()],
+        "" => Vec::new(),
+        _ => vec![clean],
+    }
+}
+
+/// タイムライン検索・絞り込み用のSQL WHERE句とバインドパラメータを組み立てる
+///
+/// 変更理由: `get_timeline_images` と `get_timeline_summary` の双方で完全に同一の絞り込み条件を適用し、
+/// 10万〜30万件規模でも複合インデックスを活用した高速検索を行うため。
+fn build_timeline_where_clause(
+    conn: &Connection,
+    table_alias: &str,
+    folder_id: Option<i64>,
+    filter: Option<&TimelineFilter>,
+) -> Result<(String, Vec<rusqlite::types::Value>)> {
+    let pfx = if table_alias.is_empty() {
+        String::new()
+    } else {
+        format!("{}.", table_alias)
+    };
+
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+
+    if let Some(fid) = folder_id {
+        clauses.push(format!("{}folder_id = ?", pfx));
+        params_vec.push(rusqlite::types::Value::Integer(fid));
+    } else {
+        clauses.push(format!("{}folder_id > 0", pfx));
+    }
+
+    let Some(f) = filter else {
+        return Ok((clauses.join(" AND "), params_vec));
+    };
+
+    // 1. サブフォルダ前方一致レンジフィルタ (B-Tree インデックス活用)
+    if let Some(fid) = folder_id {
+        if let Some(ref sub_rel) = f.sub_folder_path {
+            let clean_sub = sub_rel
+                .trim()
+                .replace('\\', "/")
+                .trim_matches('/')
+                .to_string();
+            if !clean_sub.is_empty() {
+                if let Ok(root_path) = conn.query_row(
+                    "SELECT path FROM watched_folders WHERE id = ?1;",
+                    params![fid],
+                    |r| r.get::<_, String>(0),
+                ) {
+                    let norm_root = root_path.replace('\\', "/").trim_end_matches('/').to_string();
+                    let sub_prefix_slash = format!("{}/{}/", norm_root, clean_sub);
+                    let sub_upper_slash = format!("{}/{}0", norm_root, clean_sub);
+                    let win_root = norm_root.replace('/', "\\");
+                    let win_sub = clean_sub.replace('/', "\\");
+                    let sub_prefix_back = format!("{}\\{}\\", win_root, win_sub);
+                    let sub_upper_back = format!("{}\\{}}}", win_root, win_sub);
+
+                    clauses.push(format!(
+                        "(({0}file_path >= ? AND {0}file_path < ?) OR ({0}file_path >= ? AND {0}file_path < ?))",
+                        pfx
+                    ));
+                    params_vec.push(rusqlite::types::Value::Text(sub_prefix_slash));
+                    params_vec.push(rusqlite::types::Value::Text(sub_upper_slash));
+                    params_vec.push(rusqlite::types::Value::Text(sub_prefix_back));
+                    params_vec.push(rusqlite::types::Value::Text(sub_upper_back));
+                }
+            }
+        }
+    }
+
+    // 2. ファイル名検索（AND / OR / NOT）
+    if let Some(ref q) = f.query {
+        let (pos_tokens, neg_tokens) = parse_search_query_tokens(q);
+        if !pos_tokens.is_empty() {
+            let is_or = f
+                .query_mode
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("or"))
+                .unwrap_or(false);
+            let mut token_conds = Vec::with_capacity(pos_tokens.len());
+            for tok in pos_tokens {
+                let pat = format!("%{}%", escape_like_pattern(&tok));
+                token_conds.push(format!("LOWER({}file_path) LIKE ? ESCAPE '\\'", pfx));
+                params_vec.push(rusqlite::types::Value::Text(pat));
+            }
+            let joiner = if is_or { " OR " } else { " AND " };
+            clauses.push(format!("({})", token_conds.join(joiner)));
+        }
+        for neg in neg_tokens {
+            let pat = format!("%{}%", escape_like_pattern(&neg));
+            clauses.push(format!("LOWER({}file_path) NOT LIKE ? ESCAPE '\\'", pfx));
+            params_vec.push(rusqlite::types::Value::Text(pat));
+        }
+    }
+
+    // 3. 拡張子フィルタ（含む）
+    if let Some(ref exts) = f.extensions {
+        let mut expanded = Vec::new();
+        for e in exts {
+            for syn in expand_format_synonyms(e) {
+                if !expanded.contains(&syn) {
+                    expanded.push(syn);
+                }
+            }
+        }
+        if !expanded.is_empty() {
+            let mut ext_conds = Vec::new();
+            let placeholders = expanded.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            ext_conds.push(format!("LOWER(COALESCE({}format, '')) IN ({})", pfx, placeholders));
+            for syn in &expanded {
+                params_vec.push(rusqlite::types::Value::Text(syn.clone()));
+            }
+            for syn in &expanded {
+                ext_conds.push(format!("LOWER({}file_path) LIKE ?", pfx));
+                params_vec.push(rusqlite::types::Value::Text(format!("%.{}", syn)));
+            }
+            clauses.push(format!("({})", ext_conds.join(" OR ")));
+        }
+    }
+
+    // 4. 拡張子フィルタ（除外：NOT）
+    if let Some(ref ex_exts) = f.exclude_extensions {
+        let mut expanded = Vec::new();
+        for e in ex_exts {
+            for syn in expand_format_synonyms(e) {
+                if !expanded.contains(&syn) {
+                    expanded.push(syn);
+                }
+            }
+        }
+        if !expanded.is_empty() {
+            let placeholders = expanded.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            clauses.push(format!(
+                "LOWER(COALESCE({}format, '')) NOT IN ({})",
+                pfx, placeholders
+            ));
+            for syn in &expanded {
+                params_vec.push(rusqlite::types::Value::Text(syn.clone()));
+            }
+            for syn in &expanded {
+                clauses.push(format!("LOWER({}file_path) NOT LIKE ?", pfx));
+                params_vec.push(rusqlite::types::Value::Text(format!("%.{}", syn)));
+            }
+        }
+    }
+
+    // 5. 縦横比フィルタ（landscape / portrait / square）
+    if let Some(ref aspect) = f.aspect_ratio {
+        match aspect.as_str() {
+            "landscape" => {
+                clauses.push(format!(
+                    "({0}width IS NOT NULL AND {0}height IS NOT NULL AND {0}width > {0}height)",
+                    pfx
+                ));
+            }
+            "portrait" => {
+                clauses.push(format!(
+                    "({0}width IS NOT NULL AND {0}height IS NOT NULL AND {0}height > {0}width)",
+                    pfx
+                ));
+            }
+            "square" => {
+                clauses.push(format!(
+                    "({0}width IS NOT NULL AND {0}height IS NOT NULL AND {0}width = {0}height)",
+                    pfx
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    // 6. タグフィルタ（含む：AND / OR）
+    if let Some(ref inc_tags) = f.include_tag_ids {
+        let mut unique_ids: Vec<i64> = inc_tags.clone();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+        if !unique_ids.is_empty() {
+            let is_or = f
+                .tag_mode
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("or"))
+                .unwrap_or(false);
+            let placeholders = unique_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            if is_or || unique_ids.len() == 1 {
+                clauses.push(format!(
+                    "EXISTS (SELECT 1 FROM image_tags it WHERE it.image_id = {}id AND it.tag_id IN ({}))",
+                    pfx, placeholders
+                ));
+                for tid in unique_ids {
+                    params_vec.push(rusqlite::types::Value::Integer(tid));
+                }
+            } else {
+                let count_needed = unique_ids.len() as i64;
+                clauses.push(format!(
+                    "(SELECT COUNT(DISTINCT it.tag_id) FROM image_tags it WHERE it.image_id = {}id AND it.tag_id IN ({})) = ?",
+                    pfx, placeholders
+                ));
+                for tid in unique_ids {
+                    params_vec.push(rusqlite::types::Value::Integer(tid));
+                }
+                params_vec.push(rusqlite::types::Value::Integer(count_needed));
+            }
+        }
+    }
+
+    // 7. タグフィルタ（除外：NOT）
+    if let Some(ref exc_tags) = f.exclude_tag_ids {
+        let mut unique_ids: Vec<i64> = exc_tags.clone();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+        if !unique_ids.is_empty() {
+            let placeholders = unique_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            clauses.push(format!(
+                "NOT EXISTS (SELECT 1 FROM image_tags it_ex WHERE it_ex.image_id = {}id AND it_ex.tag_id IN ({}))",
+                pfx, placeholders
+            ));
+            for tid in unique_ids {
+                params_vec.push(rusqlite::types::Value::Integer(tid));
+            }
+        }
+    }
+
+    Ok((clauses.join(" AND "), params_vec))
+}
+
 /// タイムライン用の画像一覧をページング取得
 ///
-/// 変更理由: 仕様書§4「ORDER BY は必ず (taken_at DESC, id DESC)」
-///
-/// タイムライン用の画像一覧をページング取得
-///
-/// 変更理由: 仕様書§4「表示ソート順に応じたページング取得対応」
+/// 変更理由: 仕様書§4「表示ソート順および複合フィルタ条件に応じたページング取得対応」
 ///
 /// @param conn DB読み取り接続
 /// @param offset オフセット
@@ -205,63 +478,55 @@ pub fn get_timeline_images(
     folder_id: Option<i64>,
     sort_by: Option<TimelineSort>,
 ) -> Result<Vec<ImageRecord>> {
+    get_timeline_images_filtered(conn, offset, limit, folder_id, sort_by, None)
+}
+
+/// フィルタ条件付きでタイムライン用の画像一覧をページング取得
+pub fn get_timeline_images_filtered(
+    conn: &Connection,
+    offset: i64,
+    limit: i64,
+    folder_id: Option<i64>,
+    sort_by: Option<TimelineSort>,
+    filter: Option<&TimelineFilter>,
+) -> Result<Vec<ImageRecord>> {
     let sort = sort_by.unwrap_or(TimelineSort::TakenAtDesc);
     let order_sql = match sort {
-        TimelineSort::TakenAtDesc => "ORDER BY taken_at DESC, id DESC",
-        TimelineSort::TakenAtAsc => "ORDER BY taken_at ASC, id ASC",
-        TimelineSort::Folder => "ORDER BY folder_id ASC, taken_at DESC, id DESC",
-        TimelineSort::NameAsc => "ORDER BY file_path ASC, id ASC",
-        TimelineSort::NameDesc => "ORDER BY file_path DESC, id DESC",
+        TimelineSort::TakenAtDesc => "ORDER BY i.taken_at DESC, i.id DESC",
+        TimelineSort::TakenAtAsc => "ORDER BY i.taken_at ASC, i.id ASC",
+        TimelineSort::Folder => "ORDER BY i.folder_id ASC, i.taken_at DESC, i.id DESC",
+        TimelineSort::NameAsc => "ORDER BY i.file_path ASC, i.id ASC",
+        TimelineSort::NameDesc => "ORDER BY i.file_path DESC, i.id DESC",
     };
 
+    let (where_sql, mut params_vec) = build_timeline_where_clause(conn, "i", folder_id, filter)?;
+    let sql = format!(
+        "SELECT i.id, i.taken_at, i.width, i.height, i.file_mtime
+         FROM images i
+         WHERE {}
+         {}
+         LIMIT ? OFFSET ?;",
+        where_sql, order_sql
+    );
+
+    params_vec.push(rusqlite::types::Value::Integer(limit));
+    params_vec.push(rusqlite::types::Value::Integer(offset));
+
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+        Ok(ImageRecord {
+            id: row.get(0)?,
+            taken_at: row.get(1)?,
+            width: row.get(2)?,
+            height: row.get(3)?,
+            rev: row.get(4)?,
+        })
+    })?;
+
     let mut images = Vec::new();
-
-    if let Some(fid) = folder_id {
-        let sql = format!(
-            "SELECT id, taken_at, width, height, file_mtime
-             FROM images
-             WHERE folder_id = ?1
-             {}
-             LIMIT ?2 OFFSET ?3;",
-            order_sql
-        );
-        let mut stmt = conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![fid, limit, offset], |row| {
-            Ok(ImageRecord {
-                id: row.get(0)?,
-                taken_at: row.get(1)?,
-                width: row.get(2)?,
-                height: row.get(3)?,
-                rev: row.get(4)?,
-            })
-        })?;
-        for img in rows {
-            images.push(img?);
-        }
-    } else {
-        let sql = format!(
-            "SELECT id, taken_at, width, height, file_mtime
-             FROM images
-             WHERE folder_id > 0
-             {}
-             LIMIT ?1 OFFSET ?2;",
-            order_sql
-        );
-        let mut stmt = conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![limit, offset], |row| {
-            Ok(ImageRecord {
-                id: row.get(0)?,
-                taken_at: row.get(1)?,
-                width: row.get(2)?,
-                height: row.get(3)?,
-                rev: row.get(4)?,
-            })
-        })?;
-        for img in rows {
-            images.push(img?);
-        }
+    for img in rows {
+        images.push(img?);
     }
-
     Ok(images)
 }
 
@@ -281,107 +546,71 @@ pub fn get_timeline_summary(
     version: i64,
     sort_by: Option<TimelineSort>,
 ) -> Result<TimelineSummary> {
+    get_timeline_summary_filtered(conn, folder_id, version, sort_by, None)
+}
+
+/// フィルタ条件付きでセクション別件数サマリと総件数を取得
+pub fn get_timeline_summary_filtered(
+    conn: &Connection,
+    folder_id: Option<i64>,
+    version: i64,
+    sort_by: Option<TimelineSort>,
+    filter: Option<&TimelineFilter>,
+) -> Result<TimelineSummary> {
     let sort = sort_by.unwrap_or(TimelineSort::TakenAtDesc);
     let mut buckets = Vec::new();
-    let total: i64;
+
+    let (where_sql, params_vec) = build_timeline_where_clause(conn, "i", folder_id, filter)?;
+    let count_sql = format!("SELECT COUNT(*) FROM images i WHERE {};", where_sql);
+    let total: i64 = conn.query_row(
+        &count_sql,
+        rusqlite::params_from_iter(params_vec.clone()),
+        |row| row.get(0),
+    )?;
 
     match sort {
         TimelineSort::Folder => {
-            // フォルダ順: 各フォルダごとにバケットを作成
-            total = if let Some(fid) = folder_id {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
-            } else {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
-            };
-
-            if let Some(fid) = folder_id {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT f.path, COUNT(i.id) AS cnt
-                     FROM watched_folders f
-                     INNER JOIN images i ON f.id = i.folder_id
-                     WHERE f.id = ?1
-                     GROUP BY f.id, f.path
-                     HAVING cnt > 0
-                     ORDER BY f.id ASC;",
-                )?;
-                let rows = stmt.query_map(params![fid], |row| {
-                    let path: String = row.get(0)?;
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: path, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
-            } else {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT f.path, COUNT(i.id) AS cnt
-                     FROM watched_folders f
-                     INNER JOIN images i ON f.id = i.folder_id
-                     WHERE f.id > 0
-                     GROUP BY f.id, f.path
-                     HAVING cnt > 0
-                     ORDER BY f.id ASC;",
-                )?;
-                let rows = stmt.query_map([], |row| {
-                    let path: String = row.get(0)?;
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: path, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
+            let group_sql = format!(
+                "SELECT f.path, COUNT(i.id) AS cnt
+                 FROM watched_folders f
+                 INNER JOIN images i ON f.id = i.folder_id
+                 WHERE {}
+                 GROUP BY f.id, f.path
+                 HAVING cnt > 0
+                 ORDER BY f.id ASC;",
+                where_sql
+            );
+            let mut stmt = conn.prepare_cached(&group_sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+                let path: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok(DayBucket { day: path, count })
+            })?;
+            for b in rows {
+                buckets.push(b?);
             }
         }
         TimelineSort::TakenAtAsc => {
-            total = if let Some(fid) = folder_id {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
-            } else {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
-            };
-
-            if let Some(fid) = folder_id {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
-                     FROM images
-                     WHERE folder_id = ?1
-                     GROUP BY day
-                     ORDER BY day ASC;",
-                )?;
-                let rows = stmt.query_map(params![fid], |row| {
-                    let day: Option<String> = row.get(0)?;
-                    let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: day_str, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
-            } else {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
-                     FROM images
-                     WHERE folder_id > 0
-                     GROUP BY day
-                     ORDER BY day ASC;",
-                )?;
-                let rows = stmt.query_map([], |row| {
-                    let day: Option<String> = row.get(0)?;
-                    let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: day_str, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
+            let group_sql = format!(
+                "SELECT strftime('%Y-%m-%d', i.taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
+                 FROM images i
+                 WHERE {}
+                 GROUP BY day
+                 ORDER BY day ASC;",
+                where_sql
+            );
+            let mut stmt = conn.prepare_cached(&group_sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+                let day: Option<String> = row.get(0)?;
+                let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
+                let count: i64 = row.get(1)?;
+                Ok(DayBucket { day: day_str, count })
+            })?;
+            for b in rows {
+                buckets.push(b?);
             }
         }
         TimelineSort::NameAsc | TimelineSort::NameDesc => {
-            total = if let Some(fid) = folder_id {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
-            } else {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
-            };
-
             let title = if sort == TimelineSort::NameAsc {
                 "ファイル名 (A → Z)"
             } else {
@@ -395,46 +624,23 @@ pub fn get_timeline_summary(
             }
         }
         TimelineSort::TakenAtDesc => {
-            total = if let Some(fid) = folder_id {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id = ?1;", params![fid], |row| row.get(0))?
-            } else {
-                conn.query_row("SELECT COUNT(*) FROM images WHERE folder_id > 0;", [], |row| row.get(0))?
-            };
-
-            if let Some(fid) = folder_id {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
-                     FROM images
-                     WHERE folder_id = ?1
-                     GROUP BY day
-                     ORDER BY day DESC;",
-                )?;
-                let rows = stmt.query_map(params![fid], |row| {
-                    let day: Option<String> = row.get(0)?;
-                    let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: day_str, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
-            } else {
-                let mut stmt = conn.prepare_cached(
-                    "SELECT strftime('%Y-%m-%d', taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
-                     FROM images
-                     WHERE folder_id > 0
-                     GROUP BY day
-                     ORDER BY day DESC;",
-                )?;
-                let rows = stmt.query_map([], |row| {
-                    let day: Option<String> = row.get(0)?;
-                    let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
-                    let count: i64 = row.get(1)?;
-                    Ok(DayBucket { day: day_str, count })
-                })?;
-                for b in rows {
-                    buckets.push(b?);
-                }
+            let group_sql = format!(
+                "SELECT strftime('%Y-%m-%d', i.taken_at, 'unixepoch') AS day, COUNT(*) AS cnt
+                 FROM images i
+                 WHERE {}
+                 GROUP BY day
+                 ORDER BY day DESC;",
+                where_sql
+            );
+            let mut stmt = conn.prepare_cached(&group_sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+                let day: Option<String> = row.get(0)?;
+                let day_str = day.unwrap_or_else(|| "1970-01-01".to_string());
+                let count: i64 = row.get(1)?;
+                Ok(DayBucket { day: day_str, count })
+            })?;
+            for b in rows {
+                buckets.push(b?);
             }
         }
     }
@@ -445,7 +651,6 @@ pub fn get_timeline_summary(
         version,
     })
 }
-
 
 /// 単一画像の詳細情報を取得
 pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail>> {
@@ -467,6 +672,8 @@ pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail
             TakenAtSource::Mtime
         };
 
+        let tags = get_tags_for_single_image(conn, id).unwrap_or_default();
+
         Ok(Some(ImageDetail {
             id: row.get(0)?,
             taken_at: row.get(1)?,
@@ -480,10 +687,36 @@ pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail
             taken_at_source,
             original_available: exists,
             source_url: row.get(10)?,
+            tags,
         }))
     } else {
         Ok(None)
     }
+}
+
+/// 単一画像に付与されているタグ一覧を取得する
+pub fn get_tags_for_single_image(conn: &Connection, image_id: i64) -> Result<Vec<TagRecord>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.id, t.name, t.color, t.sort_order, t.created_at
+         FROM tags t
+         INNER JOIN image_tags it ON t.id = it.tag_id
+         WHERE it.image_id = ?1
+         ORDER BY t.sort_order ASC, t.name COLLATE NOCASE ASC, t.id ASC;",
+    )?;
+    let rows = stmt.query_map(params![image_id], |r| {
+        Ok(TagRecord {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            color: r.get(2)?,
+            sort_order: r.get(3)?,
+            created_at: r.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// IDからファイルパス、クイックハッシュ、mtime、フォーマットを取得（URIプロトコル配信用）
@@ -1683,6 +1916,367 @@ pub fn filter_unreferenced_hashes(
     Ok(unreferenced)
 }
 
+// -----------------------------------------------------------------------------
+// サブフォルダ階層ツリー取得 & タグ管理 CRUD
+// -----------------------------------------------------------------------------
+
+/// 指定された監視フォルダ配下のサブフォルダ一覧とそれぞれの画像枚数をDB内のfile_pathから高速構築する
+///
+/// 変更理由: ディスクI/O（ディレクトリ再走査）を一切発生させず、インデックススキャンのみで
+/// サブフォルダ階層と各階層の累積画像枚数を数ミリ秒で算出するため。
+///
+/// @param conn DB読み取り接続
+/// @param folder_id 監視フォルダID
+/// @return ソート済みの SubfolderEntry リスト
+pub fn get_subfolder_tree(conn: &Connection, folder_id: i64) -> Result<Vec<SubfolderEntry>> {
+    let root_path: String = match conn.query_row(
+        "SELECT path FROM watched_folders WHERE id = ?1;",
+        params![folder_id],
+        |r| r.get(0),
+    ) {
+        Ok(p) => p,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let norm_root = root_path.replace('\\', "/").trim_end_matches('/').to_string();
+    let root_prefix = format!("{}/", norm_root);
+    let root_prefix_lower = root_prefix.to_lowercase();
+
+    let mut stmt = conn.prepare_cached(
+        "SELECT file_path FROM images WHERE folder_id = ?1;",
+    )?;
+    let rows = stmt.query_map(params![folder_id], |r| r.get::<_, String>(0))?;
+
+    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
+
+    for row in rows {
+        let fp = row?;
+        let norm_fp = fp.replace('\\', "/");
+        let rel = if norm_fp.starts_with(&root_prefix) {
+            &norm_fp[root_prefix.len()..]
+        } else if norm_fp.to_lowercase().starts_with(&root_prefix_lower) {
+            // Windows のドライブレター大小文字差を考慮した切り出し
+            let prefix_chars = root_prefix.chars().count();
+            match norm_fp.char_indices().nth(prefix_chars) {
+                Some((byte_idx, _)) => &norm_fp[byte_idx..],
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        // ファイル名を除いたディレクトリパーツを取り出す
+        let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if parts.len() <= 1 {
+            // ルート直下のファイルはサブフォルダではないためスキップ
+            continue;
+        }
+
+        let dir_parts = &parts[..parts.len() - 1];
+        let mut accum = String::new();
+        for (idx, part) in dir_parts.iter().enumerate() {
+            if idx > 0 {
+                accum.push('/');
+            }
+            accum.push_str(part);
+            *counts.entry(accum.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut result = Vec::with_capacity(counts.len());
+    for (rel_path, count) in counts {
+        let name = rel_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&rel_path)
+            .to_string();
+        let depth = rel_path.split('/').count() as u32;
+        result.push(SubfolderEntry {
+            relative_path: rel_path,
+            name,
+            depth,
+            image_count: count,
+        });
+    }
+
+    Ok(result)
+}
+
+/// 登録されている全タグ一覧（付与されている画像枚数付き）を取得する
+///
+/// @param conn DB読み取り接続
+/// @return TagWithCount の配列
+pub fn get_tags(conn: &Connection) -> Result<Vec<TagWithCount>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT t.id, t.name, t.color, t.sort_order, t.created_at,
+                COUNT(i.id) AS image_count
+         FROM tags t
+         LEFT JOIN image_tags it ON t.id = it.tag_id
+         LEFT JOIN images i ON it.image_id = i.id AND i.folder_id > 0
+         GROUP BY t.id
+         ORDER BY t.sort_order ASC, t.name COLLATE NOCASE ASC, t.id ASC;",
+    )?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok(TagWithCount {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            color: r.get(2)?,
+            sort_order: r.get(3)?,
+            created_at: r.get(4)?,
+            image_count: r.get(5)?,
+        })
+    })?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 新規タグを作成する（同名タグが既に存在する場合は既存のTagRecordを返す）
+///
+/// @param conn DB書き込み接続
+/// @param name タグ名
+/// @param color カラーコード（省略時は "#6366f1"）
+/// @param now 作成日時UNIX秒
+/// @return 作成または既存の TagRecord
+pub fn create_tag(
+    conn: &Connection,
+    name: &str,
+    color: Option<&str>,
+    now: i64,
+) -> Result<TagRecord> {
+    let clean_name = name.trim();
+    let tag_color = color
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        .unwrap_or("#6366f1");
+
+    // 既存チェック（COLLATE NOCASE）
+    if let Ok(existing) = conn.query_row(
+        "SELECT id, name, color, sort_order, created_at FROM tags WHERE name = ?1 COLLATE NOCASE;",
+        params![clean_name],
+        |r| {
+            Ok(TagRecord {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                color: r.get(2)?,
+                sort_order: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        },
+    ) {
+        return Ok(existing);
+    }
+
+    let max_order: i32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM tags;",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(-1);
+    let next_order = max_order + 1;
+
+    conn.execute(
+        "INSERT INTO tags (name, color, sort_order, created_at) VALUES (?1, ?2, ?3, ?4);",
+        params![clean_name, tag_color, next_order, now],
+    )?;
+    let id = conn.last_insert_rowid();
+
+    Ok(TagRecord {
+        id,
+        name: clean_name.to_string(),
+        color: tag_color.to_string(),
+        sort_order: next_order,
+        created_at: now,
+    })
+}
+
+/// 既存タグの名前・カラー・表示順を更新する
+pub fn update_tag(
+    conn: &Connection,
+    id: i64,
+    name: Option<&str>,
+    color: Option<&str>,
+    sort_order: Option<i32>,
+) -> Result<TagRecord> {
+    if let Some(n) = name {
+        let clean = n.trim();
+        if !clean.is_empty() {
+            conn.execute(
+                "UPDATE tags SET name = ?1 WHERE id = ?2;",
+                params![clean, id],
+            )?;
+        }
+    }
+    if let Some(c) = color {
+        let clean = c.trim();
+        if !clean.is_empty() {
+            conn.execute(
+                "UPDATE tags SET color = ?1 WHERE id = ?2;",
+                params![clean, id],
+            )?;
+        }
+    }
+    if let Some(so) = sort_order {
+        conn.execute(
+            "UPDATE tags SET sort_order = ?1 WHERE id = ?2;",
+            params![so, id],
+        )?;
+    }
+
+    conn.query_row(
+        "SELECT id, name, color, sort_order, created_at FROM tags WHERE id = ?1;",
+        params![id],
+        |r| {
+            Ok(TagRecord {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                color: r.get(2)?,
+                sort_order: r.get(3)?,
+                created_at: r.get(4)?,
+            })
+        },
+    )
+}
+
+/// タグを削除する（ON DELETE CASCADEによりimage_tagsも自動削除）
+pub fn delete_tag(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM tags WHERE id = ?1;", params![id])?;
+    Ok(())
+}
+
+/// 指定した画像ID群に対する全タグの付与状態（"all" / "some" / "none"）を取得する
+///
+/// 変更理由: 複数画像を選択してタグ編集モーダルを開いた際、全員に付いているタグ（☑）、
+/// 一部のみに付いているタグ（[-]）、誰にも付いていないタグ（☐）を即座に判別するため。
+pub fn get_tags_for_images(
+    conn: &Connection,
+    image_ids: &[i64],
+) -> Result<Vec<ImageTagAssignment>> {
+    let all_tags = get_tags(conn)?;
+    if all_tags.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut unique_img_ids: Vec<i64> = image_ids.to_vec();
+    unique_img_ids.sort_unstable();
+    unique_img_ids.dedup();
+    let total_targets = unique_img_ids.len();
+
+    if total_targets == 0 {
+        return Ok(all_tags
+            .into_iter()
+            .map(|t| ImageTagAssignment {
+                tag_id: t.id,
+                name: t.name,
+                color: t.color,
+                status: "none".to_string(),
+            })
+            .collect());
+    }
+
+    let mut assigned_counts: HashMap<i64, usize> = HashMap::new();
+    for chunk in unique_img_ids.chunks(500) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT tag_id, COUNT(DISTINCT image_id) FROM image_tags WHERE image_id IN ({}) GROUP BY tag_id;",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize))
+        })?;
+        for r in rows {
+            let (tid, cnt) = r?;
+            *assigned_counts.entry(tid).or_insert(0) += cnt;
+        }
+    }
+
+    let result = all_tags
+        .into_iter()
+        .map(|t| {
+            let cnt = assigned_counts.get(&t.id).copied().unwrap_or(0);
+            let status = if cnt == 0 {
+                "none"
+            } else if cnt >= total_targets {
+                "all"
+            } else {
+                "some"
+            };
+            ImageTagAssignment {
+                tag_id: t.id,
+                name: t.name,
+                color: t.color,
+                status: status.to_string(),
+            }
+        })
+        .collect();
+
+    Ok(result)
+}
+
+/// 複数画像に対してタグの一括追加および一括解除を単一トランザクションで高速実行する
+///
+/// @param conn DB書き込み接続
+/// @param image_ids 対象画像IDリスト
+/// @param add_tag_ids 付与するタグIDリスト
+/// @param remove_tag_ids 解除するタグIDリスト
+/// @param now 現在時刻UNIX秒
+pub fn update_images_tags(
+    conn: &mut Connection,
+    image_ids: &[i64],
+    add_tag_ids: &[i64],
+    remove_tag_ids: &[i64],
+    now: i64,
+) -> Result<()> {
+    if image_ids.is_empty() || (add_tag_ids.is_empty() && remove_tag_ids.is_empty()) {
+        return Ok(());
+    }
+
+    let mut unique_imgs: Vec<i64> = image_ids.to_vec();
+    unique_imgs.sort_unstable();
+    unique_imgs.dedup();
+
+    let remove_set: HashSet<i64> = remove_tag_ids.iter().copied().collect();
+    let add_list: Vec<i64> = add_tag_ids
+        .iter()
+        .copied()
+        .filter(|tid| !remove_set.contains(tid))
+        .collect();
+
+    let tx = conn.transaction()?;
+    {
+        if !remove_tag_ids.is_empty() {
+            let mut del_stmt = tx.prepare_cached(
+                "DELETE FROM image_tags WHERE tag_id = ?1 AND image_id = ?2;",
+            )?;
+            for &tid in remove_tag_ids {
+                for &iid in &unique_imgs {
+                    del_stmt.execute(params![tid, iid])?;
+                }
+            }
+        }
+
+        if !add_list.is_empty() {
+            let mut ins_stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO image_tags (tag_id, image_id, created_at) VALUES (?1, ?2, ?3);",
+            )?;
+            for &tid in &add_list {
+                for &iid in &unique_imgs {
+                    ins_stmt.execute(params![tid, iid, now])?;
+                }
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1994,6 +2588,161 @@ mod tests {
         assert_eq!(cleaned[0].0, clip_img_id);
         assert!(get_image_detail(&conn, clip_img_id).unwrap().is_none());
         assert!(get_image_detail(&conn, drop_img_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_parse_search_query_tokens_and_tags_and_filters() {
+        // 1. 検索クエリトークン分割のテスト（空白・全角空白・マイナスプレフィックス除外語）
+        let (inc, exc) = parse_search_query_tokens("pose  hand　-draft -sketch -");
+        assert_eq!(inc, vec!["pose".to_string(), "hand".to_string()]);
+        assert_eq!(exc, vec!["draft".to_string(), "sketch".to_string()]);
+
+        // 2. インメモリDBの作成とマイグレーションv10の検証
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let mut conn = db.writer();
+
+        let folder = add_watched_folder(&conn, "D:/artworks", 1700000000).expect("フォルダ登録失敗");
+
+        // サブフォルダ構造・縦横比・拡張子が異なる3枚のテスト画像を登録
+        let img1 = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/artworks/chara/hero_pose_01.png".to_string(),
+                file_size: 1000,
+                file_mtime: 1700000100,
+                taken_at: 1700000100,
+                taken_at_source: 1,
+                width: Some(1920),
+                height: Some(1080), // landscape
+                orientation: 1,
+                format: Some("png".to_string()),
+                quick_hash: "h_img1".to_string(),
+                indexed_at: 1700000100,
+                source_url: None,
+            },
+        )
+        .unwrap();
+
+        let img2 = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/artworks/chara/sub/heroine_portrait_draft.jpg".to_string(),
+                file_size: 2000,
+                file_mtime: 1700000200,
+                taken_at: 1700000200,
+                taken_at_source: 1,
+                width: Some(1000),
+                height: Some(1500), // portrait
+                orientation: 1,
+                format: Some("jpeg".to_string()),
+                quick_hash: "h_img2".to_string(),
+                indexed_at: 1700000200,
+                source_url: None,
+            },
+        )
+        .unwrap();
+
+        let img3 = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/artworks/bg/icon_square.webp".to_string(),
+                file_size: 3000,
+                file_mtime: 1700000300,
+                taken_at: 1700000300,
+                taken_at_source: 1,
+                width: Some(500),
+                height: Some(500), // square
+                orientation: 1,
+                format: Some("webp".to_string()),
+                quick_hash: "h_img3".to_string(),
+                indexed_at: 1700000300,
+                source_url: None,
+            },
+        )
+        .unwrap();
+
+        // 3. サブフォルダ階層ツリーのテスト
+        let tree = get_subfolder_tree(&conn, folder.id).expect("サブフォルダツリー取得失敗");
+        // "bg" (1枚), "chara" (配下含め2枚), "chara/sub" (1枚)
+        assert_eq!(tree.len(), 3);
+        let chara_node = tree.iter().find(|e| e.relative_path == "chara").unwrap();
+        assert_eq!(chara_node.image_count, 2);
+        assert_eq!(chara_node.depth, 1);
+        let sub_node = tree.iter().find(|e| e.relative_path == "chara/sub").unwrap();
+        assert_eq!(sub_node.image_count, 1);
+        assert_eq!(sub_node.depth, 2);
+
+        // 4. タグ作成・一括付与・部分付与状態（all / some / none）のテスト
+        let tag_fav = create_tag(&conn, "お気に入り", Some("#ef4444"), 1700000500).unwrap();
+        let tag_ref = create_tag(&conn, "資料", Some("#3b82f6"), 1700000501).unwrap();
+        let tag_unused = create_tag(&conn, "未使用", None, 1700000502).unwrap();
+
+        // img1, img2 の両方に tag_fav を付与し、img1 のみに tag_ref を付与
+        update_images_tags(&mut conn, &[img1, img2], &[tag_fav.id], &[], 1700000600).unwrap();
+        update_images_tags(&mut conn, &[img1], &[tag_ref.id], &[], 1700000601).unwrap();
+
+        let assignments = get_tags_for_images(&conn, &[img1, img2]).unwrap();
+        let fav_state = assignments.iter().find(|a| a.tag_id == tag_fav.id).unwrap();
+        let ref_state = assignments.iter().find(|a| a.tag_id == tag_ref.id).unwrap();
+        let unused_state = assignments.iter().find(|a| a.tag_id == tag_unused.id).unwrap();
+        assert_eq!(fav_state.status, "all");
+        assert_eq!(ref_state.status, "some");
+        assert_eq!(unused_state.status, "none");
+
+        // 詳細取得時にタグが含まれることを確認
+        let detail1 = get_image_detail(&conn, img1).unwrap().unwrap();
+        assert_eq!(detail1.tags.len(), 2);
+
+        // 5. 複合フィルタ検索のテスト
+        // (a) サブフォルダ "chara" 絞り込み -> img1, img2
+        let f_sub = crate::models::TimelineFilter {
+            sub_folder_path: Some("chara".to_string()),
+            ..Default::default()
+        };
+        let res_sub = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, Some(&f_sub)).unwrap();
+        assert_eq!(res_sub.len(), 2);
+
+        // (b) ファイル名検索 "hero -draft" (AND + NOT) -> img1 のみ（img2 は draft を含むため除外）
+        let f_search = crate::models::TimelineFilter {
+            query: Some("hero -draft".to_string()),
+            ..Default::default()
+        };
+        let res_search = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, Some(&f_search)).unwrap();
+        assert_eq!(res_search.len(), 1);
+        assert_eq!(res_search[0].id, img1);
+
+        // (c) 拡張子 jpg 指定（jpeg 同義語展開確認） -> img2 のみ
+        let f_fmt = crate::models::TimelineFilter {
+            extensions: Some(vec!["jpg".to_string()]),
+            ..Default::default()
+        };
+        let res_fmt = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, Some(&f_fmt)).unwrap();
+        assert_eq!(res_fmt.len(), 1);
+        assert_eq!(res_fmt[0].id, img2);
+
+        // (d) 縦横比 square 指定 -> img3 のみ
+        let f_ar = crate::models::TimelineFilter {
+            aspect_ratio: Some("square".to_string()),
+            ..Default::default()
+        };
+        let res_ar = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, Some(&f_ar)).unwrap();
+        assert_eq!(res_ar.len(), 1);
+        assert_eq!(res_ar[0].id, img3);
+
+        // (e) タグ絞り込み：tag_fav を含み、tag_ref を除外(NOT) -> img2 のみ
+        let f_tag = crate::models::TimelineFilter {
+            include_tag_ids: Some(vec![tag_fav.id]),
+            exclude_tag_ids: Some(vec![tag_ref.id]),
+            ..Default::default()
+        };
+        let res_tag = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, Some(&f_tag)).unwrap();
+        assert_eq!(res_tag.len(), 1);
+        assert_eq!(res_tag[0].id, img2);
+        let sum_tag = get_timeline_summary_filtered(&conn, Some(folder.id), 1, None, Some(&f_tag)).unwrap();
+        assert_eq!(sum_tag.total, 1);
     }
 }
 

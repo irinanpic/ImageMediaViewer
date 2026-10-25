@@ -6,6 +6,7 @@ import { VirtualTimeline } from "./components/TimelineGrid/VirtualTimeline";
 import { ImageViewerModal } from "./components/Viewer/ImageViewerModal";
 import { MoodboardCanvas } from "./components/Moodboard/MoodboardCanvas";
 import { AddToBoardModal } from "./components/Moodboard/AddToBoardModal";
+import { TagEditModal } from "./components/Common/TagEditModal";
 import { LogViewerModal } from "./components/Common/LogViewerModal";
 import { ContextMenu } from "./components/ContextMenu/ContextMenu";
 import { ContextMenuSettingsModal } from "./components/ContextMenu/ContextMenuSettingsModal";
@@ -55,6 +56,9 @@ export const App: React.FC = () => {
 
       {/* ムードボード追加ダイアログ */}
       <AddToBoardModal />
+
+      {/* タグ編集・新規作成モーダル */}
+      <TagEditModal />
 
       {/* システムログ & エラー診断モーダル */}
       <LogViewerModal />

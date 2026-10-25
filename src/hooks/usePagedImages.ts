@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { backendApi } from "../lib/ipc";
 import { useAppStore } from "../store";
 import type { ImageRecord } from "../types/generated/ImageRecord";
+import { isTimelineFilterActive, serializeTimelineFilter } from "../types/filter";
 
 const PAGE_SIZE = 200;
 const MAX_CACHED_PAGES = 50;
@@ -75,15 +76,25 @@ export class SharedPageCacheManager {
   private listeners = new Set<() => void>();
   private currentFolderId: number | null = null;
   private currentSort: string | null = null;
+  private currentFilterKey: string = "";
   private isInitialized = false;
 
   /**
-   * フォルダまたはソート順が切り替わった場合にキャッシュを無効化
+   * フォルダ、ソート順、またはフィルタ条件が切り替わった場合にキャッシュを無効化
+   *
+   * 変更理由: ビューア開閉やムードボード遷移ではフィルタ条件が変わらないため
+   * キャッシュを破棄せずそのまま維持し、実際に検索語やフィルタ条件が変化したときのみクリアする。
    */
-  public syncScope(folderId: number | null, sort: string) {
-    if (!this.isInitialized || this.currentFolderId !== folderId || this.currentSort !== sort) {
+  public syncScope(folderId: number | null, sort: string, filterKey: string = "") {
+    if (
+      !this.isInitialized ||
+      this.currentFolderId !== folderId ||
+      this.currentSort !== sort ||
+      this.currentFilterKey !== filterKey
+    ) {
       this.currentFolderId = folderId;
       this.currentSort = sort;
+      this.currentFilterKey = filterKey;
       this.isInitialized = true;
       this.cache.clear();
       this.fetchingPages.clear();
@@ -205,7 +216,14 @@ export function usePagedImages() {
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const catalogVersion = useAppStore((state) => state.catalogVersion);
   const timelineSort = useAppStore((state) => state.timelineSort);
+  const filterState = useAppStore((state) => state.filterState);
   const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
+
+  const filterKey = useMemo(() => serializeTimelineFilter(filterState), [filterState]);
+  const activeFilter = useMemo(
+    () => (isTimelineFilterActive(filterState) ? filterState : null),
+    [filterState]
+  );
 
   const [versionTick, setVersionTick] = useState(0);
 
@@ -216,10 +234,10 @@ export function usePagedImages() {
     });
   }, []);
 
-  // フォルダまたはソート順の変更を同期
+  // フォルダ、ソート順、またはフィルタ条件の変更を同期
   useEffect(() => {
-    sharedCache.syncScope(selectedFolderId ?? null, timelineSort);
-  }, [selectedFolderId, timelineSort]);
+    sharedCache.syncScope(selectedFolderId ?? null, timelineSort, filterKey);
+  }, [selectedFolderId, timelineSort, filterKey]);
 
   // 単一ページのフェッチ＆差分マージ処理
   const fetchPage = useCallback(
@@ -235,6 +253,7 @@ export function usePagedImages() {
           limit: PAGE_SIZE,
           folderId: selectedFolderId ?? null,
           sort: timelineSort,
+          filter: activeFilter,
         });
 
         const oldRecords = sharedCache.get(pageIndex);
@@ -250,7 +269,7 @@ export function usePagedImages() {
         sharedCache.setFetching(pageIndex, false);
       }
     },
-    [selectedFolderId, timelineSort]
+    [selectedFolderId, timelineSort, activeFilter]
   );
 
   // 手動再読込(timelineRefreshTick)またはカタログバージョン更新(catalogVersion)時:
@@ -351,6 +370,7 @@ export function usePagedImages() {
           limit: PAGE_SIZE,
           folderId: selectedFolderId ?? null,
           sort: timelineSort,
+          filter: activeFilter,
         });
         const oldRecords = sharedCache.get(pageIndex);
         const { merged } = mergePageRecords(oldRecords, records);
@@ -361,7 +381,7 @@ export function usePagedImages() {
         return null;
       }
     },
-    [getImageByIndex, selectedFolderId, timelineSort]
+    [getImageByIndex, selectedFolderId, timelineSort, activeFilter]
   );
 
   const getAllLoadedIds = useCallback((): number[] => {

@@ -63,7 +63,9 @@ pub fn default_enabled_plugins() -> Vec<String> {
         "format.*".to_string(),
         "action.open_default".to_string(),
         "action.show_in_folder".to_string(),
+        "action.copy_image".to_string(),
         "action.copy_path".to_string(),
+        "action.edit_tags".to_string(),
         "action.trash_file".to_string(),
     ]
 }

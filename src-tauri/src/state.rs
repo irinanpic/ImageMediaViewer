@@ -123,8 +123,8 @@ pub struct AppState {
     pub app_handle: RwLock<Option<AppHandle>>,
     /// サムネイル進捗イベントの前回送信時刻
     last_thumb_progress_emit: Mutex<Option<Instant>>,
-    /// タイムラインサマリのインメモリキャッシュ ((folder_id, sort, version) -> TimelineSummary)
-    timeline_summary_cache: RwLock<HashMap<(Option<i64>, TimelineSort, i64), TimelineSummary>>,
+    /// タイムラインサマリのインメモリキャッシュ ((folder_id, sort, filter_key, version) -> TimelineSummary)
+    timeline_summary_cache: RwLock<HashMap<(Option<i64>, TimelineSort, String, i64), TimelineSummary>>,
     /// 画像ID -> ThumbSource のインメモリハッシュキャッシュ（SQLiteクエリのバイパス用）
     thumb_lookup_cache: RwLock<HashMap<i64, ThumbSource>>,
     /// サムネイル WebP バイナリの LRU メモリキャッシュ（ディスクI/Oのバイパス用）
@@ -282,10 +282,13 @@ impl AppState {
         &self,
         folder_id: Option<i64>,
         sort: TimelineSort,
+        filter_key: &str,
         version: i64,
     ) -> Option<TimelineSummary> {
         let cache = self.timeline_summary_cache.read().ok()?;
-        cache.get(&(folder_id, sort, version)).cloned()
+        cache
+            .get(&(folder_id, sort, filter_key.to_string(), version))
+            .cloned()
     }
 
     /// タイムラインサマリをキャッシュに保存
@@ -293,11 +296,12 @@ impl AppState {
         &self,
         folder_id: Option<i64>,
         sort: TimelineSort,
+        filter_key: String,
         version: i64,
         summary: TimelineSummary,
     ) {
         if let Ok(mut cache) = self.timeline_summary_cache.write() {
-            cache.insert((folder_id, sort, version), summary);
+            cache.insert((folder_id, sort, filter_key, version), summary);
         }
     }
 

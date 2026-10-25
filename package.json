@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/clean-target-readonly.mjs",
     "build": "tsc && vite build",
     "clean:readonly": "node scripts/clean-target-readonly.mjs",
     "build:plugins": "node scripts/build-plugins.mjs",

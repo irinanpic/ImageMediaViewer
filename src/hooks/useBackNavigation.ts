@@ -15,6 +15,8 @@ export function useBackNavigation() {
   const closeViewer = useAppStore((state) => state.closeViewer);
   const isAddToBoardModalOpen = useAppStore((state) => state.isAddToBoardModalOpen);
   const closeAddToBoardModal = useAppStore((state) => state.closeAddToBoardModal);
+  const isTagEditModalOpen = useAppStore((state) => state.isTagEditModalOpen);
+  const closeTagEditModal = useAppStore((state) => state.closeTagEditModal);
   const isLogModalOpen = useAppStore((state) => state.isLogModalOpen);
   const closeLogModal = useAppStore((state) => state.closeLogModal);
   const isContextMenuSettingsOpen = useAppStore((state) => state.isContextMenuSettingsOpen);
@@ -35,6 +37,7 @@ export function useBackNavigation() {
   if (selectedImageIds.length > 0) activeLayers.push("selection");
   if (isViewerOpen) activeLayers.push("viewer");
   if (isAddToBoardModalOpen) activeLayers.push("addToBoard");
+  if (isTagEditModalOpen) activeLayers.push("tagEdit");
   if (isLogModalOpen) activeLayers.push("log");
   if (isContextMenuSettingsOpen) activeLayers.push("contextMenuSettings");
   if (isContextMenuOpen) activeLayers.push("contextMenu");
@@ -93,6 +96,9 @@ export function useBackNavigation() {
         case "log":
           closeLogModal();
           break;
+        case "tagEdit":
+          closeTagEditModal();
+          break;
         case "addToBoard":
           closeAddToBoardModal();
           break;
@@ -120,6 +126,7 @@ export function useBackNavigation() {
     closeContextMenu,
     closeContextMenuSettings,
     closeLogModal,
+    closeTagEditModal,
     closeAddToBoardModal,
     closeViewer,
     clearSelectedImageIds,

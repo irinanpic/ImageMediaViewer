@@ -8,11 +8,13 @@ import {
   FlipHorizontal,
   FlipVertical,
   FolderOpen,
+  Image as ImageIcon,
   LayoutGrid,
   Lock,
   Palette,
   Play,
   Settings,
+  Tag,
   Trash2,
   Unlock,
   XCircle,
@@ -29,7 +31,9 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   ExternalLink,
   Palette,
   FolderOpen,
+  Image: ImageIcon,
   Copy,
+  Tag,
   LayoutGrid,
   Trash2,
   Play,
@@ -52,6 +56,7 @@ export const ContextMenu: React.FC = () => {
   const refreshTimeline = useAppStore((state) => state.refreshTimeline);
   const openViewer = useAppStore((state) => state.openViewer);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
+  const openTagEditModal = useAppStore((state) => state.openTagEditModal);
 
   const menuRef = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<ImageDetail | undefined>(undefined);
@@ -165,6 +170,7 @@ export const ContextMenu: React.FC = () => {
       refreshTimeline,
       openViewer,
       openAddToBoardModal,
+      openTagEditModal,
     };
 
     try {

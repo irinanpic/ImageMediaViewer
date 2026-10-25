@@ -2,8 +2,10 @@ import React, { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Folder,
+  FolderOpen,
   FolderPlus,
   FolderSync,
   Globe,
@@ -22,6 +24,7 @@ import { isTauriEnvironment, isMobileEnvironment } from "../../lib/thumbUrl";
 import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
+import type { SubfolderEntry } from "../../types/filter";
 import type { WatchedFolder } from "../../types/generated/WatchedFolder";
 import { AddFolderModal } from "./AddFolderModal";
 import { extractDroppedDirectoryInfo } from "../../utils/webDropParser";
@@ -41,9 +44,46 @@ export const Sidebar: React.FC = () => {
   const setBoards = useAppStore((state) => state.setBoards);
   const reorderBoards = useAppStore((state) => state.reorderBoards);
   const totalImages = useAppStore((state) => state.totalImages);
+  const catalogVersion = useAppStore((state) => state.catalogVersion);
   const thumbProgress = useAppStore((state) => state.thumbProgress);
   const activeBoardId = useAppStore((state) => state.activeBoardId);
   const setActiveBoardId = useAppStore((state) => state.setActiveBoardId);
+  const filterState = useAppStore((state) => state.filterState);
+  const updateFilterState = useAppStore((state) => state.updateFilterState);
+
+  // 監視フォルダごとのサブフォルダ展開状態とサブフォルダ一覧キャッシュ
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Record<number, boolean>>({});
+  const [subfoldersMap, setSubfoldersMap] = useState<Record<number, SubfolderEntry[]>>({});
+
+  // 展開中のフォルダはカタログ更新時にサブフォルダツリーも自動再取得
+  React.useEffect(() => {
+    const expandedIds = Object.keys(expandedFolderIds)
+      .map(Number)
+      .filter((id) => expandedFolderIds[id]);
+    if (expandedIds.length === 0) return;
+    for (const fid of expandedIds) {
+      backendApi
+        .getSubfolderTree(fid)
+        .then((tree) => {
+          setSubfoldersMap((prev) => ({ ...prev, [fid]: tree }));
+        })
+        .catch(() => {});
+    }
+  }, [catalogVersion, expandedFolderIds]);
+
+  const handleToggleSubfolders = async (e: React.MouseEvent, folderId: number) => {
+    e.stopPropagation();
+    const nextExpanded = !expandedFolderIds[folderId];
+    setExpandedFolderIds((prev) => ({ ...prev, [folderId]: nextExpanded }));
+    if (nextExpanded && !subfoldersMap[folderId]) {
+      try {
+        const tree = await backendApi.getSubfolderTree(folderId);
+        setSubfoldersMap((prev) => ({ ...prev, [folderId]: tree }));
+      } catch (err) {
+        console.warn("サブフォルダツリーの取得に失敗:", err);
+      }
+    }
+  };
 
   // 初回および定期的なボード一覧取得
   React.useEffect(() => {
@@ -108,6 +148,17 @@ export const Sidebar: React.FC = () => {
   // フォルダ選択処理（モバイル時はドロワーを自動で閉じる）
   const handleSelectFolder = (id: number | null) => {
     setSelectedFolderId(id);
+    updateFilterState({ subFolderPath: null });
+    setCurrentView("timeline");
+    if (isCompact) {
+      setSidebarOpen(false);
+    }
+  };
+
+  // サブフォルダ選択処理
+  const handleSelectSubfolder = (folderId: number, relativePath: string) => {
+    setSelectedFolderId(folderId);
+    updateFilterState({ subFolderPath: relativePath });
     setCurrentView("timeline");
     if (isCompact) {
       setSidebarOpen(false);
@@ -332,160 +383,248 @@ export const Sidebar: React.FC = () => {
           )}
         </button>
 
-        {/* 登録フォルダ一覧（ドラッグ＆ドロップで並び替え可能） */}
+        {/* 登録フォルダ一覧（ドラッグ＆ドロップで並び替え・サブフォルダ展開可能） */}
         {folders.map((folder: WatchedFolder, index: number) => {
           const folderName = folder.path.split(/[\\/]/).filter(Boolean).pop() || folder.path;
-          const isSelected = selectedFolderId === folder.id;
+          const isSelectedRoot =
+            selectedFolderId === folder.id && !filterState.subFolderPath;
+          const isSelectedAny = selectedFolderId === folder.id;
           const isOffline = folder.status === "offline";
-          const isDragOver = dragOverFolderIndex === index && draggedFolderIndex !== null && draggedFolderIndex !== index;
-          const isGenerating = folder.thumbCount !== undefined && folder.thumbCount < folder.imageCount;
-          const isAllDone = folder.thumbCount !== undefined && folder.thumbCount >= folder.imageCount && folder.imageCount > 0;
+          const isDragOver =
+            dragOverFolderIndex === index &&
+            draggedFolderIndex !== null &&
+            draggedFolderIndex !== index;
+          const isGenerating =
+            folder.thumbCount !== undefined && folder.thumbCount < folder.imageCount;
+          const isAllDone =
+            folder.thumbCount !== undefined &&
+            folder.thumbCount >= folder.imageCount &&
+            folder.imageCount > 0;
+          const isExpanded = Boolean(expandedFolderIds[folder.id]);
+          const subfolders = subfoldersMap[folder.id] ?? [];
 
           return (
-            <div
-              key={folder.id}
-              draggable
-              onDragStart={(e) => {
-                setDraggedFolderIndex(index);
-                e.dataTransfer.effectAllowed = "move";
-                e.dataTransfer.setData("application/x-imv-folder-index", String(index));
-                e.dataTransfer.setData("text/plain", String(index));
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                if (dragOverFolderIndex !== index) {
-                  setDragOverFolderIndex(index);
-                }
-              }}
-              onDragLeave={(e) => {
-                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                if (dragOverFolderIndex === index) {
-                  setDragOverFolderIndex(null);
-                }
-              }}
-              onDrop={(e) => {
-                if (draggedFolderIndex === null && e.dataTransfer?.files?.length > 0) {
-                  handleExternalDrop(e);
-                  return;
-                }
-                e.preventDefault();
-                e.stopPropagation();
-                const rawIndex =
-                  e.dataTransfer.getData("application/x-imv-folder-index") ||
-                  e.dataTransfer.getData("text/plain");
-                const fromIndex =
-                  rawIndex !== "" && !isNaN(Number(rawIndex))
-                    ? Number(rawIndex)
-                    : draggedFolderIndex;
-
-                if (fromIndex !== null && fromIndex !== index) {
-                  reorderFolders(fromIndex, index);
-                }
-                setDraggedFolderIndex(null);
-                setDragOverFolderIndex(null);
-              }}
-              onDragEnd={() => {
-                setDraggedFolderIndex(null);
-                setDragOverFolderIndex(null);
-              }}
-              onClick={() => handleSelectFolder(folder.id)}
-              className={`group flex items-center justify-between px-2.5 py-2 rounded text-sm cursor-pointer transition relative ${
-                isSelected
-                  ? "bg-accent/20 text-accent font-medium border border-accent/40"
-                  : "text-textSecondary hover:bg-surfaceLight hover:text-textPrimary"
-              } ${draggedFolderIndex === index ? "opacity-40" : ""} ${
-                isDragOver ? "border-t-2 border-accent" : ""
-              }`}
-            >
-              <div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pointer-events-none" title={folder.path}>
-                {/* ドラッグハンドル */}
-                <GripVertical className="w-3.5 h-3.5 text-textSecondary/40 group-hover:text-textSecondary/80 cursor-grab shrink-0 -ml-1" />
-
-                {isOffline ? (
-                  <span title={t("sidebar.offlineTooltip")}>
-                    <WifiOff className="w-4 h-4 text-amber-500 shrink-0" />
-                  </span>
-                ) : (
-                  <Folder className="w-4 h-4 shrink-0 text-textSecondary group-hover:text-accent" />
-                )}
-                <span className="truncate">{folderName}</span>
-
-                {/* サムネイル生成状況・枚数バッジ */}
-                <span className="text-[11px] shrink-0 ml-1">
-                  {folder.imageCount === 0 ? (
-                    <span className="text-textSecondary/60 font-mono text-[10px]">{t("sidebar.imagesCount", { count: 0 })}</span>
-                  ) : isGenerating ? (
-                    <span
-                      className="text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded text-[10px] font-mono"
-                      title={t("sidebar.generating", { done: folder.thumbCount ?? 0, total: folder.imageCount })}
-                    >
-                      {t("sidebar.generatingCount", { done: folder.thumbCount ?? 0, total: folder.imageCount })}
-                    </span>
-                  ) : isAllDone ? (
-                    <span
-                      className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                      title={t("sidebar.allDoneTooltip")}
-                    >
-                      {t("sidebar.allDoneCount", { total: folder.imageCount })}
-                    </span>
-                  ) : (
-                    <span className="text-textSecondary/80 font-mono text-[10px]">{t("sidebar.imagesCount", { count: folder.imageCount })}</span>
-                  )}
-                </span>
-              </div>
-
-              {/* アクションボタン（モバイル環境または選択中は常時表示、PCホバー時も表示） */}
+            <div key={folder.id} className="space-y-0.5">
               <div
-                className={`${isMobileEnvironment() || isSelected ? "flex" : "hidden group-hover:flex"} items-center gap-0.5 shrink-0 ml-1.5 pointer-events-auto`}
-                onMouseDown={(e) => e.stopPropagation()}
+                draggable
+                onDragStart={(e) => {
+                  setDraggedFolderIndex(index);
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("application/x-imv-folder-index", String(index));
+                  e.dataTransfer.setData("text/plain", String(index));
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dragOverFolderIndex !== index) {
+                    setDragOverFolderIndex(index);
+                  }
+                }}
+                onDragLeave={(e) => {
+                  if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                  if (dragOverFolderIndex === index) {
+                    setDragOverFolderIndex(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  if (draggedFolderIndex === null && e.dataTransfer?.files?.length > 0) {
+                    handleExternalDrop(e);
+                    return;
+                  }
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const rawIndex =
+                    e.dataTransfer.getData("application/x-imv-folder-index") ||
+                    e.dataTransfer.getData("text/plain");
+                  const fromIndex =
+                    rawIndex !== "" && !isNaN(Number(rawIndex))
+                      ? Number(rawIndex)
+                      : draggedFolderIndex;
+
+                  if (fromIndex !== null && fromIndex !== index) {
+                    reorderFolders(fromIndex, index);
+                  }
+                  setDraggedFolderIndex(null);
+                  setDragOverFolderIndex(null);
+                }}
+                onDragEnd={() => {
+                  setDraggedFolderIndex(null);
+                  setDragOverFolderIndex(null);
+                }}
+                onClick={() => handleSelectFolder(folder.id)}
+                className={`group flex items-center justify-between px-2 py-2 rounded text-sm cursor-pointer transition relative ${
+                  isSelectedRoot
+                    ? "bg-accent/20 text-accent font-medium border border-accent/40"
+                    : isSelectedAny
+                    ? "bg-accent/10 text-textPrimary border border-accent/25"
+                    : "text-textSecondary hover:bg-surfaceLight hover:text-textPrimary"
+                } ${draggedFolderIndex === index ? "opacity-40" : ""} ${
+                  isDragOver ? "border-t-2 border-accent" : ""
+                }`}
               >
-                {index > 0 && (
+                <div className="flex items-center gap-1 truncate flex-1 min-w-0" title={folder.path}>
+                  {/* ドラッグハンドル */}
+                  <GripVertical className="w-3.5 h-3.5 text-textSecondary/40 group-hover:text-textSecondary/80 cursor-grab shrink-0 -ml-1 pointer-events-none" />
+
+                  {/* サブフォルダ展開トグルボタン */}
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      reorderFolders(index, index - 1);
-                    }}
-                    title="上へ移動"
+                    type="button"
+                    onClick={(e) => handleToggleSubfolders(e, folder.id)}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    title={
+                      isExpanded
+                        ? t("sidebar.collapseSubfoldersTooltip")
+                        : t("sidebar.expandSubfoldersTooltip")
+                    }
+                    className="p-0.5 rounded hover:bg-surface text-textSecondary hover:text-accent transition shrink-0 cursor-pointer"
+                  >
+                    {isExpanded ? (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  {isOffline ? (
+                    <span title={t("sidebar.offlineTooltip")} className="pointer-events-none">
+                      <WifiOff className="w-4 h-4 text-amber-500 shrink-0" />
+                    </span>
+                  ) : isExpanded ? (
+                    <FolderOpen className="w-4 h-4 shrink-0 text-accent pointer-events-none" />
+                  ) : (
+                    <Folder className="w-4 h-4 shrink-0 text-textSecondary group-hover:text-accent pointer-events-none" />
+                  )}
+                  <span className="truncate pointer-events-none">{folderName}</span>
+
+                  {/* サムネイル生成状況・枚数バッジ */}
+                  <span className="text-[11px] shrink-0 ml-1 pointer-events-none">
+                    {folder.imageCount === 0 ? (
+                      <span className="text-textSecondary/60 font-mono text-[10px]">
+                        {t("sidebar.imagesCount", { count: 0 })}
+                      </span>
+                    ) : isGenerating ? (
+                      <span
+                        className="text-amber-400 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded text-[10px] font-mono"
+                        title={t("sidebar.generating", {
+                          done: folder.thumbCount ?? 0,
+                          total: folder.imageCount,
+                        })}
+                      >
+                        {t("sidebar.generatingCount", {
+                          done: folder.thumbCount ?? 0,
+                          total: folder.imageCount,
+                        })}
+                      </span>
+                    ) : isAllDone ? (
+                      <span
+                        className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                        title={t("sidebar.allDoneTooltip")}
+                      >
+                        {t("sidebar.allDoneCount", { total: folder.imageCount })}
+                      </span>
+                    ) : (
+                      <span className="text-textSecondary/80 font-mono text-[10px]">
+                        {t("sidebar.imagesCount", { count: folder.imageCount })}
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                {/* アクションボタン（モバイル環境または選択中は常時表示、PCホバー時も表示） */}
+                <div
+                  className={`${
+                    isMobileEnvironment() || isSelectedAny ? "flex" : "hidden group-hover:flex"
+                  } items-center gap-0.5 shrink-0 ml-1 pointer-events-auto`}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {index > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        reorderFolders(index, index - 1);
+                      }}
+                      title="上へ移動"
+                      className="p-1 hover:text-accent transition text-textSecondary"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {index < folders.length - 1 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        reorderFolders(index, index + 1);
+                      }}
+                      title="下へ移動"
+                      className="p-1 hover:text-accent transition text-textSecondary"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={handleRescanMissing}
+                    title={t("sidebar.recreateThumbsTooltip")}
+                    className="p-1 hover:text-amber-400 transition text-textSecondary"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => handleRescanFolder(e, folder.id)}
+                    title={t("sidebar.rescanFolderTooltip")}
                     className="p-1 hover:text-accent transition text-textSecondary"
                   >
-                    <ChevronUp className="w-3.5 h-3.5" />
+                    <FolderSync className="w-3.5 h-3.5" />
                   </button>
-                )}
-                {index < folders.length - 1 && (
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      reorderFolders(index, index + 1);
-                    }}
-                    title="下へ移動"
-                    className="p-1 hover:text-accent transition text-textSecondary"
+                    onClick={(e) => handleRemoveFolder(e, folder.id)}
+                    title={t("sidebar.removeFolderTooltip")}
+                    className="p-1 hover:text-red-400 transition text-textSecondary"
                   >
-                    <ChevronDown className="w-3.5 h-3.5" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
-                )}
-                <button
-                  onClick={handleRescanMissing}
-                  title={t("sidebar.recreateThumbsTooltip")}
-                  className="p-1 hover:text-amber-400 transition text-textSecondary"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={(e) => handleRescanFolder(e, folder.id)}
-                  title={t("sidebar.rescanFolderTooltip")}
-                  className="p-1 hover:text-accent transition text-textSecondary"
-                >
-                  <FolderSync className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onClick={(e) => handleRemoveFolder(e, folder.id)}
-                  title={t("sidebar.removeFolderTooltip")}
-                  className="p-1 hover:text-red-400 transition text-textSecondary"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                </div>
               </div>
+
+              {/* 展開時のサブフォルダ階層ツリー */}
+              {isExpanded && (
+                <div className="space-y-0.5 pl-3 border-l border-border/50 ml-3.5 my-0.5">
+                  {subfolders.length === 0 ? (
+                    <div className="px-2.5 py-1 text-[11px] text-textSecondary/60 italic">
+                      {t("sidebar.noSubfolders")}
+                    </div>
+                  ) : (
+                    subfolders.map((entry) => {
+                      const isSubSelected =
+                        selectedFolderId === folder.id &&
+                        filterState.subFolderPath === entry.relativePath;
+                      const indentPx = Math.max(0, (entry.depth - 1) * 12);
+
+                      return (
+                        <button
+                          key={entry.relativePath}
+                          type="button"
+                          onClick={() => handleSelectSubfolder(folder.id, entry.relativePath)}
+                          style={{ paddingLeft: `${8 + indentPx}px` }}
+                          title={entry.relativePath}
+                          className={`w-full flex items-center justify-between pr-2.5 py-1 rounded text-xs transition cursor-pointer ${
+                            isSubSelected
+                              ? "bg-accent/25 text-accent font-medium border border-accent/40"
+                              : "text-textSecondary hover:bg-surfaceLight hover:text-textPrimary"
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 truncate min-w-0">
+                            <Folder className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                            <span className="truncate">{entry.name}</span>
+                          </div>
+                          <span className="text-[10px] font-mono opacity-75 shrink-0 ml-1">
+                            ({entry.imageCount})
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

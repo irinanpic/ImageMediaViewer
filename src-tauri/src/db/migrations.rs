@@ -308,5 +308,35 @@ pub fn apply_migrations(conn: &mut Connection) -> Result<()> {
         info!("Completed migration v9 (user_version = 9)");
     }
 
+    if current_version < 10 {
+        info!("Applying migration v10...");
+        let tx = conn.transaction()?;
+
+        // タグ定義マスタテーブルおよび画像-タグ多対多関連付けテーブルを作成
+        // 変更理由: お気に入りを含む複数タグの登録・一括付与・AND/OR/NOT絞り込みを高速に実現するため
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tags (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                color      TEXT NOT NULL DEFAULT '#6366f1',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS image_tags (
+                tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                image_id   INTEGER NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (tag_id, image_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_image_tags_image_id ON image_tags(image_id);",
+        )?;
+
+        tx.pragma_update(None, "user_version", 10)?;
+        tx.commit()?;
+        info!("Completed migration v10 (user_version = 10)");
+    }
+
     Ok(())
 }

@@ -41,6 +41,7 @@ describe("ContextMenuRegistry & Plugins", () => {
     takenAtSource: "mtime",
     originalAvailable: true,
     sourceUrl: null,
+    tags: [],
   };
 
   const dummyJpgDetail: ImageDetail = {
@@ -56,6 +57,7 @@ describe("ContextMenuRegistry & Plugins", () => {
     takenAtSource: "mtime",
     originalAvailable: true,
     sourceUrl: null,
+    tags: [],
   };
 
   it("本体 builtInActionPlugins には特定外部ソフト（ClipStudio等）がハードコードされていないこと", () => {

@@ -733,13 +733,13 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
 
                         let effective_sort = sort.unwrap_or(crate::models::TimelineSort::Folder);
                         let current_version = state.current_catalog_version();
-                        if let Some(cached) = state.get_cached_timeline_summary(folder_id, effective_sort, current_version) {
+                        if let Some(cached) = state.get_cached_timeline_summary(folder_id, effective_sort, "", current_version) {
                             json_response(&cached, 200)
                         } else {
                             match state.db.reader() {
                                 Ok(conn) => match crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, Some(effective_sort)) {
                                     Ok(summary) => {
-                                        state.put_cached_timeline_summary(folder_id, effective_sort, current_version, summary.clone());
+                                        state.put_cached_timeline_summary(folder_id, effective_sort, String::new(), current_version, summary.clone());
                                         json_response(&summary, 200)
                                     }
                                     Err(e) => error_response(AppError::from(e), 500),
@@ -756,7 +756,7 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                             Ok(payload) => {
                                 let limit = payload.limit.clamp(1, 500);
                                 match state.db.reader() {
-                                    Ok(conn) => match crate::db::repo::get_timeline_images(&conn, payload.offset, limit, payload.folder_id, payload.sort) {
+                                    Ok(conn) => match crate::db::repo::get_timeline_images_filtered(&conn, payload.offset, limit, payload.folder_id, payload.sort, payload.filter.as_ref()) {
                                         Ok(images) => json_response(&images, 200),
                                         Err(e) => error_response(AppError::from(e), 500),
                                     },

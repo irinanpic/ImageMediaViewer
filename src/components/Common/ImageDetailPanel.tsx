@@ -1,7 +1,8 @@
 import React from "react";
-import { ExternalLink, FolderOpen, X } from "lucide-react";
+import { ExternalLink, FolderOpen, Tag, X } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { useTranslation } from "../../locales";
+import { useAppStore } from "../../store";
 import type { ImageDetail } from "../../types/generated/ImageDetail";
 import { analyzeImageMetadata } from "../../utils/imageMetadata";
 import { getFileName } from "../../utils/path";
@@ -30,6 +31,10 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
   className = "",
 }) => {
   const { t } = useTranslation();
+  const openTagEditModal = useAppStore((state) => state.openTagEditModal);
+  const updateFilterState = useAppStore((state) => state.updateFilterState);
+  const closeViewer = useAppStore((state) => state.closeViewer);
+  const setCurrentView = useAppStore((state) => state.setCurrentView);
   const meta = analyzeImageMetadata(detail, t);
   const fileName = getFileName(detail.filePath);
   const displayTitle = title || t("metadata.title");
@@ -157,6 +162,52 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
           <span className="text-textPrimary uppercase font-medium">
             {detail.takenAtSource === "exif" ? t("metadata.sourceExif") : t("metadata.sourceMtime")}
           </span>
+        </div>
+
+        {/* タグ一覧 & 編集ボタン */}
+        <div className="pt-1.5 border-t border-border/50 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-textSecondary flex items-center gap-1">
+              <Tag className="w-3 h-3 text-accent" />
+              {t("metadata.tags")}
+            </span>
+            <button
+              type="button"
+              onClick={() => openTagEditModal([detail.id])}
+              className="text-[11px] text-accent hover:underline font-medium cursor-pointer"
+            >
+              {t("metadata.editTagsBtn")}
+            </button>
+          </div>
+          {detail.tags && detail.tags.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {detail.tags.map((tag) => (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => {
+                    updateFilterState({
+                      includeTagIds: [tag.id],
+                      excludeTagIds: null,
+                    });
+                    closeViewer();
+                    setCurrentView("timeline");
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-surfaceLight hover:bg-accent/20 text-textPrimary border border-border/70 transition cursor-pointer"
+                >
+                  <span
+                    className="w-2 h-2 rounded-full shrink-0"
+                    style={{ backgroundColor: tag.color || "#6366f1" }}
+                  />
+                  <span className="truncate max-w-[120px]">{tag.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="text-[11px] text-textSecondary/60 italic">
+              {t("metadata.noTags")}
+            </div>
+          )}
         </div>
       </div>
     </div>

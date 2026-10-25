@@ -8,9 +8,10 @@ use tracing::{info, warn};
 use crate::error::AppError;
 use crate::models::{
     Board, BoardItem, BoardNote, BookmarkRecord, CreateBoardNotePayload, CreateBoardPayload,
-    CreateBookmarkPayload, GetImagesPayload, ImageDetail, ImageRecord, ThumbProgress,
-    TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload, UpdateBoardPayload,
-    WatchedFolder, WindowState, PlatformInfo, PresetFolder,
+    CreateBookmarkPayload, GetImagesPayload, ImageDetail, ImageRecord, ImageTagAssignment,
+    PlatformInfo, PresetFolder, SubfolderEntry, TagRecord, TagWithCount, ThumbProgress,
+    TimelineFilter, TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload,
+    UpdateBoardPayload, WatchedFolder, WindowState,
 };
 use crate::pipeline::JobPriority;
 use crate::scanner::walker::{is_sub_directory, normalize_path};
@@ -215,24 +216,33 @@ pub async fn rescan(
 
 /// タイムライン全体サマリを取得（日別件数サマリと総件数）
 ///
-/// 変更理由: 仕様書§8.1全レコードを取得しなくてもスクロール全長を確定させるため
+/// 変更理由: 仕様書§8.1全レコードを取得しなくてもスクロール全長を確定させるため。
+/// 検索・拡張子・縦横比・サブフォルダ・タグフィルタが指定された場合もフィルタ適用後の件数とバケットをキャッシュ付きで返却する。
 #[command]
 pub async fn get_timeline_summary(
     state: State<'_, Arc<AppState>>,
     folder_id: Option<i64>,
     sort: Option<crate::models::TimelineSort>,
+    filter: Option<TimelineFilter>,
 ) -> Result<TimelineSummary, AppError> {
     let current_version = state.current_catalog_version();
     let sort_val = sort.unwrap_or(crate::models::TimelineSort::TakenAtDesc);
+    let filter_key = filter.as_ref().map(|f| f.cache_key()).unwrap_or_default();
 
     // インメモリキャッシュをまず確認（SQLiteクエリのバイパス）
-    if let Some(cached) = state.get_cached_timeline_summary(folder_id, sort_val, current_version) {
+    if let Some(cached) = state.get_cached_timeline_summary(folder_id, sort_val, &filter_key, current_version) {
         return Ok(cached);
     }
 
     let conn = state.db.reader()?;
-    let summary = crate::db::repo::get_timeline_summary(&conn, folder_id, current_version, Some(sort_val))?;
-    state.put_cached_timeline_summary(folder_id, sort_val, current_version, summary.clone());
+    let summary = crate::db::repo::get_timeline_summary_filtered(
+        &conn,
+        folder_id,
+        current_version,
+        Some(sort_val),
+        filter.as_ref(),
+    )?;
+    state.put_cached_timeline_summary(folder_id, sort_val, filter_key, current_version, summary.clone());
     Ok(summary)
 }
 
@@ -244,12 +254,13 @@ pub async fn get_timeline_images(
 ) -> Result<Vec<ImageRecord>, AppError> {
     let limit = payload.limit.clamp(1, 500);
     let conn = state.db.reader()?;
-    let images = crate::db::repo::get_timeline_images(
+    let images = crate::db::repo::get_timeline_images_filtered(
         &conn,
         payload.offset,
         limit,
         payload.folder_id,
         payload.sort,
+        payload.filter.as_ref(),
     )?;
     Ok(images)
 }
@@ -2514,6 +2525,247 @@ pub async fn install_plugin(
         .format_plugins
         .list_installed_plugins(&settings.enabled_plugins, &state.data_dir))
 }
+
+// -----------------------------------------------------------------------------
+// 画像本体のクリップボードコピー & サブフォルダ階層 & タグ管理コマンド
+// -----------------------------------------------------------------------------
+
+/// 画像本体をOSのシステムクリップボードへコピーする内部コア処理
+///
+/// 変更理由: タイムライン・ビューア・ムードボードのすべてにおいて、右クリックメニューおよび
+/// Ctrl+C ショートカットから原寸画像（.clip等のプラグイン形式はプレビューPNG）を
+/// 外部アプリ（CLIP STUDIO PAINT, Photoshop, Webブラウザ等）へ直接貼り付け可能にするため。
+pub fn copy_image_to_clipboard_core(
+    state: &Arc<AppState>,
+    image_id: Option<i64>,
+    file_path: Option<String>,
+) -> Result<(), AppError> {
+    let (resolved_path, orientation) = if let Some(id) = image_id {
+        let conn = state.db.reader()?;
+        let src = crate::db::repo::get_thumb_source(&conn, id)?
+            .ok_or_else(|| AppError::not_found("指定された画像が見つかりません"))?;
+        (PathBuf::from(src.file_path), src.orientation)
+    } else if let Some(p) = file_path {
+        let trimmed = p.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::invalid_argument("ファイルパスが空です"));
+        }
+        (PathBuf::from(trimmed), 1)
+    } else {
+        return Err(AppError::invalid_argument(
+            "imageId または filePath のいずれかを指定してください",
+        ));
+    };
+
+    if !resolved_path.exists() {
+        return Err(AppError::not_found(format!(
+            "画像ファイルが存在しません: {}",
+            resolved_path.display()
+        )));
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use std::borrow::Cow;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let ext = resolved_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        // 1. プラグイン対応フォーマット（.clip等）の場合はプラグインから内蔵プレビューバイト列を抽出してデコード
+        let dyn_img = if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+            let (preview_bytes, _) = plugin
+                .extract_original_preview(&resolved_path)
+                .map_err(|e| AppError::internal(format!("プラグインプレビュー抽出失敗: {}", e)))?;
+            image::load_from_memory(&preview_bytes)
+                .map_err(|e| AppError::internal(format!("プレビュー画像のデコードに失敗: {}", e)))?
+        } else {
+            let file = File::open(&resolved_path)
+                .map_err(|e| AppError::io(format!("画像ファイルを開けません: {}", e)))?;
+            let mut reader = image::ImageReader::new(BufReader::new(file))
+                .with_guessed_format()
+                .map_err(|e| AppError::io(format!("画像フォーマットの判定に失敗: {}", e)))?;
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(20_000);
+            limits.max_image_height = Some(20_000);
+            limits.max_alloc = Some(512 * 1024 * 1024);
+            reader.limits(limits);
+            reader
+                .decode()
+                .map_err(|e| AppError::internal(format!("画像のデコードに失敗: {}", e)))?
+        };
+
+        let oriented = crate::pipeline::thumbnail::apply_orientation(dyn_img, orientation);
+        let rgba = oriented.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        let raw_bytes = rgba.into_raw();
+
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| {
+            AppError::internal(format!("システムクリップボードの初期化に失敗: {}", e))
+        })?;
+
+        let img_data = arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: Cow::Owned(raw_bytes),
+        };
+
+        clipboard.set_image(img_data).map_err(|e| {
+            AppError::internal(format!("クリップボードへの画像書き込みに失敗: {}", e))
+        })?;
+
+        info!(
+            "Copied image to clipboard: path={:?} ({}x{})",
+            resolved_path, width, height
+        );
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = orientation;
+        Err(AppError::invalid_argument(
+            "モバイル環境ではシステムクリップボードへの直接画像コピーはサポートされていません",
+        ))
+    }
+}
+
+/// 指定した画像本体（RGBAピクセルデータ）をOSのシステムクリップボードへコピーするコマンド
+///
+/// @param state アプリケーション共有状態
+/// @param image_id 対象画像ID（オプション）
+/// @param file_path 対象画像ファイルパス（オプション）
+#[command]
+pub async fn copy_image_to_clipboard(
+    state: State<'_, Arc<AppState>>,
+    image_id: Option<i64>,
+    file_path: Option<String>,
+) -> Result<(), AppError> {
+    let state_clone = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        copy_image_to_clipboard_core(&state_clone, image_id, file_path)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("スレッド実行エラー: {}", e)))?
+}
+
+/// 指定した監視フォルダ配下のサブフォルダ階層ツリーと各画像枚数を取得するコマンド
+///
+/// @param state アプリケーション共有状態
+/// @param folder_id 監視フォルダID
+/// @return SubfolderEntry の配列
+#[command]
+pub async fn get_subfolder_tree(
+    state: State<'_, Arc<AppState>>,
+    folder_id: i64,
+) -> Result<Vec<SubfolderEntry>, AppError> {
+    let conn = state.db.reader()?;
+    let entries = crate::db::repo::get_subfolder_tree(&conn, folder_id)?;
+    Ok(entries)
+}
+
+/// 登録されている全タグ一覧（付与画像数付き）を取得するコマンド
+#[command]
+pub async fn get_tags(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<TagWithCount>, AppError> {
+    let conn = state.db.reader()?;
+    let tags = crate::db::repo::get_tags(&conn)?;
+    Ok(tags)
+}
+
+/// 新規タグを作成するコマンド（同名タグが存在する場合は既存タグを返却）
+#[command]
+pub async fn create_tag(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    color: Option<String>,
+) -> Result<TagRecord, AppError> {
+    let clean = name.trim();
+    if clean.is_empty() {
+        return Err(AppError::invalid_argument("タグ名を入力してください"));
+    }
+    let conn = state.db.writer();
+    let now = chrono::Utc::now().timestamp();
+    let record = crate::db::repo::create_tag(&conn, clean, color.as_deref(), now)?;
+    Ok(record)
+}
+
+/// タグの名前・カラー・表示順を更新するコマンド
+#[command]
+pub async fn update_tag(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+    name: Option<String>,
+    color: Option<String>,
+    sort_order: Option<i32>,
+) -> Result<TagRecord, AppError> {
+    let conn = state.db.writer();
+    let record = crate::db::repo::update_tag(
+        &conn,
+        id,
+        name.as_deref(),
+        color.as_deref(),
+        sort_order,
+    )?;
+    state.bump_catalog_version();
+    Ok(record)
+}
+
+/// タグを削除するコマンド
+#[command]
+pub async fn delete_tag(
+    state: State<'_, Arc<AppState>>,
+    id: i64,
+) -> Result<(), AppError> {
+    let conn = state.db.writer();
+    crate::db::repo::delete_tag(&conn, id)?;
+    state.bump_catalog_version();
+    Ok(())
+}
+
+/// 複数画像に対する各タグの付与状態（all / some / none）を取得するコマンド
+#[command]
+pub async fn get_tags_for_images(
+    state: State<'_, Arc<AppState>>,
+    image_ids: Vec<i64>,
+) -> Result<Vec<ImageTagAssignment>, AppError> {
+    let conn = state.db.reader()?;
+    let assignments = crate::db::repo::get_tags_for_images(&conn, &image_ids)?;
+    Ok(assignments)
+}
+
+/// 複数画像に対してタグの一括追加・一括解除を実行するコマンド
+#[command]
+pub async fn update_images_tags(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    image_ids: Vec<i64>,
+    add_tag_ids: Vec<i64>,
+    remove_tag_ids: Vec<i64>,
+) -> Result<(), AppError> {
+    {
+        let mut conn = state.db.writer();
+        let now = chrono::Utc::now().timestamp();
+        crate::db::repo::update_images_tags(
+            &mut conn,
+            &image_ids,
+            &add_tag_ids,
+            &remove_tag_ids,
+            now,
+        )?;
+    }
+    let version = state.bump_catalog_version();
+    let _ = app.emit(
+        "catalog-changed",
+        crate::models::CatalogChangedPayload { version },
+    );
+    Ok(())
+}
+
 
 
 

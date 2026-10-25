@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { getOriginalImageUrl, getThumbnailUrl, isTauriEnvironment } from "../../lib/thumbUrl";
+import { copyImageWithToast } from "../../plugins/actions/registry";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
 import { useResponsiveLayout } from "../../hooks/useResponsiveLayout";
@@ -1727,8 +1728,20 @@ export const MoodboardCanvas: React.FC = () => {
         }
       }
 
-      // クリッピングモード切替 (Cキー)
-      if (e.key === "c" || e.key === "C") {
+      // Ctrl + C / Cmd + C で選択中アイテムの画像本体をシステムクリップボードへコピー
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        if (selectedItemId !== null) {
+          const target = items.find((it) => it.id === selectedItemId);
+          if (target) {
+            e.preventDefault();
+            copyImageWithToast({ imageId: target.imageId });
+          }
+        }
+        return;
+      }
+
+      // クリッピングモード切替 (単体Cキー)
+      if ((e.key === "c" || e.key === "C") && !e.ctrlKey && !e.metaKey) {
         if (selectedItemId !== null) {
           e.preventDefault();
           setIsCropping((prev) => !prev);

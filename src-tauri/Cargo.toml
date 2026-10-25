@@ -61,6 +61,8 @@ tauri-plugin-single-instance = "2"
 opener = { version = "0.7", features = ["reveal"] }
 # 選定理由: OS標準のゴミ箱/リサイクルビンへファイルを安全かつ高速に移動するため（Windows SHFileOperationW, macOS, Linux対応）
 trash = "5"
+# 選定理由: OSネイティブクリップボードへRGBA画像データを直接書き込み、外部画像編集ソフトやブラウザへの貼り付けを可能にするため
+arboard = "3"
 
 # 選定理由: 外部プラグイン動的ライブラリ（.dll, .so, .dylib）を安全・高速にロードしてC-ABI関数を呼び出すため
 # Android（Bionic dlopen）を含むデスクトップ・モバイル環境でC-ABI動的ライブラリロードを有効化

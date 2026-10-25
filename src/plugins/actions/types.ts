@@ -17,6 +17,8 @@ export interface ActionContext {
   openViewer?: (id: number, index: number) => void;
   /** ムードボード追加モーダルオープン関数 */
   openAddToBoardModal?: (imageIds: number[]) => void;
+  /** タグ編集モーダルオープン関数 */
+  openTagEditModal?: (imageIds: number[]) => void;
 }
 
 /**

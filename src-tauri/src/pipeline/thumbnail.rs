@@ -13,7 +13,7 @@ const MAX_LONG_EDGE: u32 = 512;
 const WEBP_QUALITY: f32 = 60.0;
 
 /// Orientation (1-8) に従って DynamicImage を回転・反転する
-fn apply_orientation(img: DynamicImage, orientation: u32) -> DynamicImage {
+pub fn apply_orientation(img: DynamicImage, orientation: u32) -> DynamicImage {
     match orientation {
         2 => img.fliph(),
         3 => img.rotate180(),

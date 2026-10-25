@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -185,7 +185,7 @@ export function buildDesktopPlugins({ pluginName = null, createPackage = false }
 
     console.log(`[Build] Compiling plugin: ${plugin.name} (${plugin.srcDir})...`);
     try {
-      execSync("cargo build --release", {
+      execFileSync("cargo", ["build", "--release"], {
         cwd: plugin.srcDir,
         stdio: "inherit",
       });
@@ -374,9 +374,10 @@ export function buildAndroidPlugins({
     }
 
     console.log(`[Android Plugin Build] Compiling ${plugin.name} for ${rustTarget} (${isRelease ? "Release" : "Debug"})...`);
-    const cargoCmd = `cargo build --package ${plugin.packageName} --lib --target ${rustTarget} ${isRelease ? "--release" : ""}`;
+    const cargoArgs = ["build", "--package", plugin.packageName, "--lib", "--target", rustTarget];
+    if (isRelease) cargoArgs.push("--release");
     try {
-      execSync(cargoCmd, {
+      execFileSync("cargo", cargoArgs, {
         cwd: plugin.srcDir,
         env,
         stdio: "inherit",

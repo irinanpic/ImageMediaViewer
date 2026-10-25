@@ -1,8 +1,9 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { backendApi } from "../lib/ipc";
 import { isTauriEnvironment } from "../lib/thumbUrl";
 import { useAppStore } from "../store";
+import { isTimelineFilterActive, serializeTimelineFilter } from "../types/filter";
 import type { CatalogChangedPayload } from "../types/generated/CatalogChangedPayload";
 import type { ScanProgress } from "../types/generated/ScanProgress";
 import type { ThumbProgress } from "../types/generated/ThumbProgress";
@@ -12,6 +13,7 @@ import type { ThumbProgress } from "../types/generated/ThumbProgress";
  *
  * 変更理由: 仕様書§9のイベント('scan-progress', 'thumb-progress', 'catalog-changed')を反映。
  * Tauri環境外（Electron/ブラウザ）でも安全に初期サマリを取得し、エラーにならないよう保護する。
+ * また、フィルタ条件（filterState）およびタグ一覧（fetchTags）の同期も行う。
  */
 export function useBackendEvents() {
   const setScanProgress = useAppStore((state) => state.setScanProgress);
@@ -20,20 +22,34 @@ export function useBackendEvents() {
   const setFolders = useAppStore((state) => state.setFolders);
   const selectedFolderId = useAppStore((state) => state.selectedFolderId);
   const timelineSort = useAppStore((state) => state.timelineSort);
+  const filterState = useAppStore((state) => state.filterState);
   const fetchBookmarks = useAppStore((state) => state.fetchBookmarks);
+  const fetchTags = useAppStore((state) => state.fetchTags);
 
-  // 初回起動時のしおり同期
+  const filterKey = useMemo(() => serializeTimelineFilter(filterState), [filterState]);
+
+  // 初回起動時のしおり・タグ同期
   useEffect(() => {
     fetchBookmarks();
-  }, [fetchBookmarks]);
+    fetchTags();
+  }, [fetchBookmarks, fetchTags]);
 
   // カタログサマリ & サムネイル進捗再取得処理
-  const refreshSummary = async () => {
+  const refreshSummary = useCallback(async () => {
     try {
-      const summary = await backendApi.getTimelineSummary(selectedFolderId ?? undefined, timelineSort);
+      const latestState = useAppStore.getState();
+      const activeFilter = isTimelineFilterActive(latestState.filterState)
+        ? latestState.filterState
+        : undefined;
+      const summary = await backendApi.getTimelineSummary(
+        latestState.selectedFolderId ?? undefined,
+        latestState.timelineSort,
+        activeFilter
+      );
       setCatalogSummary(summary.total, summary.buckets, summary.version);
       const folders = await backendApi.getWatchFolders();
       setFolders(folders);
+      fetchTags();
 
       // サムネイル進捗の取得
       const thumbInfo = await backendApi.getThumbProgress();
@@ -41,11 +57,11 @@ export function useBackendEvents() {
     } catch (err) {
       console.error("サマリ取得に失敗しました:", err);
     }
-  };
+  }, [setCatalogSummary, setFolders, fetchTags, setThumbProgress]);
 
   useEffect(() => {
     refreshSummary();
-  }, [selectedFolderId, timelineSort]);
+  }, [selectedFolderId, timelineSort, filterKey, refreshSummary]);
 
   useEffect(() => {
     if (!isTauriEnvironment()) {

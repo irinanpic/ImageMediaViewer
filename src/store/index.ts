@@ -8,6 +8,11 @@ import type { Board } from "../types/board";
 import type { Bookmark } from "../types/bookmark";
 import type { ImageRecord } from "../types/generated/ImageRecord";
 import type { AppSettings } from "../types/settings";
+import {
+  DEFAULT_TIMELINE_FILTER,
+  type TagWithCount,
+  type TimelineFilter,
+} from "../types/filter";
 import { backendApi } from "../lib/ipc";
 import { isMobileEnvironment } from "../lib/thumbUrl";
 import { ContextMenuRegistry } from "../plugins/actions/registry";
@@ -55,11 +60,24 @@ interface AppStoreState {
   selectedFolderId: number | null;
   folders: WatchedFolder[];
   timelineSort: TimelineSort;
+  filterState: TimelineFilter;
   setCatalogSummary: (total: number, buckets: DayBucket[], version: number) => void;
   setSelectedFolderId: (folderId: number | null) => void;
   setFolders: (folders: WatchedFolder[]) => void;
   reorderFolders: (startIndex: number, endIndex: number) => void;
   setTimelineSort: (sort: TimelineSort) => void;
+  setFilterState: (filter: TimelineFilter) => void;
+  updateFilterState: (patch: Partial<TimelineFilter>) => void;
+  clearFilterState: () => void;
+
+  // タグ管理スライス
+  tags: TagWithCount[];
+  setTags: (tags: TagWithCount[]) => void;
+  fetchTags: () => Promise<void>;
+  isTagEditModalOpen: boolean;
+  tagEditTargetImageIds: number[];
+  openTagEditModal: (imageIds: number[]) => void;
+  closeTagEditModal: () => void;
 
   // ムードボードスライス
   currentView: "timeline" | "board";
@@ -111,6 +129,8 @@ interface AppStoreState {
   setSidebarOpen: (isOpen: boolean) => void;
   timelineRefreshTick: number;
   refreshTimeline: () => void;
+  savedTimelineScrollTop: number;
+  setSavedTimelineScrollTop: (top: number) => void;
   isLogModalOpen: boolean;
   openLogModal: () => void;
   closeLogModal: () => void;
@@ -195,9 +215,44 @@ export const useAppStore = create<AppStoreState>((set) => ({
   selectedFolderId: null,
   folders: [],
   timelineSort: "folder",
+  filterState: { ...DEFAULT_TIMELINE_FILTER },
   setCatalogSummary: (total, buckets, version) =>
     set({ totalImages: total, buckets, catalogVersion: version }),
-  setSelectedFolderId: (selectedFolderId) => set({ selectedFolderId }),
+  setSelectedFolderId: (selectedFolderId) =>
+    set((state) => ({
+      selectedFolderId,
+      filterState:
+        state.selectedFolderId === selectedFolderId
+          ? state.filterState
+          : { ...state.filterState, subFolderPath: null },
+    })),
+  setFilterState: (filterState) => set({ filterState }),
+  updateFilterState: (patch) =>
+    set((state) => ({
+      filterState: { ...state.filterState, ...patch },
+    })),
+  clearFilterState: () =>
+    set({
+      filterState: { ...DEFAULT_TIMELINE_FILTER },
+    }),
+
+  // タグ管理初期状態
+  tags: [],
+  setTags: (tags) => set({ tags }),
+  fetchTags: async () => {
+    try {
+      const tags = await backendApi.getTags();
+      set({ tags });
+    } catch (err) {
+      console.warn("タグ一覧の取得に失敗しました:", err);
+    }
+  },
+  isTagEditModalOpen: false,
+  tagEditTargetImageIds: [],
+  openTagEditModal: (imageIds) =>
+    set({ isTagEditModalOpen: true, tagEditTargetImageIds: imageIds }),
+  closeTagEditModal: () =>
+    set({ isTagEditModalOpen: false, tagEditTargetImageIds: [] }),
   setFolders: (folders) => {
     try {
       const savedOrder = JSON.parse(localStorage.getItem("imv_folder_order") || "[]") as number[];
@@ -365,6 +420,8 @@ export const useAppStore = create<AppStoreState>((set) => ({
   timelineRefreshTick: 0,
   refreshTimeline: () =>
     set((state) => ({ timelineRefreshTick: state.timelineRefreshTick + 1 })),
+  savedTimelineScrollTop: 0,
+  setSavedTimelineScrollTop: (savedTimelineScrollTop) => set({ savedTimelineScrollTop }),
   isLogModalOpen: false,
   openLogModal: () => set({ isLogModalOpen: true }),
   closeLogModal: () => set({ isLogModalOpen: false }),

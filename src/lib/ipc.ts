@@ -23,6 +23,13 @@ import type {
 import type { Bookmark } from "../types/bookmark";
 import type { PluginActionDefinition } from "../types/generated/PluginActionDefinition";
 import type { InstalledPluginInfo } from "../types/generated/InstalledPluginInfo";
+import type {
+  ImageTagAssignment,
+  SubfolderEntry,
+  TagRecord,
+  TagWithCount,
+  TimelineFilter,
+} from "../types/filter";
 
 export interface DroppedFileCandidate {
   name: string;
@@ -96,9 +103,14 @@ export const backendApi = {
    * タイムライン全体サマリを取得
    * @param folderId フォルダ絞り込み（オプション）
    * @param sort 表示ソート順（オプション）
+   * @param filter 複合検索・フィルタ条件（オプション）
    */
-  getTimelineSummary: (folderId?: number, sort?: TimelineSort): Promise<TimelineSummary> =>
-    callIpc<TimelineSummary>("get_timeline_summary", { folderId, sort }),
+  getTimelineSummary: (
+    folderId?: number,
+    sort?: TimelineSort,
+    filter?: TimelineFilter
+  ): Promise<TimelineSummary> =>
+    callIpc<TimelineSummary>("get_timeline_summary", { folderId, sort, filter }),
 
 
   /**
@@ -576,6 +588,83 @@ export const backendApi = {
    */
   installPlugin: (sourcePath: string): Promise<InstalledPluginInfo[]> =>
     callIpc<InstalledPluginInfo[]>("install_plugin", { sourcePath }),
+
+  /**
+   * 指定した画像本体（RGBAピクセルデータ）をOSのシステムクリップボードへコピー
+   * @param params imageId または filePath
+   */
+  copyImageToClipboard: (params: { imageId?: number; filePath?: string }): Promise<void> =>
+    callIpc<void>("copy_image_to_clipboard", {
+      imageId: params.imageId,
+      filePath: params.filePath,
+    }),
+
+  /**
+   * 指定した監視フォルダ配下のサブフォルダ階層ツリーと各画像枚数を取得
+   * @param folderId 監視フォルダID
+   */
+  getSubfolderTree: (folderId: number): Promise<SubfolderEntry[]> =>
+    callIpc<SubfolderEntry[]>("get_subfolder_tree", { folderId }),
+
+  /**
+   * 登録済み全タグ一覧（付与画像数付き）を取得
+   */
+  getTags: (): Promise<TagWithCount[]> =>
+    callIpc<TagWithCount[]>("get_tags"),
+
+  /**
+   * 新規タグを作成（同名タグが存在する場合は既存タグを返却）
+   * @param name タグ名
+   * @param color タグカラー（HEXコード）
+   */
+  createTag: (name: string, color?: string): Promise<TagRecord> =>
+    callIpc<TagRecord>("create_tag", { name, color }),
+
+  /**
+   * タグの名前・カラー・表示順を更新
+   * @param params id, name, color, sortOrder
+   */
+  updateTag: (params: {
+    id: number;
+    name?: string;
+    color?: string;
+    sortOrder?: number;
+  }): Promise<TagRecord> =>
+    callIpc<TagRecord>("update_tag", {
+      id: params.id,
+      name: params.name,
+      color: params.color,
+      sortOrder: params.sortOrder,
+    }),
+
+  /**
+   * タグを削除
+   * @param id タグID
+   */
+  deleteTag: (id: number): Promise<void> =>
+    callIpc<void>("delete_tag", { id }),
+
+  /**
+   * 複数画像に対する各タグの付与状態（all / some / none）を取得
+   * @param imageIds 対象画像ID配列
+   */
+  getTagsForImages: (imageIds: number[]): Promise<ImageTagAssignment[]> =>
+    callIpc<ImageTagAssignment[]>("get_tags_for_images", { imageIds }),
+
+  /**
+   * 複数画像に対してタグの一括追加・一括解除を実行
+   * @param params imageIds, addTagIds, removeTagIds
+   */
+  updateImagesTags: (params: {
+    imageIds: number[];
+    addTagIds: number[];
+    removeTagIds: number[];
+  }): Promise<void> =>
+    callIpc<void>("update_images_tags", {
+      imageIds: params.imageIds,
+      addTagIds: params.addTagIds,
+      removeTagIds: params.removeTagIds,
+    }),
 };
 
 

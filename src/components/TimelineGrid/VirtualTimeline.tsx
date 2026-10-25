@@ -7,9 +7,12 @@ import { useViewportPrioritizer } from "../../hooks/useViewportPrioritizer";
 import { useAppStore } from "../../store";
 import { DateHeader } from "./DateHeader";
 import { GridCell } from "./GridCell";
-import { CheckSquare, Image, LayoutGrid, X } from "lucide-react";
+import { CheckSquare, FilterX, Image, LayoutGrid, Tag, X } from "lucide-react";
 import { TimelineScrubber } from "./TimelineScrubber";
 import { isMobileEnvironment } from "../../lib/thumbUrl";
+import { copyImageWithToast } from "../../plugins/actions/registry";
+import { isTimelineFilterActive } from "../../types/filter";
+import { useTranslation } from "../../locales";
 
 /**
  * タイムライングリッドの仮想スクロール表示コンポーネント
@@ -18,6 +21,7 @@ import { isMobileEnvironment } from "../../lib/thumbUrl";
  * マウスドラッグ矩形選択およびCtrl+クリックによる複数選択、上部ムードボード一括登録アクションバー）の実装。
  */
 export const VirtualTimeline: React.FC = () => {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const { rows, columns } = useTimelineLayout(containerRef);
   const isScrollingFast = useScrollVelocity(containerRef);
@@ -31,6 +35,11 @@ export const VirtualTimeline: React.FC = () => {
   const setSelectedImageIds = useAppStore((state) => state.setSelectedImageIds);
   const clearSelectedImageIds = useAppStore((state) => state.clearSelectedImageIds);
   const openAddToBoardModal = useAppStore((state) => state.openAddToBoardModal);
+  const openTagEditModal = useAppStore((state) => state.openTagEditModal);
+  const filterState = useAppStore((state) => state.filterState);
+  const clearFilterState = useAppStore((state) => state.clearFilterState);
+  const savedTimelineScrollTop = useAppStore((state) => state.savedTimelineScrollTop);
+  const setSavedTimelineScrollTop = useAppStore((state) => state.setSavedTimelineScrollTop);
   const openViewer = useAppStore((state) => state.openViewer);
   const isViewerOpen = useAppStore((state) => state.isViewerOpen);
   const timelineRefreshTick = useAppStore((state) => state.timelineRefreshTick);
@@ -236,7 +245,17 @@ export const VirtualTimeline: React.FC = () => {
       imageIndex,
       dayLabel: dayLabel || "タイムライン",
     });
-  }, [virtualItems, rows, setCurrentVisibleInfo]);
+    setSavedTimelineScrollTop(scrollTop);
+  }, [virtualItems, rows, setCurrentVisibleInfo, setSavedTimelineScrollTop]);
+
+  // 再マウント時のスクロール位置復元
+  const restoredScrollRef = useRef(false);
+  useEffect(() => {
+    if (!restoredScrollRef.current && containerRef.current && savedTimelineScrollTop > 0 && rows.length > 0) {
+      restoredScrollRef.current = true;
+      containerRef.current.scrollTop = savedTimelineScrollTop;
+    }
+  }, [savedTimelineScrollTop, rows.length]);
 
   // マウスドラッグ矩形選択（ラバーバンド選択）
   const handleTimelineMouseDown = useCallback(
@@ -366,6 +385,21 @@ export const VirtualTimeline: React.FC = () => {
         return;
       }
 
+      // Ctrl + C で選択中またはフォーカス中の画像本体をクリップボードへコピー
+      if ((e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        const targetId =
+          selectedImageIds.length > 0
+            ? selectedImageIds[0]
+            : selectedCellIndex !== null
+            ? getImageByIndex(selectedCellIndex)?.id
+            : undefined;
+        if (targetId !== undefined) {
+          e.preventDefault();
+          copyImageWithToast({ imageId: targetId });
+          return;
+        }
+      }
+
       let nextIndex = selectedCellIndex;
 
       switch (e.key) {
@@ -436,15 +470,41 @@ export const VirtualTimeline: React.FC = () => {
   );
 
   if (totalImages === 0) {
+    const hasFilter = isTimelineFilterActive(filterState);
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-textSecondary select-none p-8">
         <div className="w-16 h-16 rounded-full bg-surface flex items-center justify-center mb-4">
-          <Image className="w-8 h-8 text-textSecondary/60" />
+          {hasFilter ? (
+            <FilterX className="w-8 h-8 text-accent/80" />
+          ) : (
+            <Image className="w-8 h-8 text-textSecondary/60" />
+          )}
         </div>
-        <p className="text-base font-medium text-textPrimary">画像が見つかりません</p>
-        <p className="text-sm mt-1 text-center max-w-sm">
-          サイドバーの「フォルダを追加」から、画像が存在するフォルダを登録してください。
-        </p>
+        {hasFilter ? (
+          <>
+            <p className="text-base font-medium text-textPrimary">
+              {t("timeline.noMatchingImagesTitle")}
+            </p>
+            <p className="text-sm mt-1 text-center max-w-sm">
+              {t("timeline.noMatchingImagesDesc")}
+            </p>
+            <button
+              type="button"
+              onClick={clearFilterState}
+              className="mt-4 flex items-center gap-1.5 bg-accent hover:bg-accent/90 text-white px-4 py-1.5 rounded-lg text-xs font-medium transition shadow-sm cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>{t("timeline.clearFilterBtn")}</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-base font-medium text-textPrimary">画像が見つかりません</p>
+            <p className="text-sm mt-1 text-center max-w-sm">
+              サイドバーの「フォルダを追加」から、画像が存在するフォルダを登録してください。
+            </p>
+          </>
+        )}
       </div>
     );
   }
@@ -453,7 +513,7 @@ export const VirtualTimeline: React.FC = () => {
     <div className="flex-1 relative h-full overflow-hidden flex flex-col">
       {/* 画面上部の複数選択アクションバー（選択中のみ表示） */}
       {selectedImageIds.length > 0 && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-accent/60 shadow-2xl animate-in fade-in slide-in-from-top-3">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2.5 bg-surface/95 backdrop-blur-md px-4 py-2 rounded-xl border border-accent/60 shadow-2xl animate-in fade-in slide-in-from-top-3">
           <div className="flex items-center gap-2">
             <CheckSquare className="w-4 h-4 text-accent" />
             <span className="font-semibold text-xs text-textPrimary whitespace-nowrap">
@@ -462,6 +522,16 @@ export const VirtualTimeline: React.FC = () => {
           </div>
 
           <div className="h-4 w-px bg-border/50" />
+
+          {/* タグ一括追加・編集ボタン */}
+          <button
+            onClick={() => openTagEditModal(selectedImageIds)}
+            className="flex items-center gap-1.5 bg-surfaceLight hover:bg-accent/20 text-textPrimary hover:text-accent border border-border px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer active:scale-95 whitespace-nowrap"
+            title={t("timeline.batchEditTagsTooltip")}
+          >
+            <Tag className="w-3.5 h-3.5 text-accent" />
+            {t("timeline.batchEditTagsBtn")}
+          </button>
 
           {/* ムードボード登録ボタン */}
           <button
