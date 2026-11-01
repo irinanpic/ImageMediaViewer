@@ -10,6 +10,7 @@ import type { ImageRecord } from "../types/generated/ImageRecord";
 import type { AppSettings } from "../types/settings";
 import {
   DEFAULT_TIMELINE_FILTER,
+  type FolderTreeNode,
   type TagWithCount,
   type TimelineFilter,
 } from "../types/filter";
@@ -70,6 +71,12 @@ interface AppStoreState {
   updateFilterState: (patch: Partial<TimelineFilter>) => void;
   clearFilterState: () => void;
 
+  // フォルダ階層・アーカイブツリー管理スライス
+  folderHierarchies: Record<number, FolderTreeNode[]>;
+  setFolderHierarchy: (folderId: number, tree: FolderTreeNode[]) => void;
+  showArchiveStacksInTimeline: boolean;
+  setShowArchiveStacksInTimeline: (show: boolean) => void;
+
   // タグ管理スライス
   tags: TagWithCount[];
   setTags: (tags: TagWithCount[]) => void;
@@ -127,6 +134,8 @@ interface AppStoreState {
   isSidebarOpen: boolean;
   toggleSidebar: () => void;
   setSidebarOpen: (isOpen: boolean) => void;
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
   timelineRefreshTick: number;
   refreshTimeline: () => void;
   savedTimelineScrollTop: number;
@@ -235,6 +244,37 @@ export const useAppStore = create<AppStoreState>((set) => ({
     set({
       filterState: { ...DEFAULT_TIMELINE_FILTER },
     }),
+
+  // フォルダ階層・アーカイブツリー初期状態
+  folderHierarchies: {},
+  setFolderHierarchy: (folderId, tree) =>
+    set((state) => ({
+      folderHierarchies: { ...state.folderHierarchies, [folderId]: tree },
+    })),
+  showArchiveStacksInTimeline: (() => {
+    try {
+      const saved = localStorage.getItem("imv_show_archive_stacks");
+      return saved !== null ? saved === "true" : true;
+    } catch {
+      return true;
+    }
+  })(),
+  setShowArchiveStacksInTimeline: (show) => {
+    try {
+      localStorage.setItem("imv_show_archive_stacks", String(show));
+    } catch {}
+    set((state) => {
+      if (state.appSettings) {
+        const updated = {
+          ...state.appSettings,
+          show_archive_stacks_in_timeline: show,
+        };
+        backendApi.saveAppSettings(updated).catch(() => {});
+        return { showArchiveStacksInTimeline: show, appSettings: updated };
+      }
+      return { showArchiveStacksInTimeline: show };
+    });
+  },
 
   // タグ管理初期状態
   tags: [],
@@ -417,6 +457,28 @@ export const useAppStore = create<AppStoreState>((set) => ({
   isSidebarOpen: !isMobileEnvironment(),
   toggleSidebar: () => set((state) => ({ isSidebarOpen: !state.isSidebarOpen })),
   setSidebarOpen: (isSidebarOpen) => set({ isSidebarOpen }),
+  sidebarWidth: (() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("imv_sidebar_width");
+        if (saved) {
+          const parsed = parseInt(saved, 10);
+          if (!isNaN(parsed) && parsed >= 200 && parsed <= 800) {
+            return parsed;
+          }
+        }
+      } catch {}
+    }
+    return 256;
+  })(),
+  setSidebarWidth: (sidebarWidth) => {
+    if (typeof window !== "undefined") {
+      try {
+        localStorage.setItem("imv_sidebar_width", String(sidebarWidth));
+      } catch {}
+    }
+    set({ sidebarWidth });
+  },
   timelineRefreshTick: 0,
   refreshTimeline: () =>
     set((state) => ({ timelineRefreshTick: state.timelineRefreshTick + 1 })),
@@ -604,7 +666,11 @@ export const useAppStore = create<AppStoreState>((set) => ({
       } catch {
         // プラグインアクション取得エラー時は無視
       }
-      set({ appSettings: settings });
+      set({
+        appSettings: settings,
+        showArchiveStacksInTimeline:
+          settings.show_archive_stacks_in_timeline ?? true,
+      });
     } catch (err) {
       console.error("アプリケーション設定の読み込みに失敗しました:", err);
     }
@@ -618,7 +684,11 @@ export const useAppStore = create<AppStoreState>((set) => ({
       } catch {
         // プラグインアクション取得エラー時は無視
       }
-      set({ appSettings: settings });
+      set({
+        appSettings: settings,
+        showArchiveStacksInTimeline:
+          settings.show_archive_stacks_in_timeline ?? true,
+      });
     } catch (err) {
       console.error("アプリケーション設定の保存に失敗しました:", err);
       throw err;

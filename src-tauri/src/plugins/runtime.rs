@@ -270,6 +270,683 @@ impl ImageFormatPlugin for DynamicFormatPlugin {
     }
 }
 
+// =================================================================================================
+// アーカイブ（圧縮ファイル）仮想フォルダ・閲覧プラグイン基盤
+// =================================================================================================
+
+/// 仮想パス（`<archive_path>!/<inner_path>`）をアーカイブ実ファイルパスと内部相対パスに分割する
+///
+/// 変更理由: DB・キャッシュ機構を一切破壊せずにアーカイブ内画像を単一の `file_path` 文字列として
+/// 透過的に取り扱い、サムネイル生成や原寸配信時に O(1) でアーカイブ実体と内部エントリを判別するため。
+///
+/// @param file_path 検査対象のファイルパス文字列
+/// @return アーカイブ仮想パスの場合は `Some((archive_path, inner_path))`、通常ファイルは `None`
+#[inline]
+pub fn split_archive_virtual_path(file_path: &str) -> Option<(&str, &str)> {
+    file_path.split_once("!/")
+}
+
+/// ファイル名・相対パス用の自然順ソート（Natural Sort）比較関数
+///
+/// 変更理由: アーカイブ内の連番画像（`page1.jpg`, `page2.jpg`, ..., `page10.jpg`）を
+/// 辞書順（`page1.jpg`, `page10.jpg`, `page2.jpg`）ではなく人間の直感に沿ったページ順で並べるため。
+///
+/// @param a 比較文字列A
+/// @param b 比較文字列B
+/// @return 順序比較結果
+pub fn compare_natural(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let mut chars_a = a.chars().peekable();
+    let mut chars_b = b.chars().peekable();
+
+    loop {
+        match (chars_a.peek(), chars_b.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&ca), Some(&cb)) => {
+                if ca.is_ascii_digit() && cb.is_ascii_digit() {
+                    let mut num_a_str = String::new();
+                    while let Some(&c) = chars_a.peek() {
+                        if c.is_ascii_digit() {
+                            num_a_str.push(c);
+                            chars_a.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    let mut num_b_str = String::new();
+                    while let Some(&c) = chars_b.peek() {
+                        if c.is_ascii_digit() {
+                            num_b_str.push(c);
+                            chars_b.next();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    // 先頭ゼロを除去した数値桁数・数値大小で比較
+                    let trim_a = num_a_str.trim_start_matches('0');
+                    let trim_b = num_b_str.trim_start_matches('0');
+                    match trim_a.len().cmp(&trim_b.len()) {
+                        Ordering::Equal => match trim_a.cmp(trim_b) {
+                            Ordering::Equal => {
+                                // 数値として同じ（例: "01" と "1"）なら桁数（ゼロの多さ）で決定的に比較
+                                match num_a_str.len().cmp(&num_b_str.len()) {
+                                    Ordering::Equal => continue,
+                                    ord => return ord,
+                                }
+                            }
+                            ord => return ord,
+                        },
+                        ord => return ord,
+                    }
+                } else {
+                    let la = ca.to_ascii_lowercase();
+                    let lb = cb.to_ascii_lowercase();
+                    match la.cmp(&lb) {
+                        Ordering::Equal => {
+                            chars_a.next();
+                            chars_b.next();
+                        }
+                        ord => return ord,
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// アーカイブ内エントリの軽量メタデータ（展開せずにセントラルディレクトリ等から取得）
+///
+/// 変更理由: 巨大アーカイブであってもデータ本体を一切解凍せず、一覧取得を数ミリ秒で完了させるため。
+#[derive(Debug, Clone)]
+pub struct ArchiveEntryMeta {
+    /// アーカイブ内の正規化済み相対パス（区切り文字は常に `/`、先頭 `/` なし）
+    pub inner_path: String,
+    /// ファイル名単体（例: "001.png"）
+    pub file_name: String,
+    /// 非圧縮時ファイルサイズ（バイト）
+    pub uncompressed_size: u64,
+    /// 更新日時（UNIX秒、不明時はアーカイブ自体のmtimeにフォールバック）
+    pub mtime_secs: Option<i64>,
+    /// 拡張子（小文字、ドットなし: "jpg", "png", "webp" 等）
+    pub extension: String,
+}
+
+/// アーカイブ（圧縮ファイル）プラグインの共通インターフェース
+///
+/// 変更理由: 標準内蔵のZIP/CBZプラグインだけでなく、外部コマンド（7z/unrar等）を用いた
+/// プラグイン（.rar, .7z, .cbr, .cb7, .tar等）も同じトレイトで透過的に統合可能にするため。
+pub trait ArchivePlugin: Send + Sync {
+    /// プラグイン一意識別子（例: "archive.zip", "archive.sevenzip"）
+    fn id(&self) -> &str;
+
+    /// プラグイン表示名
+    fn name(&self) -> &str;
+
+    /// 対応するアーカイブ拡張子（小文字、ドットなし: ["zip", "cbz"] 等）
+    fn supported_extensions(&self) -> &[String];
+
+    /// アーカイブ内のエントリ一覧をデータ本体を展開せずに高速取得する
+    ///
+    /// @param archive_path アーカイブファイルの実パス
+    /// @return 内部エントリのメタデータ配列
+    fn list_entries(&self, archive_path: &Path) -> Result<Vec<ArchiveEntryMeta>, String>;
+
+    /// アーカイブ内の指定エントリの生バイト列をメモリ上へ直接抽出する（一時ファイル不使用）
+    ///
+    /// @param archive_path アーカイブファイルの実パス
+    /// @param inner_path アーカイブ内の相対パス（`/` 区切り）
+    /// @return 抽出されたエントリの生バイト列
+    fn extract_entry(&self, archive_path: &Path, inner_path: &str) -> Result<Vec<u8>, String>;
+}
+
+/// アーカイブ抽出結果の短命インメモリキャッシュ上限（エントリ数および最大合計バイト数）
+const ARCHIVE_CACHE_MAX_ENTRIES: usize = 12;
+const ARCHIVE_CACHE_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// 単一エントリの最大解凍サイズ上限（100MB: Zip Bomb対策）
+const ARCHIVE_MAX_ENTRY_EXTRACT_BYTES: u64 = 100 * 1024 * 1024;
+
+struct ArchiveExtractCacheEntry {
+    archive_path: PathBuf,
+    archive_mtime: i64,
+    inner_path: String,
+    bytes: Vec<u8>,
+}
+
+/// アーカイブ内エントリパスを正規化する（`\` を `/` に変換し、先頭スラッシュを除去）
+///
+/// @param raw_name アーカイブ内の生ファイル名
+/// @return 安全な正規化済み相対パス。パストラバーサル（`..`）を含む場合は `None`
+pub fn normalize_archive_inner_path(raw_name: &str) -> Option<String> {
+    let replaced = raw_name.replace('\\', "/");
+    let trimmed = replaced.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    // パストラバーサル防止
+    for seg in trimmed.split('/') {
+        if seg == ".." {
+            return None;
+        }
+    }
+    Some(trimmed.to_string())
+}
+
+/// アーカイブ内の不可視メタデータファイル（macOS `__MACOSX/` や `._*` 等）かどうか判定する
+fn is_ignored_archive_entry(inner_path: &str, file_name: &str) -> bool {
+    if inner_path.ends_with('/') {
+        return true;
+    }
+    if inner_path.starts_with("__MACOSX/") || inner_path.contains("/__MACOSX/") {
+        return true;
+    }
+    if file_name.starts_with("._") || file_name.eq_ignore_ascii_case("thumbs.db") || file_name.eq_ignore_ascii_case(".ds_store") {
+        return true;
+    }
+    false
+}
+
+/// Rustネイティブ `zip` クレートによる内蔵 ZIP / CBZ アーカイブ閲覧プラグイン
+///
+/// 変更理由: 外部プロセス起動を一切行わず、セントラルディレクトリの O(1) 走査と
+/// インメモリ直接抽出によって超高速なアーカイブ内画像閲覧を実現するため。
+pub struct BuiltinZipArchivePlugin {
+    extensions: Vec<String>,
+    cache: Mutex<VecDeque<ArchiveExtractCacheEntry>>,
+}
+
+impl BuiltinZipArchivePlugin {
+    /// 内蔵ZIPプラグインインスタンスを生成
+    pub fn new() -> Self {
+        Self {
+            extensions: vec!["zip".to_string(), "cbz".to_string()],
+            cache: Mutex::new(VecDeque::with_capacity(ARCHIVE_CACHE_MAX_ENTRIES)),
+        }
+    }
+}
+
+impl Default for BuiltinZipArchivePlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ArchivePlugin for BuiltinZipArchivePlugin {
+    fn id(&self) -> &str {
+        "archive.zip"
+    }
+
+    fn name(&self) -> &str {
+        "ZIP / CBZ アーカイブ閲覧プラグイン"
+    }
+
+    fn supported_extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    fn list_entries(&self, archive_path: &Path) -> Result<Vec<ArchiveEntryMeta>, String> {
+        let file = File::open(archive_path)
+            .map_err(|e| format!("ZIPファイルを開けません ({}): {}", archive_path.display(), e))?;
+        let archive_mtime = file
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| format!("ZIP構造の解析に失敗 ({}): {}", archive_path.display(), e))?;
+
+        let mut entries = Vec::with_capacity(archive.len());
+        for i in 0..archive.len() {
+            // 変更理由: by_index_raw を使用してデータストリームを一切解凍せずセントラルディレクトリ情報のみをO(1)で取得する
+            let raw_file = match archive.by_index_raw(i) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if raw_file.is_dir() {
+                continue;
+            }
+            let raw_name = raw_file.name();
+            let inner_path = match normalize_archive_inner_path(raw_name) {
+                Some(p) => p,
+                None => continue,
+            };
+            let file_name = inner_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(&inner_path)
+                .to_string();
+
+            if is_ignored_archive_entry(&inner_path, &file_name) {
+                continue;
+            }
+
+            let extension = Path::new(&file_name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            if extension.is_empty() {
+                continue;
+            }
+
+            let uncompressed_size = raw_file.size();
+            if uncompressed_size == 0 || uncompressed_size > ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+                continue;
+            }
+
+            entries.push(ArchiveEntryMeta {
+                inner_path,
+                file_name,
+                uncompressed_size,
+                mtime_secs: archive_mtime,
+                extension,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    fn extract_entry(&self, archive_path: &Path, inner_path: &str) -> Result<Vec<u8>, String> {
+        let normalized_target = normalize_archive_inner_path(inner_path)
+            .ok_or_else(|| format!("不正なアーカイブ内パスです: {}", inner_path))?;
+
+        let archive_mtime = std::fs::metadata(archive_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // 1. 短命リングキャッシュの確認
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(hit) = cache.iter().find(|c| {
+                c.archive_mtime == archive_mtime
+                    && c.inner_path == normalized_target
+                    && c.archive_path == archive_path
+            }) {
+                return Ok(hit.bytes.clone());
+            }
+        }
+
+        let file = File::open(archive_path)
+            .map_err(|e| format!("ZIPファイルを開けません ({}): {}", archive_path.display(), e))?;
+        let mut archive = zip::ZipArchive::new(file)
+            .map_err(|e| format!("ZIP構造の解析に失敗 ({}): {}", archive_path.display(), e))?;
+
+        // 2. まず直接 by_name で検索し、見つからない場合（バックスラッシュ区切り格納ZIP等）はインデックス走査
+        let mut extracted_bytes: Option<Vec<u8>> = None;
+
+        {
+            if let Ok(mut zf) = archive.by_name(&normalized_target) {
+                if zf.size() > ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+                    return Err(format!(
+                        "アーカイブ内エントリがサイズ上限(100MB)を超過しています: {} bytes",
+                        zf.size()
+                    ));
+                }
+                let mut buf = Vec::with_capacity(zf.size() as usize);
+                zf.by_ref()
+                    .take(ARCHIVE_MAX_ENTRY_EXTRACT_BYTES)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("ZIPエントリの展開に失敗 ({}): {}", normalized_target, e))?;
+                extracted_bytes = Some(buf);
+            }
+        }
+
+        if extracted_bytes.is_none() {
+            let backslash_name = normalized_target.replace('/', "\\");
+            if let Ok(mut zf) = archive.by_name(&backslash_name) {
+                if zf.size() > ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+                    return Err(format!(
+                        "アーカイブ内エントリがサイズ上限(100MB)を超過しています: {} bytes",
+                        zf.size()
+                    ));
+                }
+                let mut buf = Vec::with_capacity(zf.size() as usize);
+                zf.by_ref()
+                    .take(ARCHIVE_MAX_ENTRY_EXTRACT_BYTES)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("ZIPエントリの展開に失敗 ({}): {}", normalized_target, e))?;
+                extracted_bytes = Some(buf);
+            }
+        }
+
+        if extracted_bytes.is_none() {
+            let mut matched_idx = None;
+            for i in 0..archive.len() {
+                if let Ok(raw) = archive.by_index_raw(i) {
+                    if let Some(norm) = normalize_archive_inner_path(raw.name()) {
+                        if norm == normalized_target {
+                            matched_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(idx) = matched_idx {
+                let mut zf = archive
+                    .by_index(idx)
+                    .map_err(|e| format!("ZIPエントリ取得失敗 ({}): {}", normalized_target, e))?;
+                if zf.size() > ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+                    return Err(format!(
+                        "アーカイブ内エントリがサイズ上限(100MB)を超過しています: {} bytes",
+                        zf.size()
+                    ));
+                }
+                let mut buf = Vec::with_capacity(zf.size() as usize);
+                zf.by_ref()
+                    .take(ARCHIVE_MAX_ENTRY_EXTRACT_BYTES)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("ZIPエントリの展開に失敗 ({}): {}", normalized_target, e))?;
+                extracted_bytes = Some(buf);
+            }
+        }
+
+        let bytes = extracted_bytes.ok_or_else(|| {
+            format!(
+                "ZIP内に該当エントリが見つかりません: {}!/{}",
+                archive_path.display(),
+                normalized_target
+            )
+        })?;
+
+        // 3. 短命リングバッファへ格納（最大12件・合計64MB以内）
+        if bytes.len() <= 16 * 1024 * 1024 {
+            if let Ok(mut cache) = self.cache.lock() {
+                while cache.len() >= ARCHIVE_CACHE_MAX_ENTRIES
+                    || (cache.iter().map(|c| c.bytes.len()).sum::<usize>() + bytes.len()
+                        > ARCHIVE_CACHE_MAX_TOTAL_BYTES
+                        && !cache.is_empty())
+                {
+                    cache.pop_front();
+                }
+                cache.push_back(ArchiveExtractCacheEntry {
+                    archive_path: archive_path.to_path_buf(),
+                    archive_mtime,
+                    inner_path: normalized_target,
+                    bytes: bytes.clone(),
+                });
+            }
+        }
+
+        Ok(bytes)
+    }
+}
+
+/// 外部CLIツール（`7z`, `unrar`, `tar` 等）および `plugin.json` を用いた動的アーカイブプラグイン
+///
+/// 変更理由: アプリ本体の再コンパイルなしに、ユーザーが `plugins/` フォルダへマニフェストを配置するだけで
+/// `.7z`, `.cb7`, `.rar`, `.cbr`, `.tar` 等の圧縮形式を仮想フォルダとして透過的に閲覧可能にするため。
+pub struct ExternalCliArchivePlugin {
+    pub manifest: PluginManifest,
+    pub plugin_dir: PathBuf,
+    cache: Mutex<VecDeque<ArchiveExtractCacheEntry>>,
+}
+
+impl ExternalCliArchivePlugin {
+    /// マニフェストから外部CLIアーカイブプラグインを生成
+    pub fn new(mut manifest: PluginManifest, plugin_dir: PathBuf) -> Self {
+        manifest.extensions = manifest
+            .extensions
+            .into_iter()
+            .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|ext| !ext.is_empty())
+            .collect();
+
+        Self {
+            manifest,
+            plugin_dir,
+            cache: Mutex::new(VecDeque::with_capacity(ARCHIVE_CACHE_MAX_ENTRIES)),
+        }
+    }
+
+    fn resolve_cmd(&self, cmd: &str) -> PathBuf {
+        let p = Path::new(cmd);
+        if p.is_absolute() {
+            return p.to_path_buf();
+        }
+        let in_plugin = self.plugin_dir.join(cmd);
+        if in_plugin.is_file() {
+            return in_plugin;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let in_plugin_exe = self.plugin_dir.join(format!("{}.exe", cmd));
+            if in_plugin_exe.is_file() {
+                return in_plugin_exe;
+            }
+        }
+        PathBuf::from(cmd)
+    }
+}
+
+impl ArchivePlugin for ExternalCliArchivePlugin {
+    fn id(&self) -> &str {
+        &self.manifest.id
+    }
+
+    fn name(&self) -> &str {
+        &self.manifest.name
+    }
+
+    fn supported_extensions(&self) -> &[String] {
+        &self.manifest.extensions
+    }
+
+    fn list_entries(&self, archive_path: &Path) -> Result<Vec<ArchiveEntryMeta>, String> {
+        let list_cmd = self
+            .manifest
+            .archive_list_command
+            .as_ref()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| format!("プラグイン {} に archive_list_command が定義されていません", self.manifest.id))?;
+
+        let exe = self.resolve_cmd(&list_cmd[0]);
+        let archive_str = archive_path.to_string_lossy().to_string();
+        let args: Vec<String> = list_cmd[1..]
+            .iter()
+            .map(|a| a.replace("{archive_path}", &archive_str))
+            .collect();
+
+        let archive_mtime = std::fs::metadata(archive_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+
+        let output = std::process::Command::new(&exe)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("外部アーカイブコマンドの実行に失敗 ({}): {}", exe.display(), e))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "外部アーカイブ一覧取得コマンドがエラー終了しました: {:?}",
+                output.status.code()
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut entries = Vec::new();
+
+        // 7z -slt 形式（Path = ..., Size = ..., Folder = -）または単純な1行1パス形式の両方をパース
+        if stdout.contains("Path = ") && stdout.contains("----------") {
+            let body = stdout.split("----------").nth(1).unwrap_or(&stdout);
+            let mut cur_path: Option<String> = None;
+            let mut cur_size: u64 = 0;
+            let mut cur_is_dir = false;
+
+            let mut flush_block = |path_opt: Option<String>, size: u64, is_dir: bool| {
+                if is_dir {
+                    return;
+                }
+                if let Some(raw_p) = path_opt {
+                    if let Some(inner_path) = normalize_archive_inner_path(&raw_p) {
+                        let file_name = inner_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&inner_path)
+                            .to_string();
+                        if is_ignored_archive_entry(&inner_path, &file_name) {
+                            return;
+                        }
+                        let extension = Path::new(&file_name)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_ascii_lowercase())
+                            .unwrap_or_default();
+                        if !extension.is_empty() && size > 0 && size <= ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+                            entries.push(ArchiveEntryMeta {
+                                inner_path,
+                                file_name,
+                                uncompressed_size: size,
+                                mtime_secs: archive_mtime,
+                                extension,
+                            });
+                        }
+                    }
+                }
+            };
+
+            for line in body.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    flush_block(cur_path.take(), cur_size, cur_is_dir);
+                    cur_size = 0;
+                    cur_is_dir = false;
+                } else if let Some(rest) = trimmed.strip_prefix("Path = ") {
+                    cur_path = Some(rest.trim().to_string());
+                } else if let Some(rest) = trimmed.strip_prefix("Size = ") {
+                    cur_size = rest.trim().parse::<u64>().unwrap_or(0);
+                } else if let Some(rest) = trimmed.strip_prefix("Folder = ") {
+                    if rest.trim() == "+" {
+                        cur_is_dir = true;
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("Attributes = ") {
+                    if rest.trim().starts_with('D') {
+                        cur_is_dir = true;
+                    }
+                }
+            }
+            flush_block(cur_path.take(), cur_size, cur_is_dir);
+        } else {
+            for line in stdout.lines() {
+                let raw = line.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                if let Some(inner_path) = normalize_archive_inner_path(raw) {
+                    let file_name = inner_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&inner_path)
+                        .to_string();
+                    if is_ignored_archive_entry(&inner_path, &file_name) {
+                        continue;
+                    }
+                    let extension = Path::new(&file_name)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if !extension.is_empty() {
+                        entries.push(ArchiveEntryMeta {
+                            inner_path,
+                            file_name,
+                            uncompressed_size: 1,
+                            mtime_secs: archive_mtime,
+                            extension,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    fn extract_entry(&self, archive_path: &Path, inner_path: &str) -> Result<Vec<u8>, String> {
+        let normalized_target = normalize_archive_inner_path(inner_path)
+            .ok_or_else(|| format!("不正なアーカイブ内パスです: {}", inner_path))?;
+
+        let archive_mtime = std::fs::metadata(archive_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(hit) = cache.iter().find(|c| {
+                c.archive_mtime == archive_mtime
+                    && c.inner_path == normalized_target
+                    && c.archive_path == archive_path
+            }) {
+                return Ok(hit.bytes.clone());
+            }
+        }
+
+        let extract_cmd = self
+            .manifest
+            .archive_extract_command
+            .as_ref()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| format!("プラグイン {} に archive_extract_command が定義されていません", self.manifest.id))?;
+
+        let exe = self.resolve_cmd(&extract_cmd[0]);
+        let archive_str = archive_path.to_string_lossy().to_string();
+        let args: Vec<String> = extract_cmd[1..]
+            .iter()
+            .map(|a| {
+                a.replace("{archive_path}", &archive_str)
+                    .replace("{entry_path}", &normalized_target)
+            })
+            .collect();
+
+        let output = std::process::Command::new(&exe)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("外部アーカイブ抽出コマンドの実行に失敗 ({}): {}", exe.display(), e))?;
+
+        if !output.status.success() || output.stdout.is_empty() {
+            return Err(format!(
+                "外部アーカイブ抽出コマンドが失敗または空出力でした: {:?}",
+                output.status.code()
+            ));
+        }
+
+        let bytes = output.stdout;
+        if bytes.len() as u64 > ARCHIVE_MAX_ENTRY_EXTRACT_BYTES {
+            return Err("アーカイブ内エントリがサイズ上限(100MB)を超過しています".to_string());
+        }
+
+        if bytes.len() <= 16 * 1024 * 1024 {
+            if let Ok(mut cache) = self.cache.lock() {
+                while cache.len() >= ARCHIVE_CACHE_MAX_ENTRIES
+                    || (cache.iter().map(|c| c.bytes.len()).sum::<usize>() + bytes.len()
+                        > ARCHIVE_CACHE_MAX_TOTAL_BYTES
+                        && !cache.is_empty())
+                {
+                    cache.pop_front();
+                }
+                cache.push_back(ArchiveExtractCacheEntry {
+                    archive_path: archive_path.to_path_buf(),
+                    archive_mtime,
+                    inner_path: normalized_target,
+                    bytes: bytes.clone(),
+                });
+            }
+        }
+
+        Ok(bytes)
+    }
+}
+
 /// プラグイン検索対象ディレクトリのリストを網羅的に解決する
 ///
 /// 変更理由: インストール環境（exe直下のplugins、またはresources/plugins）、
@@ -444,6 +1121,7 @@ mod tests {
 
         let manifest = PluginManifest {
             id: "format.custom".to_string(),
+            plugin_type: None,
             name: "Custom Slice Format".to_string(),
             version: Some("1.0.0".to_string()),
             description: None,
@@ -455,6 +1133,8 @@ mod tests {
                 include_end_signature: true,
                 mime_type: "image/png".to_string(),
             }),
+            archive_list_command: None,
+            archive_extract_command: None,
             actions: Vec::new(),
         };
 
@@ -467,5 +1147,82 @@ mod tests {
         let (preview, mime) = plugin.extract_original_preview(&custom_file).unwrap();
         assert_eq!(mime, "image/png");
         assert!(preview.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn test_split_archive_virtual_path() {
+        assert_eq!(
+            split_archive_virtual_path(r"C:\Pictures\manga_vol1.zip!/ch01/001.png"),
+            Some((r"C:\Pictures\manga_vol1.zip", "ch01/001.png"))
+        );
+        assert_eq!(
+            split_archive_virtual_path(r"C:\Pictures\normal_photo.jpg"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_compare_natural() {
+        let mut names = vec![
+            "page10.jpg",
+            "page2.jpg",
+            "page1.jpg",
+            "page20.jpg",
+            "ch02/001.png",
+            "ch01/010.png",
+            "ch01/002.png",
+        ];
+        names.sort_by(|a, b| compare_natural(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "ch01/002.png",
+                "ch01/010.png",
+                "ch02/001.png",
+                "page1.jpg",
+                "page2.jpg",
+                "page10.jpg",
+                "page20.jpg",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_builtin_zip_archive_plugin() {
+        use std::io::Write;
+        let temp_dir = tempdir().unwrap();
+        let zip_path = temp_dir.path().join("test_book.cbz");
+
+        {
+            let file = File::create(&zip_path).unwrap();
+            let mut zip_writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+
+            zip_writer.start_file("ch1/002.png", options).unwrap();
+            zip_writer.write_all(b"PNG_DATA_2").unwrap();
+
+            zip_writer.start_file("ch1/001.jpg", options).unwrap();
+            zip_writer.write_all(b"JPG_DATA_1").unwrap();
+
+            // macOS ゴミファイルは除外されること
+            zip_writer.start_file("__MACOSX/ch1/._001.jpg", options).unwrap();
+            zip_writer.write_all(b"MAC_JUNK").unwrap();
+
+            zip_writer.finish().unwrap();
+        }
+
+        let plugin = BuiltinZipArchivePlugin::new();
+        let entries = plugin.list_entries(&zip_path).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].inner_path, "ch1/002.png");
+        assert_eq!(entries[1].inner_path, "ch1/001.jpg");
+
+        let data1 = plugin.extract_entry(&zip_path, "ch1/001.jpg").unwrap();
+        assert_eq!(data1, b"JPG_DATA_1");
+
+        // 2回目はインメモリキャッシュから高速返却されること
+        let data1_cached = plugin.extract_entry(&zip_path, "ch1/001.jpg").unwrap();
+        assert_eq!(data1_cached, b"JPG_DATA_1");
     }
 }

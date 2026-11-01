@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OpenFlags, Result};
 use tracing::info;
 
-/// 接続ごとに必須となるPRAGMA設定を適用する
+/// 接続ごとに必須となるPRAGMA設定およびカスタムCollation（自然順ソート）を適用する
 ///
-/// 変更理由: 仕様書§4「以下のPRAGMAは接続ごとに毎回設定する（特にforeign_keys）」の要件を徹底するため
+/// 変更理由: 仕様書§4「以下のPRAGMAは接続ごとに毎回設定する（特にforeign_keys）」の要件を徹底するとともに、
+/// アーカイブ内ページやファイル名ソートで `1.jpg, 2.jpg, ..., 10.jpg` の自然順をSQLite上で直接実現するため。
 ///
 /// @param conn SQLite接続
 /// @return 成功時はOk(())
@@ -23,6 +24,21 @@ pub fn configure_connection(conn: &Connection) -> Result<()> {
          PRAGMA busy_timeout = 5000;
          PRAGMA cache_size = -16384;",
     )?;
+    register_collations(conn)?;
+    Ok(())
+}
+
+/// データベース接続に自然順ソート用 Collation を登録する
+///
+/// 変更理由: アーカイブ内画像およびファイル名順ソートで自然順（1, 2, ..., 10）を実現するため。
+/// 予約語回避のための NATURALSORT と後方互換性用の NATURAL の両方を登録する。
+fn register_collations(conn: &Connection) -> Result<()> {
+    conn.create_collation("NATURALSORT", |a, b| {
+        crate::plugins::compare_natural(a, b)
+    })?;
+    conn.create_collation("NATURAL", |a, b| {
+        crate::plugins::compare_natural(a, b)
+    })?;
     Ok(())
 }
 
@@ -135,7 +151,9 @@ impl Database {
     fn open_reader(&self) -> Result<Connection> {
         if self.db_path == Path::new(":memory:") {
             // インメモリモードでは独立DBになるためテスト用途のみ
-            Connection::open(&self.db_path)
+            let conn = Connection::open(&self.db_path)?;
+            register_collations(&conn)?;
+            Ok(conn)
         } else {
             let conn = Connection::open_with_flags(
                 &self.db_path,
@@ -146,6 +164,7 @@ impl Database {
                 "PRAGMA busy_timeout = 5000;
                  PRAGMA cache_size = -8192;",
             )?;
+            register_collations(&conn)?;
             Ok(conn)
         }
     }

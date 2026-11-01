@@ -93,6 +93,14 @@ pub fn is_supported_image(path: &Path, plugins: &crate::plugins::FormatPluginReg
         .unwrap_or(false)
 }
 
+/// 通常画像または対応アーカイブファイル（.zip, .cbz等）であるか判定
+///
+/// 変更理由: アーカイブファイルを通常画像と同一のタイムライン一覧へ混在表示するため、
+/// 走査対象に有効なアーカイブ形式を含める。
+pub fn is_supported_image_or_archive(path: &Path, plugins: &crate::plugins::FormatPluginRegistry) -> bool {
+    is_supported_image(path, plugins) || plugins.is_supported_archive_path(path)
+}
+
 /// スキップすべき隠しディレクトリ・ファイルか判定
 fn is_hidden_or_ignored(entry: &walkdir::DirEntry) -> bool {
     // 監視ルート自身（depth == 0）は、名前がドット（.tmp等）で始まっていてもスキップしない
@@ -203,7 +211,7 @@ pub fn scan_folder_core(
 
         if entry.file_type().is_file() {
             let path = entry.path();
-            if is_supported_image(path, &state.format_plugins) {
+            if is_supported_image_or_archive(path, &state.format_plugins) {
                 let norm = normalize_path(&path.to_string_lossy());
                 let ex = existing_map.remove(&norm);
 
@@ -340,7 +348,18 @@ pub fn scan_folder_core(
         );
     }
 
-    let deleted_paths: Vec<String> = existing_map.into_keys().collect();
+    // 変更理由: オンデマンドでインデックス登録されたアーカイブ内仮想パス（`<archive_path>!/<inner_path>`）は
+    // WalkDir では通常ファイルとして走査されないため、親アーカイブファイルが実在する場合は削除対象から除外する。
+    let deleted_paths: Vec<String> = existing_map
+        .into_keys()
+        .filter(|path| {
+            if let Some((archive_path, _)) = crate::plugins::split_archive_virtual_path(path) {
+                !Path::new(archive_path).exists()
+            } else {
+                true
+            }
+        })
+        .collect();
 
     if !deleted_paths.is_empty() {
         info!("Removed {} deleted files from database", deleted_paths.len());

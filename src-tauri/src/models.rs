@@ -21,6 +21,26 @@ pub struct ImageRecord {
     /// 最終更新日時（ファイルmtime）。サムネイルURLのキャッシュバスターとして使用
     #[ts(type = "number")]
     pub rev: i64,
+    /// アーカイブ（ZIP/CBZ等）ファイルであるか（通常画像ではNoneでIPC転送量最小化）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub is_archive: Option<bool>,
+    /// アーカイブ本体のファイル名（例: "album.zip"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_name: Option<String>,
+    /// アーカイブ本体のファイルパス（クリック時のフォルダ展開用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_path: Option<String>,
+    /// 所属する監視フォルダID
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number | null")]
+    pub folder_id: Option<i64>,
+    /// ファイルフォーマット識別子（例: "clip", "png", "jpeg" 等。ClipStudioなどの種別バッジ判定に使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub format: Option<String>,
 }
 
 /// 撮影日時の取得元情報
@@ -91,6 +111,35 @@ pub struct SubfolderEntry {
     /// このサブフォルダおよび配下に含まれる画像総数
     #[ts(type = "number")]
     pub image_count: i64,
+}
+
+/// サイドバーのフォルダツリー表示用ノード（実ディレクトリ＋仮想アーカイブフォルダ統合）
+///
+/// 変更理由: 監視フォルダ配下の通常ディレクトリとアーカイブファイル（.zip, .cbz 等）、および
+/// アーカイブ内サブディレクトリを統一された再帰ツリー構造でサイドバーへ提供するため。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../src/types/generated/")]
+pub struct FolderTreeNode {
+    /// ノード種別: "directory" | "archive"
+    pub kind: String,
+    /// 選択時にフィルタ（sub_folder_path）へ渡すパス（例: "C:\Pics\sub" または "C:\Pics\pack.zip" または "C:\Pics\pack.zip!/part1"）
+    pub path: String,
+    /// 表示名（例: "sub" または "pack.zip"）
+    pub name: String,
+    /// 配下の画像数（未展開アーカイブの場合は None）
+    #[ts(type = "number | null")]
+    pub image_count: Option<i64>,
+    /// アーカイブの表紙（1枚目）の画像ID（未展開または空の場合は None）
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub cover_image_id: Option<i64>,
+    /// アーカイブの表紙（1枚目）の更新リビジョン（サムネイルキャッシュキー用）
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub cover_rev: Option<i64>,
+    /// 子ノード（ディレクトリ内のサブフォルダやアーカイブファイル、または展開済みアーカイブ内のサブディレクトリ）
+    pub children: Vec<FolderTreeNode>,
 }
 
 /// タイムライン検索・絞り込みフィルタ条件
@@ -301,9 +350,13 @@ pub struct WatchedFolder {
     /// 登録画像数
     #[ts(type = "number")]
     pub image_count: i64,
-    /// サムネイル生成済み数
+    /// サムネイル生成済み数（成功件数）
     #[ts(type = "number")]
     pub thumb_count: i64,
+    /// サムネイル生成失敗数（パスワード保護ZIPや0バイト/破損ファイル等のスキップ件数）
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub thumb_failed_count: i64,
     /// 状態
     pub status: FolderStatus,
 }
@@ -701,6 +754,7 @@ mod tests {
         TagWithCount::export().expect("Failed to export TagWithCount bindings");
         ImageTagAssignment::export().expect("Failed to export ImageTagAssignment bindings");
         SubfolderEntry::export().expect("Failed to export SubfolderEntry bindings");
+        FolderTreeNode::export().expect("Failed to export FolderTreeNode bindings");
         TimelineFilter::export().expect("Failed to export TimelineFilter bindings");
         GetImagesPayload::export().expect("Failed to export GetImagesPayload bindings");
     }

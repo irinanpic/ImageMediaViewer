@@ -1,8 +1,8 @@
 use rusqlite::{params, Connection, Result};
 use crate::models::{
-    DayBucket, FolderStatus, ImageDetail, ImageRecord, ImageTagAssignment, SubfolderEntry,
-    TagRecord, TagWithCount, TakenAtSource, TimelineFilter, TimelineSort, TimelineSummary,
-    WatchedFolder,
+    DayBucket, FolderStatus, FolderTreeNode, ImageDetail, ImageRecord, ImageTagAssignment,
+    SubfolderEntry, TagRecord, TagWithCount, TakenAtSource, TimelineFilter, TimelineSort,
+    TimelineSummary, WatchedFolder,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -44,6 +44,7 @@ pub fn add_watched_folder(conn: &Connection, path: &str, added_at: i64) -> Resul
         path: path.to_string(),
         image_count: 0,
         thumb_count: 0,
+        thumb_failed_count: 0,
         status: FolderStatus::Online,
     })
 }
@@ -85,11 +86,14 @@ pub fn delete_image(conn: &Connection, id: i64) -> Result<()> {
 /// @param conn DB接続
 /// @return フォルダ一覧
 pub fn get_watched_folders(conn: &Connection) -> Result<Vec<WatchedFolder>> {
+    // 変更理由: オンデマンド展開されたアーカイブ内エントリ（*!/*）がルート監視フォルダの画像枚数を
+    // 意図せず肥大化させないよう、通常ファイルのみを集計対象とする。
     let mut stmt = conn.prepare_cached(
         "SELECT f.id, f.path, COUNT(i.id) AS cnt,
-                COALESCE(SUM(CASE WHEN i.thumb_status = 1 THEN 1 ELSE 0 END), 0) AS thumb_cnt
+                COALESCE(SUM(CASE WHEN i.thumb_status = 1 THEN 1 ELSE 0 END), 0) AS thumb_cnt,
+                COALESCE(SUM(CASE WHEN i.thumb_status = 2 THEN 1 ELSE 0 END), 0) AS failed_cnt
          FROM watched_folders f
-         LEFT JOIN images i ON f.id = i.folder_id
+         LEFT JOIN images i ON f.id = i.folder_id AND i.file_path NOT GLOB '*!/*'
          WHERE f.id > 0
          GROUP BY f.id, f.path
          ORDER BY f.id ASC;",
@@ -100,11 +104,13 @@ pub fn get_watched_folders(conn: &Connection) -> Result<Vec<WatchedFolder>> {
         let is_online = Path::new(&path).exists();
         let count: i64 = row.get(2)?;
         let thumb_count: i64 = row.get(3)?;
+        let thumb_failed_count: i64 = row.get(4)?;
         Ok(WatchedFolder {
             id: row.get(0)?,
             path,
             image_count: count,
             thumb_count,
+            thumb_failed_count,
             status: if is_online {
                 FolderStatus::Online
             } else {
@@ -245,6 +251,8 @@ fn expand_format_synonyms(ext: &str) -> Vec<String> {
 ///
 /// 変更理由: `get_timeline_images` と `get_timeline_summary` の双方で完全に同一の絞り込み条件を適用し、
 /// 10万〜30万件規模でも複合インデックスを活用した高速検索を行うため。
+/// また、アーカイブ仮想フォルダ方式の原則に従い、通常閲覧時（全画像・監視フォルダルート・通常サブフォルダ）には
+/// アーカイブ内エントリ（`*!/*`）を除外し、アーカイブ仮想ノードが選択された場合のみインデックス前方一致で高速抽出する。
 fn build_timeline_where_clause(
     conn: &Connection,
     table_alias: &str,
@@ -268,42 +276,130 @@ fn build_timeline_where_clause(
     }
 
     let Some(f) = filter else {
+        // フィルタ無指定（全画像表示または監視フォルダルート表示）ではアーカイブ内部エントリを除外
+        clauses.push(format!("{}file_path NOT GLOB '*!/*'", pfx));
         return Ok((clauses.join(" AND "), params_vec));
     };
 
-    // 1. サブフォルダ前方一致レンジフィルタ (B-Tree インデックス活用)
+    // 1. サブフォルダまたはアーカイブ仮想フォルダ前方一致レンジフィルタ (B-Tree インデックス活用)
+    let mut is_archive_target = false;
     if let Some(fid) = folder_id {
         if let Some(ref sub_rel) = f.sub_folder_path {
-            let clean_sub = sub_rel
-                .trim()
-                .replace('\\', "/")
-                .trim_matches('/')
-                .to_string();
-            if !clean_sub.is_empty() {
+            let trimmed_sub = sub_rel.trim();
+            if !trimmed_sub.is_empty() {
                 if let Ok(root_path) = conn.query_row(
                     "SELECT path FROM watched_folders WHERE id = ?1;",
                     params![fid],
                     |r| r.get::<_, String>(0),
                 ) {
                     let norm_root = root_path.replace('\\', "/").trim_end_matches('/').to_string();
-                    let sub_prefix_slash = format!("{}/{}/", norm_root, clean_sub);
-                    let sub_upper_slash = format!("{}/{}0", norm_root, clean_sub);
                     let win_root = norm_root.replace('/', "\\");
-                    let win_sub = clean_sub.replace('/', "\\");
-                    let sub_prefix_back = format!("{}\\{}\\", win_root, win_sub);
-                    let sub_upper_back = format!("{}\\{}}}", win_root, win_sub);
 
-                    clauses.push(format!(
-                        "(({0}file_path >= ? AND {0}file_path < ?) OR ({0}file_path >= ? AND {0}file_path < ?))",
-                        pfx
-                    ));
-                    params_vec.push(rusqlite::types::Value::Text(sub_prefix_slash));
-                    params_vec.push(rusqlite::types::Value::Text(sub_upper_slash));
-                    params_vec.push(rusqlite::types::Value::Text(sub_prefix_back));
-                    params_vec.push(rusqlite::types::Value::Text(sub_upper_back));
+                    // sub_rel が既に root_path から始まる絶対パスか、相対パスかを正規化して統一
+                    let norm_sub_full = trimmed_sub.replace('\\', "/");
+                    let rel_from_root = if norm_sub_full.to_lowercase().starts_with(&format!("{}/", norm_root.to_lowercase())) {
+                        let chars_to_skip = norm_root.chars().count() + 1;
+                        norm_sub_full
+                            .char_indices()
+                            .nth(chars_to_skip)
+                            .map(|(idx, _)| norm_sub_full[idx..].to_string())
+                            .unwrap_or_default()
+                    } else {
+                        norm_sub_full.trim_matches('/').to_string()
+                    };
+
+                    if !rel_from_root.is_empty() {
+                        if let Some((arch_rel, inner_sub)) = rel_from_root.split_once("!/") {
+                            // パターンA: アーカイブまたはアーカイブ内サブフォルダが明示指定された場合 ("manga.zip!/" or "manga.zip!/ch01")
+                            is_archive_target = true;
+                            let clean_inner = inner_sub.trim_matches('/');
+                            let arch_slash = format!("{}/{}", norm_root, arch_rel.trim_matches('/'));
+                            let arch_back = format!("{}\\{}", win_root, arch_rel.trim_matches('/').replace('/', "\\"));
+
+                            let (lower_slash, upper_slash, lower_back, upper_back) = if clean_inner.is_empty() {
+                                (
+                                    format!("{}!/", arch_slash),
+                                    format!("{}!0", arch_slash),
+                                    format!("{}!/", arch_back),
+                                    format!("{}!0", arch_back),
+                                )
+                            } else {
+                                (
+                                    format!("{}!/{}/", arch_slash, clean_inner),
+                                    format!("{}!/{}0", arch_slash, clean_inner),
+                                    format!("{}!/{}/", arch_back, clean_inner),
+                                    format!("{}!/{}0", arch_back, clean_inner),
+                                )
+                            };
+
+                            clauses.push(format!(
+                                "(({0}file_path >= ? AND {0}file_path < ?) OR ({0}file_path >= ? AND {0}file_path < ?))",
+                                pfx
+                            ));
+                            params_vec.push(rusqlite::types::Value::Text(lower_slash));
+                            params_vec.push(rusqlite::types::Value::Text(upper_slash));
+                            params_vec.push(rusqlite::types::Value::Text(lower_back));
+                            params_vec.push(rusqlite::types::Value::Text(upper_back));
+                        } else {
+                            // パターンB: "!/ "を含まないパス指定（"2024/Summer" または "manga.zip"）
+                            // アーカイブファイル自体のパスとして DB に `.../manga.zip!/...` が存在するかを高速チェックし、
+                            // または拡張子・実ファイル判定でアーカイブか通常ディレクトリかを両方カバーする。
+                            let arch_slash = format!("{}/{}", norm_root, rel_from_root);
+                            let arch_back = format!("{}\\{}", win_root, rel_from_root.replace('/', "\\"));
+                            let candidate_path = Path::new(&arch_back);
+                            let looks_like_archive_file = candidate_path.is_file() || {
+                                let lower_arch_s = format!("{}!/", arch_slash);
+                                let upper_arch_s = format!("{}!0", arch_slash);
+                                let lower_arch_b = format!("{}!/", arch_back);
+                                let upper_arch_b = format!("{}!0", arch_back);
+                                conn.query_row(
+                                    "SELECT 1 FROM images WHERE folder_id = ?1 AND ((file_path >= ?2 AND file_path < ?3) OR (file_path >= ?4 AND file_path < ?5)) LIMIT 1;",
+                                    params![fid, lower_arch_s, upper_arch_s, lower_arch_b, upper_arch_b],
+                                    |_| Ok(true),
+                                )
+                                .unwrap_or(false)
+                            };
+
+                            if looks_like_archive_file {
+                                is_archive_target = true;
+                                let lower_slash = format!("{}!/", arch_slash);
+                                let upper_slash = format!("{}!0", arch_slash);
+                                let lower_back = format!("{}!/", arch_back);
+                                let upper_back = format!("{}!0", arch_back);
+
+                                clauses.push(format!(
+                                    "(({0}file_path >= ? AND {0}file_path < ?) OR ({0}file_path >= ? AND {0}file_path < ?))",
+                                    pfx
+                                ));
+                                params_vec.push(rusqlite::types::Value::Text(lower_slash));
+                                params_vec.push(rusqlite::types::Value::Text(upper_slash));
+                                params_vec.push(rusqlite::types::Value::Text(lower_back));
+                                params_vec.push(rusqlite::types::Value::Text(upper_back));
+                            } else {
+                                let sub_prefix_slash = format!("{}/", arch_slash);
+                                let sub_upper_slash = format!("{}0", arch_slash);
+                                let sub_prefix_back = format!("{}\\", arch_back);
+                                let sub_upper_back = format!("{}}}", arch_back);
+
+                                clauses.push(format!(
+                                    "(({0}file_path >= ? AND {0}file_path < ?) OR ({0}file_path >= ? AND {0}file_path < ?))",
+                                    pfx
+                                ));
+                                params_vec.push(rusqlite::types::Value::Text(sub_prefix_slash));
+                                params_vec.push(rusqlite::types::Value::Text(sub_upper_slash));
+                                params_vec.push(rusqlite::types::Value::Text(sub_prefix_back));
+                                params_vec.push(rusqlite::types::Value::Text(sub_upper_back));
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // アーカイブ仮想フォルダを選択していない場合は、アーカイブ内エントリ（*!/*）をタイムラインから除外する
+    if !is_archive_target {
+        clauses.push(format!("{}file_path NOT GLOB '*!/*'", pfx));
     }
 
     // 2. ファイル名検索（AND / OR / NOT）
@@ -491,17 +587,43 @@ pub fn get_timeline_images_filtered(
     filter: Option<&TimelineFilter>,
 ) -> Result<Vec<ImageRecord>> {
     let sort = sort_by.unwrap_or(TimelineSort::TakenAtDesc);
+    // 変更理由: アーカイブ閲覧時およびファイル名ソート時において、`page1.jpg, page2.jpg, ..., page10.jpg` の
+    // 自然順（COLLATE NATURAL）が維持されるようにし、漫画・連番作品が正しいページ順で表示されるようにする。
+    let is_archive_filter = filter
+        .and_then(|f| f.sub_folder_path.as_deref())
+        .map(|s| {
+            let trimmed = s.trim();
+            trimmed.contains("!/")
+                || Path::new(trimmed)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|ext| {
+                        matches!(
+                            ext.to_ascii_lowercase().as_str(),
+                            "zip" | "cbz" | "rar" | "cbr" | "7z" | "cb7" | "tar"
+                        )
+                    })
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
     let order_sql = match sort {
         TimelineSort::TakenAtDesc => "ORDER BY i.taken_at DESC, i.id DESC",
         TimelineSort::TakenAtAsc => "ORDER BY i.taken_at ASC, i.id ASC",
-        TimelineSort::Folder => "ORDER BY i.folder_id ASC, i.taken_at DESC, i.id DESC",
-        TimelineSort::NameAsc => "ORDER BY i.file_path ASC, i.id ASC",
-        TimelineSort::NameDesc => "ORDER BY i.file_path DESC, i.id DESC",
+        TimelineSort::Folder => {
+            if is_archive_filter {
+                "ORDER BY i.folder_id ASC, i.file_path COLLATE NATURALSORT ASC, i.id ASC"
+            } else {
+                "ORDER BY i.folder_id ASC, i.taken_at DESC, i.id DESC"
+            }
+        }
+        TimelineSort::NameAsc => "ORDER BY i.file_path COLLATE NATURALSORT ASC, i.id ASC",
+        TimelineSort::NameDesc => "ORDER BY i.file_path COLLATE NATURALSORT DESC, i.id DESC",
     };
 
     let (where_sql, mut params_vec) = build_timeline_where_clause(conn, "i", folder_id, filter)?;
     let sql = format!(
-        "SELECT i.id, i.taken_at, i.width, i.height, i.file_mtime
+        "SELECT i.id, i.taken_at, i.width, i.height, i.file_mtime, i.file_path, i.format, i.folder_id
          FROM images i
          WHERE {}
          {}
@@ -514,12 +636,42 @@ pub fn get_timeline_images_filtered(
 
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params_vec), |row| {
+        let file_path: String = row.get(5)?;
+        let format_opt: Option<String> = row.get(6)?;
+        let folder_id: i64 = row.get(7)?;
+
+        // アーカイブ本体であるか判定（!/ を含まず、formatまたは拡張子がアーカイブ形式であること）
+        let is_arch = !file_path.contains("!/") && {
+            let ext = format_opt.as_deref().or_else(|| {
+                Path::new(&file_path).extension().and_then(|e| e.to_str())
+            }).unwrap_or("");
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "zip" | "cbz" | "rar" | "cbr" | "7z" | "cb7" | "tar"
+            )
+        };
+
+        let (is_archive, file_name, out_file_path, out_folder_id) = if is_arch {
+            let name = Path::new(&file_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| file_path.clone());
+            (Some(true), Some(name), Some(file_path), Some(folder_id))
+        } else {
+            (None, None, None, None)
+        };
+
         Ok(ImageRecord {
             id: row.get(0)?,
             taken_at: row.get(1)?,
             width: row.get(2)?,
             height: row.get(3)?,
             rev: row.get(4)?,
+            is_archive,
+            file_name,
+            file_path: out_file_path,
+            folder_id: out_folder_id,
+            format: format_opt,
         })
     })?;
 
@@ -664,7 +816,12 @@ pub fn get_image_detail(conn: &Connection, id: i64) -> Result<Option<ImageDetail
     let mut rows = stmt.query(params![id])?;
     if let Some(row) = rows.next()? {
         let file_path: String = row.get(6)?;
-        let exists = Path::new(&file_path).exists();
+        // 変更理由: アーカイブ仮想パス（`<archive_path>!/<inner_path>`）の場合は親アーカイブファイルの存在を確認する
+        let exists = if let Some((archive_path, _)) = crate::plugins::split_archive_virtual_path(&file_path) {
+            Path::new(archive_path).exists()
+        } else {
+            Path::new(&file_path).exists()
+        };
         let src_int: i32 = row.get(9)?;
         let taken_at_source = if src_int == 0 {
             TakenAtSource::Exif
@@ -1952,6 +2109,11 @@ pub fn get_subfolder_tree(conn: &Connection, folder_id: i64) -> Result<Vec<Subfo
 
     for row in rows {
         let fp = row?;
+        // 変更理由: アーカイブ内部エントリ（*!/*）は get_folder_hierarchy のアーカイブノード配下で扱うため、
+        // 従来のフラットなディレクトリ一覧からは除外する。
+        if fp.contains("!/") {
+            continue;
+        }
         let norm_fp = fp.replace('\\', "/");
         let rel = if norm_fp.starts_with(&root_prefix) {
             &norm_fp[root_prefix.len()..]
@@ -2001,6 +2163,476 @@ pub fn get_subfolder_tree(conn: &Connection, folder_id: i64) -> Result<Vec<Subfo
     }
 
     Ok(result)
+}
+
+/// アーカイブ内画像の寸法（width, height）が未記録だった場合にデコード後の寸法で更新する
+///
+/// 変更理由: `open_archive_folder` 時点では高速化のためデータ本体を解凍せず `width = None, height = None` で登録し、
+/// サムネイル生成や原寸表示で初めてデコードされたタイミングで寸法を補完するため。
+pub fn update_image_dimensions_if_empty(
+    conn: &Connection,
+    id: i64,
+    width: u32,
+    height: u32,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE images SET width = ?1, height = ?2 WHERE id = ?3 AND (width IS NULL OR height IS NULL);",
+        params![width, height, id],
+    )?;
+    Ok(())
+}
+
+/// 指定アーカイブが未変更のまま既にDBへインデックス済みであればその件数を返す（0msキャッシュヒット判定用）
+///
+/// 変更理由: ユーザーがサイドバーで同じアーカイブを再選択した際、アーカイブの `mtime` が変わっていなければ
+/// セントラルディレクトリ再走査やDB書き込みを一切行わずに即座に件数を返すため。
+pub fn get_indexed_archive_count_if_unchanged(
+    conn: &Connection,
+    folder_id: i64,
+    archive_path: &str,
+    archive_mtime: i64,
+) -> Result<Option<usize>> {
+    let norm_slash = archive_path.replace('\\', "/");
+    let norm_back = norm_slash.replace('/', "\\");
+    let lower_s = format!("{}!/", norm_slash);
+    let upper_s = format!("{}!0", norm_slash);
+    let lower_b = format!("{}!/", norm_back);
+    let upper_b = format!("{}!0", norm_back);
+
+    let (count, min_mtime, max_mtime): (i64, Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT COUNT(*), MIN(file_mtime), MAX(file_mtime)
+         FROM images
+         WHERE folder_id = ?1
+           AND ((file_path >= ?2 AND file_path < ?3) OR (file_path >= ?4 AND file_path < ?5));",
+        params![folder_id, lower_s, upper_s, lower_b, upper_b],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+
+    if count > 0 && min_mtime == Some(archive_mtime) && max_mtime == Some(archive_mtime) {
+        Ok(Some(count as usize))
+    } else {
+        Ok(None)
+    }
+}
+
+/// アーカイブ内エントリ群を単一トランザクションで一括UPSERTし、アーカイブから消えた古いエントリを掃除する
+///
+/// 変更理由: オンデマンド展開時に自然順（Natural Sort）でソート済みのエントリを一括登録し、
+/// 再パック等で削除された内部エントリがDBに残留するのを防ぐため。
+pub fn upsert_archive_entries(
+    conn: &mut Connection,
+    folder_id: i64,
+    archive_path: &str,
+    records: &[NewImageRecord],
+) -> Result<usize> {
+    let norm_slash = archive_path.replace('\\', "/");
+    let norm_back = norm_slash.replace('/', "\\");
+    let lower_s = format!("{}!/", norm_slash);
+    let upper_s = format!("{}!0", norm_slash);
+    let lower_b = format!("{}!/", norm_back);
+    let upper_b = format!("{}!0", norm_back);
+
+    let new_paths: HashSet<&str> = records.iter().map(|r| r.file_path.as_str()).collect();
+
+    let tx = conn.transaction()?;
+    {
+        // 1. 既存の該当アーカイブ内エントリのうち、今回のリストに含まれないものを削除
+        let mut existing_to_remove: Vec<i64> = Vec::new();
+        {
+            let mut sel_stmt = tx.prepare_cached(
+                "SELECT id, file_path FROM images
+                 WHERE folder_id = ?1
+                   AND ((file_path >= ?2 AND file_path < ?3) OR (file_path >= ?4 AND file_path < ?5));",
+            )?;
+            let rows = sel_stmt.query_map(
+                params![folder_id, lower_s, upper_s, lower_b, upper_b],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )?;
+            for row in rows {
+                let (id, fp) = row?;
+                if !new_paths.contains(fp.as_str()) {
+                    existing_to_remove.push(id);
+                }
+            }
+        }
+        if !existing_to_remove.is_empty() {
+            let mut del_stmt = tx.prepare_cached(
+                "DELETE FROM images WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM board_items bi WHERE bi.image_id = images.id);",
+            )?;
+            for id in existing_to_remove {
+                del_stmt.execute(params![id])?;
+            }
+        }
+
+        // 2. 全エントリを一括UPSERT
+        if !records.is_empty() {
+            let mut ins_stmt = tx.prepare_cached(
+                "INSERT INTO images (
+                    folder_id, file_path, file_size, file_mtime, taken_at,
+                    taken_at_source, width, height, orientation, format,
+                    quick_hash, thumb_status, indexed_at, source_url
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13
+                 )
+                 ON CONFLICT(file_path) DO UPDATE SET
+                    folder_id = CASE WHEN excluded.folder_id > 0 THEN excluded.folder_id ELSE images.folder_id END,
+                    file_size = excluded.file_size,
+                    file_mtime = excluded.file_mtime,
+                    taken_at = excluded.taken_at,
+                    taken_at_source = excluded.taken_at_source,
+                    width = COALESCE(excluded.width, images.width),
+                    height = COALESCE(excluded.height, images.height),
+                    orientation = excluded.orientation,
+                    format = excluded.format,
+                    quick_hash = excluded.quick_hash,
+                    thumb_status = CASE WHEN images.quick_hash <> excluded.quick_hash THEN 0 ELSE images.thumb_status END,
+                    indexed_at = excluded.indexed_at;",
+            )?;
+
+            for r in records {
+                ins_stmt.execute(params![
+                    r.folder_id,
+                    r.file_path,
+                    r.file_size as i64,
+                    r.file_mtime,
+                    r.taken_at,
+                    r.taken_at_source,
+                    r.width,
+                    r.height,
+                    r.orientation,
+                    r.format,
+                    r.quick_hash,
+                    r.indexed_at,
+                    r.source_url,
+                ])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(records.len())
+}
+
+/// 監視フォルダ配下のディレクトリ階層とアーカイブ仮想フォルダを統合した再帰ツリーを構築する
+///
+/// 変更理由: サイドバー上で通常のサブフォルダとアーカイブファイル（.zip, .cbz 等）、および
+/// 展開済みアーカイブ内のサブディレクトリをシームレスな階層ツリーとして表示・選択可能にするため。
+///
+/// @param conn DB読み取り接続
+/// @param folder_id 監視フォルダID
+/// @param archive_extensions 現在有効なアーカイブ拡張子リスト（小文字・ドットなし）
+/// @return ルート直下の FolderTreeNode リスト（自然順ソート済み）
+pub fn get_folder_hierarchy(
+    conn: &Connection,
+    folder_id: i64,
+    archive_extensions: &[String],
+) -> Result<Vec<FolderTreeNode>> {
+    let root_path: String = match conn.query_row(
+        "SELECT path FROM watched_folders WHERE id = ?1;",
+        params![folder_id],
+        |r| r.get(0),
+    ) {
+        Ok(p) => p,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+
+    let norm_root = root_path.replace('\\', "/").trim_end_matches('/').to_string();
+    let root_prefix = format!("{}/", norm_root);
+    let root_prefix_lower = root_prefix.to_lowercase();
+
+    // 1. DB 内の file_path を1パス走査し、通常サブフォルダの画像数と、インデックス済みアーカイブの画像数・内部サブフォルダ、および表紙（1枚目）を集計
+    let mut dir_counts: BTreeMap<String, i64> = BTreeMap::new();
+    let mut archive_counts: HashMap<String, i64> = HashMap::new();
+    let mut archive_sub_counts: HashMap<String, BTreeMap<String, i64>> = HashMap::new();
+    let mut archive_covers: HashMap<String, (String, i64, i64)> = HashMap::new(); // clean_arch -> (min_inner_path, id, rev)
+
+    let mut stmt = conn.prepare_cached("SELECT file_path, id, file_mtime FROM images WHERE folder_id = ?1;")?;
+    let rows = stmt.query_map(params![folder_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+    })?;
+
+    for row in rows {
+        let (fp, img_id, img_mtime) = row?;
+        let norm_fp = fp.replace('\\', "/");
+        let rel = if norm_fp.starts_with(&root_prefix) {
+            &norm_fp[root_prefix.len()..]
+        } else if norm_fp.to_lowercase().starts_with(&root_prefix_lower) {
+            let prefix_chars = root_prefix.chars().count();
+            match norm_fp.char_indices().nth(prefix_chars) {
+                Some((byte_idx, _)) => &norm_fp[byte_idx..],
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+
+        if let Some((arch_rel, inner_rel)) = rel.split_once("!/") {
+            let clean_arch = arch_rel.trim_matches('/').to_string();
+            if clean_arch.is_empty() {
+                continue;
+            }
+            *archive_counts.entry(clean_arch.clone()).or_insert(0) += 1;
+
+            // アーカイブの表紙（自然順で最小のエントリ）を記録
+            let inner_str = inner_rel.to_string();
+            archive_covers
+                .entry(clean_arch.clone())
+                .and_modify(|(curr_min, curr_id, curr_rev)| {
+                    if crate::plugins::compare_natural(&inner_str, curr_min) == std::cmp::Ordering::Less {
+                        *curr_min = inner_str.clone();
+                        *curr_id = img_id;
+                        *curr_rev = img_mtime;
+                    }
+                })
+                .or_insert_with(|| (inner_str, img_id, img_mtime));
+
+            // アーカイブの親ディレクトリが存在する場合、ツリー上に親ディレクトリノードを確保（件数自体は通常画像のみ加算するため0初期化）
+            let arch_parts: Vec<&str> = clean_arch.split('/').filter(|s| !s.is_empty()).collect();
+            if arch_parts.len() > 1 {
+                let mut accum = String::new();
+                for (idx, part) in arch_parts[..arch_parts.len() - 1].iter().enumerate() {
+                    if idx > 0 {
+                        accum.push('/');
+                    }
+                    accum.push_str(part);
+                    dir_counts.entry(accum.clone()).or_insert(0);
+                }
+            }
+
+            // アーカイブ内部のサブディレクトリ階層を集計
+            let inner_parts: Vec<&str> = inner_rel.split('/').filter(|s| !s.is_empty()).collect();
+            if inner_parts.len() > 1 {
+                let sub_map = archive_sub_counts.entry(clean_arch).or_default();
+                let mut inner_accum = String::new();
+                for (idx, part) in inner_parts[..inner_parts.len() - 1].iter().enumerate() {
+                    if idx > 0 {
+                        inner_accum.push('/');
+                    }
+                    inner_accum.push_str(part);
+                    *sub_map.entry(inner_accum.clone()).or_insert(0) += 1;
+                }
+            }
+        } else {
+            let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() <= 1 {
+                continue;
+            }
+            let dir_parts = &parts[..parts.len() - 1];
+            let mut accum = String::new();
+            for (idx, part) in dir_parts.iter().enumerate() {
+                if idx > 0 {
+                    accum.push('/');
+                }
+                accum.push_str(part);
+                *dir_counts.entry(accum.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // 2. 監視フォルダ配下のディスク上に存在するアーカイブファイル（未展開含む）を軽量走査してマージ
+    let ext_set: HashSet<String> = archive_extensions
+        .iter()
+        .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    let mut discovered_archives: BTreeMap<String, Option<i64>> = BTreeMap::new();
+    for (arch_rel, cnt) in &archive_counts {
+        discovered_archives.insert(arch_rel.clone(), Some(*cnt));
+    }
+
+    if !ext_set.is_empty() && Path::new(&root_path).is_dir() {
+        for entry in walkdir::WalkDir::new(&root_path)
+            .follow_links(false)
+            .max_depth(8)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let p = entry.path();
+            let ext = match p.extension().and_then(|e| e.to_str()) {
+                Some(e) => e.to_ascii_lowercase(),
+                None => continue,
+            };
+            if !ext_set.contains(&ext) {
+                continue;
+            }
+
+            let norm_p = p.to_string_lossy().replace('\\', "/");
+            let rel = if norm_p.starts_with(&root_prefix) {
+                norm_p[root_prefix.len()..].to_string()
+            } else if norm_p.to_lowercase().starts_with(&root_prefix_lower) {
+                let prefix_chars = root_prefix.chars().count();
+                match norm_p.char_indices().nth(prefix_chars) {
+                    Some((byte_idx, _)) => norm_p[byte_idx..].to_string(),
+                    None => continue,
+                }
+            } else {
+                continue;
+            };
+
+            let clean_rel = rel.trim_matches('/').to_string();
+            if clean_rel.is_empty() {
+                continue;
+            }
+
+            discovered_archives
+                .entry(clean_rel.clone())
+                .or_insert_with(|| archive_counts.get(&clean_rel).copied());
+
+            // アーカイブが格納されている親ディレクトリもツリーに表示されるよう保証
+            let parts: Vec<&str> = clean_rel.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() > 1 {
+                let mut accum = String::new();
+                for (idx, part) in parts[..parts.len() - 1].iter().enumerate() {
+                    if idx > 0 {
+                        accum.push('/');
+                    }
+                    accum.push_str(part);
+                    dir_counts.entry(accum.clone()).or_insert(0);
+                }
+            }
+        }
+    }
+
+    // 3. フラットなパス群から再帰的な FolderTreeNode ツリーを組み立てるヘルパー
+    fn build_nested_dir_tree(
+        parent_rel: &str,
+        dir_map: &BTreeMap<String, i64>,
+        archives_by_parent: &HashMap<String, Vec<FolderTreeNode>>,
+    ) -> Vec<FolderTreeNode> {
+        let mut nodes = Vec::new();
+        let target_depth = if parent_rel.is_empty() {
+            1
+        } else {
+            parent_rel.split('/').count() + 1
+        };
+        let prefix = if parent_rel.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", parent_rel)
+        };
+
+        for (rel_path, &cnt) in dir_map {
+            let depth = rel_path.split('/').count();
+            if depth != target_depth {
+                continue;
+            }
+            if !prefix.is_empty() && !rel_path.starts_with(&prefix) {
+                continue;
+            }
+            let name = rel_path
+                .rsplit('/')
+                .next()
+                .unwrap_or(rel_path)
+                .to_string();
+            let children = build_nested_dir_tree(rel_path, dir_map, archives_by_parent);
+            nodes.push(FolderTreeNode {
+                kind: "directory".to_string(),
+                path: rel_path.clone(),
+                name,
+                image_count: Some(cnt),
+                cover_image_id: None,
+                cover_rev: None,
+                children,
+            });
+        }
+
+        if let Some(arch_list) = archives_by_parent.get(parent_rel) {
+            nodes.extend(arch_list.iter().cloned());
+        }
+
+        // ディレクトリを先に、アーカイブを後に、それぞれ自然順（Natural Sort）でソート
+        nodes.sort_by(|a, b| {
+            let kind_ord = (a.kind == "archive").cmp(&(b.kind == "archive"));
+            if kind_ord != std::cmp::Ordering::Equal {
+                return kind_ord;
+            }
+            crate::plugins::compare_natural(&a.name, &b.name)
+        });
+
+        nodes
+    }
+
+    fn build_archive_inner_tree(
+        arch_rel: &str,
+        parent_inner: &str,
+        sub_map: &BTreeMap<String, i64>,
+    ) -> Vec<FolderTreeNode> {
+        let mut nodes = Vec::new();
+        let target_depth = if parent_inner.is_empty() {
+            1
+        } else {
+            parent_inner.split('/').count() + 1
+        };
+        let prefix = if parent_inner.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", parent_inner)
+        };
+
+        for (inner_rel, &cnt) in sub_map {
+            let depth = inner_rel.split('/').count();
+            if depth != target_depth {
+                continue;
+            }
+            if !prefix.is_empty() && !inner_rel.starts_with(&prefix) {
+                continue;
+            }
+            let name = inner_rel
+                .rsplit('/')
+                .next()
+                .unwrap_or(inner_rel)
+                .to_string();
+            let children = build_archive_inner_tree(arch_rel, inner_rel, sub_map);
+            nodes.push(FolderTreeNode {
+                kind: "directory".to_string(),
+                path: format!("{}!/{}", arch_rel, inner_rel),
+                name,
+                image_count: Some(cnt),
+                cover_image_id: None,
+                cover_rev: None,
+                children,
+            });
+        }
+
+        nodes.sort_by(|a, b| crate::plugins::compare_natural(&a.name, &b.name));
+        nodes
+    }
+
+    let mut archives_by_parent: HashMap<String, Vec<FolderTreeNode>> = HashMap::new();
+    for (arch_rel, count_opt) in discovered_archives {
+        let (parent_dir, file_name) = match arch_rel.rsplit_once('/') {
+            Some((p, n)) => (p.to_string(), n.to_string()),
+            None => (String::new(), arch_rel.clone()),
+        };
+
+        let inner_children = archive_sub_counts
+            .get(&arch_rel)
+            .map(|sub_map| build_archive_inner_tree(&arch_rel, "", sub_map))
+            .unwrap_or_default();
+
+        let cover_info = archive_covers.get(&arch_rel);
+        let cover_image_id = cover_info.map(|c| c.1);
+        let cover_rev = cover_info.map(|c| c.2);
+
+        archives_by_parent
+            .entry(parent_dir)
+            .or_default()
+            .push(FolderTreeNode {
+                kind: "archive".to_string(),
+                path: arch_rel,
+                name: file_name,
+                image_count: count_opt,
+                cover_image_id,
+                cover_rev,
+                children: inner_children,
+            });
+    }
+
+    Ok(build_nested_dir_tree("", &dir_counts, &archives_by_parent))
 }
 
 /// 登録されている全タグ一覧（付与されている画像枚数付き）を取得する
@@ -2743,6 +3375,191 @@ mod tests {
         assert_eq!(res_tag[0].id, img2);
         let sum_tag = get_timeline_summary_filtered(&conn, Some(folder.id), 1, None, Some(&f_tag)).unwrap();
         assert_eq!(sum_tag.total, 1);
+    }
+
+    #[test]
+    fn test_folder_hierarchy_discovers_unopened_archives_on_disk() {
+        // 変更理由: 未展開（DB未登録）のZIPがディスク走査でサイドバーツリーに検出されることを検証するため
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.zip"), b"PK").unwrap();
+        std::fs::write(root.join("sub").join("b.CBZ"), b"PK").unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.writer();
+        let folder = add_watched_folder(&conn, &root.to_string_lossy(), 1700000000).unwrap();
+        let tree = get_folder_hierarchy(&conn, folder.id, &["zip".to_string(), "cbz".to_string()]).unwrap();
+
+        assert!(tree.iter().any(|n| n.kind == "archive" && n.name == "a.zip" && n.image_count.is_none()));
+        let sub = tree.iter().find(|n| n.kind == "directory" && n.name == "sub").expect("sub未検出");
+        assert!(sub.children.iter().any(|n| n.kind == "archive" && n.name == "b.CBZ"));
+    }
+
+    #[test]
+    fn test_archive_virtual_folder_exclusion_and_natural_sort() {
+        let db = Database::open_in_memory().expect("インメモリDBのオープンに失敗");
+        let mut conn = db.writer();
+
+        let folder = add_watched_folder(&conn, "D:/manga", 1700000000).expect("フォルダ登録失敗");
+
+        // 1. 通常フォルダ内の画像 1枚を登録
+        let normal_img = upsert_single_image_and_get_id(
+            &conn,
+            &NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/manga/cover.png".to_string(),
+                file_size: 1200,
+                file_mtime: 1700000100,
+                taken_at: 1700000100,
+                taken_at_source: 1,
+                width: Some(800),
+                height: Some(1200),
+                orientation: 1,
+                format: Some("png".to_string()),
+                quick_hash: "h_cover".to_string(),
+                indexed_at: 1700000100,
+                source_url: None,
+            },
+        )
+        .unwrap();
+
+        // 2. アーカイブ仮想フォルダのエントリ（10.jpg, 1.jpg, 2.jpg）をオンデマンド登録
+        let archive_records = vec![
+            NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/manga/book.zip!/vol1/10.jpg".to_string(),
+                file_size: 5000,
+                file_mtime: 1700000500,
+                taken_at: 1700000200,
+                taken_at_source: 1,
+                width: None,
+                height: None,
+                orientation: 1,
+                format: Some("jpg".to_string()),
+                quick_hash: "h_10".to_string(),
+                indexed_at: 1700000600,
+                source_url: None,
+            },
+            NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/manga/book.zip!/vol1/1.jpg".to_string(),
+                file_size: 4000,
+                file_mtime: 1700000500,
+                taken_at: 1700000200,
+                taken_at_source: 1,
+                width: None,
+                height: None,
+                orientation: 1,
+                format: Some("jpg".to_string()),
+                quick_hash: "h_1".to_string(),
+                indexed_at: 1700000600,
+                source_url: None,
+            },
+            NewImageRecord {
+                folder_id: folder.id,
+                file_path: "D:/manga/book.zip!/vol1/2.jpg".to_string(),
+                file_size: 4500,
+                file_mtime: 1700000500,
+                taken_at: 1700000200,
+                taken_at_source: 1,
+                width: None,
+                height: None,
+                orientation: 1,
+                format: Some("jpg".to_string()),
+                quick_hash: "h_2".to_string(),
+                indexed_at: 1700000600,
+                source_url: None,
+            },
+        ];
+        let count = upsert_archive_entries(
+            &mut conn,
+            folder.id,
+            "D:/manga/book.zip",
+            &archive_records,
+        )
+        .expect("アーカイブエントリ登録失敗");
+        assert_eq!(count, 3);
+
+        // 3. 「すべての写真」および「監視フォルダ直下」ではアーカイブ内画像が除外され、cover.png(1枚)のみ返ること
+        let all_photos = get_timeline_images_filtered(&conn, 0, 50, None, None, None).unwrap();
+        assert_eq!(all_photos.len(), 1);
+        assert_eq!(all_photos[0].id, normal_img);
+
+        let root_folder = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, None).unwrap();
+        assert_eq!(root_folder.len(), 1);
+        assert_eq!(root_folder[0].id, normal_img);
+
+        let watched = get_watched_folders(&conn).unwrap();
+        assert_eq!(watched[0].image_count, 1);
+
+        // 4. アーカイブ仮想フォルダ "book.zip" 選択時はアーカイブ内3枚が取得され、自然順 (1.jpg -> 2.jpg -> 10.jpg) に並ぶこと
+        let f_archive = crate::models::TimelineFilter {
+            sub_folder_path: Some("book.zip".to_string()),
+            ..Default::default()
+        };
+        let archive_imgs = get_timeline_images_filtered(
+            &conn,
+            0,
+            50,
+            Some(folder.id),
+            Some(crate::models::TimelineSort::NameAsc),
+            Some(&f_archive),
+        )
+        .unwrap();
+        assert_eq!(archive_imgs.len(), 3);
+
+        // 各IDのfile_pathを確認して自然順になっているか検証
+        let paths: Vec<String> = archive_imgs
+            .iter()
+            .map(|r| {
+                conn.query_row(
+                    "SELECT file_path FROM images WHERE id = ?1",
+                    params![r.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                "D:/manga/book.zip!/vol1/1.jpg".to_string(),
+                "D:/manga/book.zip!/vol1/2.jpg".to_string(),
+                "D:/manga/book.zip!/vol1/10.jpg".to_string(),
+            ]
+        );
+
+        // 5. アーカイブ本体ファイル自身（D:/manga/book.zip）が登録された場合、通常画像と混在してタイムラインに選出され、is_archiveがtrueになること
+        let arch_record = NewImageRecord {
+            folder_id: folder.id,
+            file_path: "D:/manga/book.zip".to_string(),
+            file_size: 50000,
+            file_mtime: 1700000500,
+            taken_at: 1700000500,
+            taken_at_source: 1,
+            width: None,
+            height: None,
+            orientation: 1,
+            format: Some("zip".to_string()),
+            quick_hash: "h_zip_root".to_string(),
+            indexed_at: 1700000600,
+            source_url: None,
+        };
+        let arch_img_id = upsert_single_image_and_get_id(&conn, &arch_record).expect("アーカイブ本体登録失敗");
+
+        // 「監視フォルダ直下」で通常画像 + アーカイブ本体の計2件が取得できること
+        let mixed = get_timeline_images_filtered(&conn, 0, 50, Some(folder.id), None, None).unwrap();
+        assert_eq!(mixed.len(), 2);
+
+        let arch_item = mixed.iter().find(|r| r.id == arch_img_id).expect("アーカイブ本体レコードが見つかること");
+        assert_eq!(arch_item.is_archive, Some(true));
+        assert_eq!(arch_item.file_name.as_deref(), Some("book.zip"));
+        assert_eq!(arch_item.file_path.as_deref(), Some("D:/manga/book.zip"));
+
+        let normal_item = mixed.iter().find(|r| r.id == normal_img).expect("通常画像レコードが見つかること");
+        assert_eq!(normal_item.is_archive, None);
+        assert_eq!(normal_item.file_name, None);
     }
 }
 

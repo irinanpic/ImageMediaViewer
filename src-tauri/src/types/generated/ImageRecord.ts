@@ -25,4 +25,24 @@ height: number | null,
 /**
  * 最終更新日時（ファイルmtime）。サムネイルURLのキャッシュバスターとして使用
  */
-rev: number, };
+rev: number, 
+/**
+ * アーカイブ（ZIP/CBZ等）ファイルであるか（通常画像ではNoneでIPC転送量最小化）
+ */
+isArchive?: boolean, 
+/**
+ * アーカイブ本体のファイル名（例: "album.zip"）
+ */
+fileName?: string, 
+/**
+ * アーカイブ本体のファイルパス（クリック時のフォルダ展開用）
+ */
+filePath?: string, 
+/**
+ * 所属する監視フォルダID
+ */
+folderId?: number | null, 
+/**
+ * ファイルフォーマット識別子（例: "clip", "png", "jpeg" 等。ClipStudioなどの種別バッジ判定に使用）
+ */
+format?: string, };

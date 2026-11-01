@@ -27,7 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = { version = "0.32", features = ["bundled", "serialize"] }
+rusqlite = { version = "0.32", features = ["bundled", "serialize", "collation"] }
 walkdir = "2.5"
 rayon = "1.10"
 exif = { package = "kamadak-exif", version = "0.6" }
@@ -51,6 +51,8 @@ dirs = "7.0.0"
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # 選定理由: ブラウザからドロップされた data:image/... 形式のインライン画像を安全にバイナリデコードするため
 base64 = "0.22"
+# 選定理由: ZIP/CBZ等の圧縮アーカイブ内画像を展開せずセントラルディレクトリからO(1)で一覧・メモリ直接抽出するため（最小限のdeflate機能のみ有効化）
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # デスクトップ専用（Windows, macOS, Linux）の依存関係
 # モバイル環境（Android, iOS）では二重起動防止やデスクトップファイルマネージャー機能が非対応または不要なため分離

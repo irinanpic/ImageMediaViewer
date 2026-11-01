@@ -496,6 +496,29 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
             };
 
             if let Some((orig_path_str, hash, orig_mtime, _)) = file_info {
+                // アーカイブ仮想パス（`<archive_path>!/<inner_path>`）の場合はメモリ上に直接抽出して返却
+                if let Some((archive_path_str, inner_path_str)) =
+                    crate::plugins::split_archive_virtual_path(&orig_path_str)
+                {
+                    if let Ok(bytes) = state
+                        .format_plugins
+                        .extract_archive_entry(Path::new(archive_path_str), inner_path_str)
+                    {
+                        if let Ok(sz) = imagesize::blob_size(&bytes) {
+                            let conn = state.db.writer();
+                            let _ = crate::db::repo::update_image_dimensions_if_empty(
+                                &conn,
+                                id,
+                                sz.width as u32,
+                                sz.height as u32,
+                            );
+                        }
+                        let mime = get_mime_type(Path::new(inner_path_str));
+                        respond_cors(request, raw_image_response(bytes, mime), origin_ref);
+                        return;
+                    }
+                }
+
                 let orig_path = PathBuf::from(&orig_path_str);
                 // 1. 実ファイルが存在する場合は原寸ファイルを配信
                 if orig_path.exists() && orig_path.is_file() {
@@ -551,6 +574,26 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         .extension()
                         .and_then(|e| e.to_str())
                         .unwrap_or("");
+                    if state.format_plugins.is_supported_archive_path(std::path::Path::new(&orig_path)) {
+                        // 変更理由: アーカイブ本体の原寸表示要求が万が一生じた場合、先頭画像のバイナリを透過的に配信
+                        if let Ok(entries) = state.format_plugins.list_archive_entries(std::path::Path::new(&orig_path)) {
+                            let mut image_entries: Vec<crate::plugins::ArchiveEntryMeta> = entries
+                                .into_iter()
+                                .filter(|e| {
+                                    crate::scanner::walker::is_standard_image_extension(&e.extension)
+                                        || state.format_plugins.get_by_extension(&e.extension).is_some()
+                                })
+                                .collect();
+                            image_entries.sort_by(|a, b| crate::plugins::compare_natural(&a.inner_path, &b.inner_path));
+                            if let Some(first_entry) = image_entries.first() {
+                                if let Ok(bytes) = state.format_plugins.extract_archive_entry(std::path::Path::new(&orig_path), &first_entry.inner_path) {
+                                    let mime = get_mime_type(std::path::Path::new(&first_entry.inner_path));
+                                    respond_cors(request, raw_image_response(bytes, mime), origin_ref);
+                                    return;
+                                }
+                            }
+                        }
+                    }
                     if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
                         if let Ok((bytes, mime)) = plugin.extract_original_preview(std::path::Path::new(&orig_path)) {
                             respond_cors(request, raw_image_response(bytes, &mime), origin_ref);
@@ -946,19 +989,23 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                         if let Ok(req) = serde_json::from_str::<RevealReq>(&body_str) {
                             if let Ok(conn) = state.db.reader() {
                                 if let Ok(Some((orig_path, _, _, _))) = crate::db::repo::get_image_file_info(&conn, req.id) {
+                                    // アーカイブ仮想パス（`!` を含む）の場合は親アーカイブファイルを選択表示する
+                                    let target_reveal = crate::plugins::split_archive_virtual_path(&orig_path)
+                                        .map(|(arch, _)| arch.to_string())
+                                        .unwrap_or(orig_path);
                                     #[cfg(target_os = "windows")]
                                     {
                                         let _ = std::process::Command::new("explorer")
-                                            .args(["/select,", &orig_path])
+                                            .args(["/select,", &target_reveal])
                                             .spawn();
                                     }
                                     #[cfg(all(not(target_os = "windows"), not(any(target_os = "android", target_os = "ios"))))]
                                     {
-                                        let _ = opener::reveal(&orig_path);
+                                        let _ = opener::reveal(&target_reveal);
                                     }
                                     #[cfg(any(target_os = "android", target_os = "ios"))]
                                     {
-                                        let _ = &orig_path;
+                                        let _ = &target_reveal;
                                     }
                                     json_response(&serde_json::json!({ "success": true }), 200)
                                 } else {
@@ -1312,6 +1359,40 @@ fn handle_http_request(mut request: tiny_http::Request, state: &Arc<AppState>) {
                             }
                         } else {
                             error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Get, p) if p.starts_with("/api/folders/") && p.ends_with("/hierarchy") => {
+                        let id_str = p.trim_start_matches("/api/folders/").trim_end_matches("/hierarchy");
+                        if let Ok(folder_id) = id_str.parse::<i64>() {
+                            let archive_exts = state.format_plugins.supported_archive_extensions();
+                            match state.db.reader() {
+                                Ok(conn) => match crate::db::repo::get_folder_hierarchy(&conn, folder_id, &archive_exts) {
+                                    Ok(tree) => json_response(&tree, 200),
+                                    Err(e) => error_response(AppError::from(e), 500),
+                                },
+                                Err(e) => error_response(AppError::from(e), 500),
+                            }
+                        } else {
+                            error_response(AppError::invalid_argument("無効なID"), 400)
+                        }
+                    }
+
+                    (Method::Post, "/api/archive/open") => {
+                        let mut body_str = String::new();
+                        let _ = request.as_reader().read_to_string(&mut body_str);
+                        #[derive(serde::Deserialize)]
+                        #[serde(rename_all = "camelCase")]
+                        struct OpenArchiveReq {
+                            folder_id: i64,
+                            archive_path: String,
+                        }
+                        match serde_json::from_str::<OpenArchiveReq>(&body_str) {
+                            Ok(req) => match crate::commands::open_archive_folder_core(state, req.folder_id, &req.archive_path) {
+                                Ok(count) => json_response(&count, 200),
+                                Err(e) => error_response(e, 400),
+                            },
+                            Err(_) => error_response(AppError::invalid_argument("無効なJSON"), 400),
                         }
                     }
 

@@ -206,6 +206,42 @@ pub fn generate_thumbnail_bytes(
     Ok(webp_memory.to_vec())
 }
 
+/// メモリ上の画像バイト列からサムネイル WebP バイナリデータを直接生成し、元画像の (幅, 高さ) も返す
+///
+/// 変更理由: アーカイブ（ZIP/CBZ等）内の画像エントリを一時ファイルへ一切書き出すことなく、
+/// メモリ上で直接デコードしてサムネイル生成と寸法補完を同時に完了させるため。
+///
+/// @param raw_bytes 画像のメモリ上バイト列
+/// @param orientation Exif Orientation (1-8)
+/// @return (WebPバイナリデータ, 元画像幅, 元画像高さ)
+pub fn generate_thumbnail_bytes_from_memory(
+    raw_bytes: &[u8],
+    orientation: u32,
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let cursor = std::io::Cursor::new(raw_bytes);
+    let mut reader = ImageReader::new(cursor)
+        .with_guessed_format()
+        .map_err(|e| format!("メモリ画像のフォーマット推測失敗: {}", e))?;
+
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(20_000);
+    limits.max_image_height = Some(20_000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+
+    let img = reader
+        .decode()
+        .map_err(|e| format!("メモリ画像のデコード失敗: {}", e))?;
+
+    let (orig_w, orig_h) = img.dimensions();
+    if (orig_w as u64) * (orig_h as u64) > MAX_PIXELS {
+        return Err("ピクセル数上限（2億px）を超過しています".to_string());
+    }
+
+    let webp_memory = resize_and_encode_webp(img, orientation)?;
+    Ok((webp_memory.to_vec(), orig_w, orig_h))
+}
+
 /// 単一画像のサムネイルを生成し、アトミックにファイル保存する（後方互換用）
 ///
 /// @param source_path 元画像ファイルパス

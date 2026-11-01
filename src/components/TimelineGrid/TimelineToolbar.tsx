@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
+  BookOpen,
+  FileArchive,
   Filter,
   FolderTree,
   Menu,
@@ -23,7 +25,10 @@ import {
 import type { TimelineSort } from "../../types/generated/TimelineSort";
 
 /**
- * フィルタポップオーバーで選択可能な標準フォーマット一覧
+ * フィルタポップオーバーで選択可能な対応フォーマット一覧
+ *
+ * 変更理由: スキャナーおよびプラグインで実際にサポートされている画像形式のみに限定し、
+ * 非対応形式（svg, avif, tiff）を一覧から除外してユーザーの混乱を防止する。
  */
 const FILTERABLE_FORMATS = [
   "jpg",
@@ -32,9 +37,6 @@ const FILTERABLE_FORMATS = [
   "gif",
   "bmp",
   "clip",
-  "avif",
-  "svg",
-  "tiff",
 ];
 
 /**
@@ -61,7 +63,8 @@ export const TimelineToolbar: React.FC = () => {
   const updateFilterState = useAppStore((state) => state.updateFilterState);
   const clearFilterState = useAppStore((state) => state.clearFilterState);
   const tags = useAppStore((state) => state.tags);
-  const { getImageByIndex } = usePagedImages();
+  const openViewer = useAppStore((state) => state.openViewer);
+  const { getImageByIndex, ensureIndex } = usePagedImages();
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -196,6 +199,23 @@ export const TimelineToolbar: React.FC = () => {
   const popoverConditionCount = countPopoverFilterConditions(filterState);
   const queryModeUpper = (filterState.queryMode ?? "and").toUpperCase();
   const tagModeUpper = (filterState.tagMode ?? "and").toUpperCase();
+
+  // 現在選択されているサブフォルダパスがアーカイブ（またはアーカイブ内フォルダ）かどうかを判定
+  const subFolderPath = filterState.subFolderPath ?? "";
+  const isArchiveSubFolder =
+    subFolderPath.includes("!/") ||
+    /\.(zip|cbz|rar|cbr|7z|cb7|tar)$/i.test(subFolderPath);
+  const archiveDisplayName = isArchiveSubFolder
+    ? subFolderPath.split("!/")[0].split(/[\\/]/).pop() || subFolderPath
+    : "";
+
+  const handleReadFromStart = async () => {
+    if (totalImages <= 0) return;
+    const firstRecord = getImageByIndex(0) ?? (await ensureIndex(0));
+    if (firstRecord) {
+      openViewer(firstRecord.id, 0);
+    }
+  };
 
   return (
     <div
@@ -437,12 +457,24 @@ export const TimelineToolbar: React.FC = () => {
           )}
         </div>
 
-        {/* サブフォルダ選択中バッジ */}
+        {/* サブフォルダまたはアーカイブ選択中バッジ & 先頭から読むボタン */}
         {filterState.subFolderPath && (
-          <div className="inline-flex items-center gap-1 bg-accent/15 text-accent border border-accent/40 px-2 py-0.5 rounded text-[11px] font-medium max-w-[180px]">
-            <FolderTree className="w-3 h-3 shrink-0" />
+          <div
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium max-w-[220px] border ${
+              isArchiveSubFolder
+                ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+                : "bg-accent/15 text-accent border-accent/40"
+            }`}
+          >
+            {isArchiveSubFolder ? (
+              <FileArchive className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+            ) : (
+              <FolderTree className="w-3 h-3 shrink-0" />
+            )}
             <span className="truncate" title={filterState.subFolderPath}>
-              {filterState.subFolderPath}
+              {isArchiveSubFolder
+                ? `${archiveDisplayName} (${totalImages.toLocaleString()})`
+                : filterState.subFolderPath}
             </span>
             <button
               type="button"
@@ -452,6 +484,18 @@ export const TimelineToolbar: React.FC = () => {
               <X className="w-3 h-3" />
             </button>
           </div>
+        )}
+
+        {isArchiveSubFolder && totalImages > 0 && (
+          <button
+            type="button"
+            onClick={handleReadFromStart}
+            title={t("timeline.readFromStartTooltip")}
+            className="inline-flex items-center gap-1 bg-amber-500 hover:bg-amber-400 text-black font-semibold px-2.5 py-1 rounded text-xs transition shadow-xs cursor-pointer shrink-0 active:scale-95"
+          >
+            <BookOpen className="w-3.5 h-3.5 shrink-0" />
+            <span>{t("timeline.readFromStartBtn")}</span>
+          </button>
         )}
 
         {/* 全フィルタ一括解除ボタン */}

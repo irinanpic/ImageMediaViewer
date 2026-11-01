@@ -7,7 +7,14 @@ import { useViewportPrioritizer } from "../../hooks/useViewportPrioritizer";
 import { useAppStore } from "../../store";
 import { DateHeader } from "./DateHeader";
 import { GridCell } from "./GridCell";
-import { CheckSquare, FilterX, Image, LayoutGrid, Tag, X } from "lucide-react";
+import {
+  CheckSquare,
+  FilterX,
+  Image,
+  LayoutGrid,
+  Tag,
+  X,
+} from "lucide-react";
 import { TimelineScrubber } from "./TimelineScrubber";
 import { isMobileEnvironment } from "../../lib/thumbUrl";
 import { copyImageWithToast } from "../../plugins/actions/registry";
@@ -471,6 +478,7 @@ export const VirtualTimeline: React.FC = () => {
 
   if (totalImages === 0) {
     const hasFilter = isTimelineFilterActive(filterState);
+
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-textSecondary select-none p-8">
         <div className="w-16 h-16 rounded-full bg-surface flex items-center justify-center mb-4">
@@ -573,6 +581,7 @@ export const VirtualTimeline: React.FC = () => {
         />
       )}
 
+
       <div
         ref={containerRef}
         tabIndex={0}
@@ -580,7 +589,7 @@ export const VirtualTimeline: React.FC = () => {
         onMouseDown={handleTimelineMouseDown}
         onMouseMove={handleTimelineMouseMove}
         onMouseUp={handleTimelineMouseUp}
-        className="flex-1 overflow-y-auto overflow-x-hidden relative h-full bg-background select-none outline-none focus:ring-1 focus:ring-accent/40"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden relative bg-background select-none outline-none focus:ring-1 focus:ring-accent/40"
       >
         <div
           style={{

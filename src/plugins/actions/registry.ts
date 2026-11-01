@@ -219,8 +219,9 @@ export const builtInActionPlugins: ContextMenuActionPlugin[] = [
     },
     icon: "Trash2",
     order: 90,
-    isAvailable: (_record, enabledPlugins) =>
-      isPluginIdEnabled("action.trash_file", enabledPlugins),
+    isAvailable: (_record, enabledPlugins, detail) =>
+      isPluginIdEnabled("action.trash_file", enabledPlugins) &&
+      !detail?.filePath?.includes("!/"),
     execute: async (context) => {
       const storeState = useAppStore.getState();
       const locale = storeState.locale ?? "ja";
@@ -413,6 +414,7 @@ export class ContextMenuRegistry {
     const enabledPlugins = appSettings?.enabled_plugins ?? [
       "*",
       "format.*",
+      "archive.*",
       "action.open_default",
       "action.show_in_folder",
       "action.copy_path",

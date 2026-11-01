@@ -18,9 +18,13 @@ path: string,
  */
 imageCount: number, 
 /**
- * サムネイル生成済み数
+ * サムネイル生成済み数（成功件数）
  */
 thumbCount: number, 
+/**
+ * サムネイル生成失敗数（パスワード保護ZIPや0バイト/破損ファイル等のスキップ件数）
+ */
+thumbFailedCount: number, 
 /**
  * 状態
  */

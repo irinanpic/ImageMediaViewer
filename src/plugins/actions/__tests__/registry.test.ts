@@ -299,4 +299,28 @@ describe("ContextMenuRegistry & Plugins", () => {
     expect(openSpy).toHaveBeenCalledWith("https://example.com/art.png");
     openSpy.mockRestore();
   });
+
+  it("アーカイブ内仮想パス (!/) の画像に対しては action.trash_file が非表示となり、archive.* プラグイン設定が有効化されること", () => {
+    const archiveEntryDetail: ImageDetail = {
+      ...dummyJpgDetail,
+      filePath: "D:/manga/vol1.zip!/page01.jpg",
+    };
+
+    const actionsForNormal = ContextMenuRegistry.getAvailableActions(
+      dummyRecord,
+      null,
+      dummyJpgDetail
+    );
+    expect(actionsForNormal.some((a) => a.id === "action.trash_file")).toBe(true);
+
+    const actionsForArchive = ContextMenuRegistry.getAvailableActions(
+      dummyRecord,
+      null,
+      archiveEntryDetail
+    );
+    expect(actionsForArchive.some((a) => a.id === "action.trash_file")).toBe(false);
+
+    expect(isPluginIdEnabled("archive.zip", ["archive.*"])).toBe(true);
+    expect(isPluginIdEnabled("archive.zip", ["archive.*", "!archive.zip"])).toBe(false);
+  });
 });

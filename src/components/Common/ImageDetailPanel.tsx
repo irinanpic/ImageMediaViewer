@@ -1,5 +1,5 @@
 import React from "react";
-import { ExternalLink, FolderOpen, Tag, X } from "lucide-react";
+import { ExternalLink, FileArchive, FolderOpen, Tag, X } from "lucide-react";
 import { backendApi } from "../../lib/ipc";
 import { useTranslation } from "../../locales";
 import { useAppStore } from "../../store";
@@ -38,6 +38,10 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
   const meta = analyzeImageMetadata(detail, t);
   const fileName = getFileName(detail.filePath);
   const displayTitle = title || t("metadata.title");
+  const isArchiveEntry = detail.filePath.includes("!/");
+  const [archiveFilePath, archiveInnerPath] = isArchiveEntry
+    ? detail.filePath.split("!/", 2)
+    : ["", ""];
 
   // アスペクト比の計算
   let aspectRatioText = "";
@@ -80,12 +84,37 @@ export const ImageDetailPanel: React.FC<ImageDetailPanelProps> = ({
 
       {/* ファイル名・パス */}
       <div className="space-y-1">
-        <div className="font-medium text-textPrimary break-all line-clamp-2" title={fileName}>
-          {fileName}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="font-medium text-textPrimary break-all line-clamp-2" title={fileName}>
+            {fileName}
+          </div>
+          {isArchiveEntry && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 text-[10px] font-semibold shrink-0">
+              <FileArchive className="w-3 h-3 text-amber-400" />
+              {t("metadata.archiveInnerBadge")}
+            </span>
+          )}
         </div>
-        <div className="text-[11px] text-textSecondary/80 break-all leading-tight max-h-12 overflow-y-auto pr-1">
-          {detail.filePath}
-        </div>
+        {isArchiveEntry ? (
+          <div className="text-[11px] text-textSecondary/85 space-y-0.5 leading-tight bg-surfaceLight/40 p-1.5 rounded border border-border/50">
+            <div className="break-all">
+              <span className="text-textSecondary font-medium mr-1">
+                {t("metadata.archiveFileLabel")}
+              </span>
+              <span>{archiveFilePath}</span>
+            </div>
+            <div className="break-all">
+              <span className="text-textSecondary font-medium mr-1">
+                {t("metadata.archiveInnerPathLabel")}
+              </span>
+              <span className="text-accent">{archiveInnerPath}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="text-[11px] text-textSecondary/80 break-all leading-tight max-h-12 overflow-y-auto pr-1">
+            {detail.filePath}
+          </div>
+        )}
         {detail.sourceUrl && (
           <div className="pt-0.5">
             <button

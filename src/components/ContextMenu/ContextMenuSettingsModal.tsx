@@ -9,6 +9,7 @@ import {
   FolderOpen,
   FileArchive,
   RefreshCw,
+  Layers,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../../store";
@@ -25,13 +26,15 @@ import type { InstalledPluginInfo } from "../../types/generated/InstalledPluginI
  * 任意のペイントソフトやエディタを右クリックメニューへ登録可能にするため。
  */
 export const ContextMenuSettingsModal: React.FC = () => {
-  const { locale } = useTranslation();
+  const { locale, t } = useTranslation();
   const isOpen = useAppStore((state) => state.isContextMenuSettingsOpen);
   const close = useAppStore((state) => state.closeContextMenuSettings);
   const appSettings = useAppStore((state) => state.appSettings);
   const updateAppSettings = useAppStore((state) => state.updateAppSettings);
   const loadAppSettings = useAppStore((state) => state.loadAppSettings);
   const refreshTimeline = useAppStore((state) => state.refreshTimeline);
+  const showArchiveStacksInTimeline = useAppStore((state) => state.showArchiveStacksInTimeline);
+  const setShowArchiveStacksInTimeline = useAppStore((state) => state.setShowArchiveStacksInTimeline);
 
   const [activeTab, setActiveTab] = useState<"plugins" | "custom">("plugins");
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPluginInfo[]>([]);
@@ -99,6 +102,26 @@ export const ContextMenuSettingsModal: React.FC = () => {
     }
   };
 
+  /**
+   * タイムライン一覧でのアーカイブスタックカード表示のON/OFF切り替え
+   *
+   * @param nextEnabled 有効化フラグ
+   */
+  const handleToggleArchiveStacks = async (nextEnabled: boolean) => {
+    setShowArchiveStacksInTimeline(nextEnabled);
+    if (appSettings) {
+      try {
+        const updated = {
+          ...appSettings,
+          show_archive_stacks_in_timeline: nextEnabled,
+        };
+        await updateAppSettings(updated);
+      } catch (err) {
+        console.warn("アーカイブスタック設定の保存に失敗:", err);
+      }
+    }
+  };
+
   // プラグインの有効/無効（ON/OFF）トグル切り替え
   const handleTogglePlugin = async (plugin: InstalledPluginInfo, nextEnabled: boolean) => {
     if (!appSettings) return;
@@ -110,7 +133,11 @@ export const ContextMenuSettingsModal: React.FC = () => {
 
     if (nextEnabled) {
       nextList.delete(disableRule);
-      if (!nextList.has("*") && !nextList.has("format.*")) {
+      const isCoveredByWildcard =
+        nextList.has("*") ||
+        (plugin.id.startsWith("format.") && nextList.has("format.*")) ||
+        (plugin.id.startsWith("archive.") && nextList.has("archive.*"));
+      if (!isCoveredByWildcard) {
         nextList.add(plugin.id);
       }
     } else {
@@ -433,6 +460,32 @@ export const ContextMenuSettingsModal: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* アーカイブスタック表示設定 */}
+            <div className="p-3.5 rounded-lg bg-surfaceLight/40 border border-border/80 flex items-center justify-between gap-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="p-2 rounded-lg bg-amber-500/15 text-amber-400 mt-0.5 shrink-0">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold text-textPrimary">
+                    {t("settings.showArchiveStacksTitle")}
+                  </p>
+                  <p className="text-[11px] text-textSecondary mt-0.5 leading-relaxed">
+                    {t("settings.showArchiveStacksDesc")}
+                  </p>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={showArchiveStacksInTimeline}
+                  onChange={(e) => handleToggleArchiveStacks(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-surfaceLight peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+              </label>
+            </div>
 
             {/* 簡単インポート＆フォルダ操作ツールバー */}
             <div className="flex flex-wrap items-center justify-between gap-2 bg-surfaceLight/30 p-3 rounded-lg border border-border/60">

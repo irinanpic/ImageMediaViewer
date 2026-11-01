@@ -24,6 +24,7 @@ import type { Bookmark } from "../types/bookmark";
 import type { PluginActionDefinition } from "../types/generated/PluginActionDefinition";
 import type { InstalledPluginInfo } from "../types/generated/InstalledPluginInfo";
 import type {
+  FolderTreeNode,
   ImageTagAssignment,
   SubfolderEntry,
   TagRecord,
@@ -605,6 +606,21 @@ export const backendApi = {
    */
   getSubfolderTree: (folderId: number): Promise<SubfolderEntry[]> =>
     callIpc<SubfolderEntry[]>("get_subfolder_tree", { folderId }),
+
+  /**
+   * 監視フォルダ配下の実ディレクトリおよびアーカイブ仮想フォルダの階層ツリーを取得
+   * @param folderId 監視フォルダID
+   */
+  getFolderHierarchy: (folderId: number): Promise<FolderTreeNode[]> =>
+    callIpc<FolderTreeNode[]>("get_folder_hierarchy", { folderId }),
+
+  /**
+   * アーカイブ（またはアーカイブ内サブフォルダ）をオンデマンドで走査・インデックス登録する
+   * @param folderId 監視フォルダID
+   * @param archivePath 監視フォルダからの相対アーカイブパス（または `archive.zip!/sub`）
+   */
+  openArchiveFolder: (folderId: number, archivePath: string): Promise<number> =>
+    callIpc<number>("open_archive_folder", { folderId, archivePath }),
 
   /**
    * 登録済み全タグ一覧（付与画像数付き）を取得

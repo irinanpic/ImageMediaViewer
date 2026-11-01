@@ -181,17 +181,56 @@ pub fn run() {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder.on_window_event(move |window, event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-            if stay_for_window.load(Ordering::Relaxed) {
-                // 常駐 ON: ウィンドウを閉じるのをキャンセルし、非表示にしてタスクトレイに残す
-                api.prevent_close();
-                let _ = window.hide();
-                info!("Hidden main window and transitioned to system tray");
-            } else {
-                // 常駐 OFF: アプリケーション全体を終了する
-                info!("Resident setting is OFF; Terminating application on window close");
-                window.app_handle().exit(0);
+        match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                // 変更理由: アプリ終了時に画面サイズ・位置・最大化状態を同期保存し、次回起動時に正確に復元できるようにする
+                if let (Ok(is_maximized), Ok(size), Ok(pos)) = (
+                    window.is_maximized(),
+                    window.outer_size(),
+                    window.outer_position(),
+                ) {
+                    if size.width > 200 && size.height > 200 {
+                        let state = crate::models::WindowState {
+                            width: size.width,
+                            height: size.height,
+                            x: Some(pos.x),
+                            y: Some(pos.y),
+                            is_maximized,
+                        };
+                        let _ = commands::save_window_state_sync(&state);
+                    }
+                }
+
+                if stay_for_window.load(Ordering::Relaxed) {
+                    // 常駐 ON: ウィンドウを閉じるのをキャンセルし、非表示にしてタスクトレイに残す
+                    api.prevent_close();
+                    let _ = window.hide();
+                    info!("Hidden main window and transitioned to system tray");
+                } else {
+                    // 常駐 OFF: アプリケーション全体を終了する
+                    info!("Resident setting is OFF; Terminating application on window close");
+                    window.app_handle().exit(0);
+                }
             }
+            tauri::WindowEvent::Resized(size) => {
+                // ウィンドウリサイズ時にも最新サイズを記録
+                if size.width > 200 && size.height > 200 {
+                    if let (Ok(is_maximized), Ok(pos)) = (
+                        window.is_maximized(),
+                        window.outer_position(),
+                    ) {
+                        let state = crate::models::WindowState {
+                            width: size.width,
+                            height: size.height,
+                            x: Some(pos.x),
+                            y: Some(pos.y),
+                            is_maximized,
+                        };
+                        let _ = commands::save_window_state_sync(&state);
+                    }
+                }
+            }
+            _ => {}
         }
     });
 
@@ -235,12 +274,31 @@ pub fn run() {
                 }
             });
 
-            // メインウィンドウを表示
+            // メインウィンドウを表示（保存済みサイズ・位置・最大化状態を復元）
             if let Some(w) = app.get_webview_window("main") {
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    if let Ok(state) = commands::get_window_state_sync() {
+                        if state.width > 200 && state.height > 200 {
+                            let _ = w.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+                                width: state.width,
+                                height: state.height,
+                            }));
+                            if let (Some(x), Some(y)) = (state.x, state.y) {
+                                let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+                            }
+                        }
+                        if state.is_maximized {
+                            let _ = w.maximize();
+                        }
+                    }
+                }
                 let _ = w.show();
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                let _ = w.unminimize();
-                let _ = w.set_focus();
+                {
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
             }
 
             Ok(())
@@ -305,6 +363,8 @@ pub fn run() {
             commands::install_plugin,
             commands::copy_image_to_clipboard,
             commands::get_subfolder_tree,
+            commands::get_folder_hierarchy,
+            commands::open_archive_folder,
             commands::get_tags,
             commands::create_tag,
             commands::update_tag,

@@ -7,8 +7,11 @@ use ts_rs::TS;
 /// ユーザーが独自画像フォーマットや外部連携アクションを完全動的に追加・実行可能にするため。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
-    /// プラグイン一意識別子 (例: "format.clipstudio")
+    /// プラグイン一意識別子 (例: "format.clipstudio", "archive.rar")
     pub id: String,
+    /// プラグイン種別 ("format" | "archive" | "action")
+    #[serde(default, rename = "type")]
+    pub plugin_type: Option<String>,
     /// プラグイン名称 (例: "CLIP STUDIO PAINT (.clip) Support")
     pub name: String,
     /// プラグインバージョン (例: "1.0.0")
@@ -26,6 +29,12 @@ pub struct PluginManifest {
     /// 画像抽出エンジン設定（フォーマットプラグイン用）
     #[serde(default)]
     pub extractor: Option<ExtractorConfig>,
+    /// アーカイブ内エントリ一覧取得用外部コマンドテンプレート（例: ["7z", "l", "-slt", "{archive_path}"]）
+    #[serde(default)]
+    pub archive_list_command: Option<Vec<String>>,
+    /// アーカイブ内指定エントリ標準出力抽出用外部コマンドテンプレート（例: ["7z", "e", "-so", "{archive_path}", "{entry_path}"]）
+    #[serde(default)]
+    pub archive_extract_command: Option<Vec<String>>,
     /// プラグインが提供するコンテキストメニューアクション一覧
     #[serde(default)]
     pub actions: Vec<PluginActionDefinition>,

@@ -170,10 +170,14 @@ export const ImageViewerModal: React.FC = () => {
       .catch(() => {});
   }, [activeImageId, isViewerOpen, catalogVersion, isTagEditModalOpen]);
 
-  // 前後の画像プリロード
+  // 前後の画像プリロード（アーカイブ連続読書時の快適性を高めるため2ページ先まで先読み）
   useEffect(() => {
     if (activeImageIndex === null) return;
-    const preloadIndices = [activeImageIndex - 1, activeImageIndex + 1];
+    const preloadIndices = [
+      activeImageIndex - 1,
+      activeImageIndex + 1,
+      activeImageIndex + 2,
+    ];
     for (const idx of preloadIndices) {
       if (idx >= 0 && idx < totalImages) {
         const rec = getImageByIndex(idx);
@@ -213,10 +217,14 @@ export const ImageViewerModal: React.FC = () => {
 
       switch (e.key) {
         case "ArrowLeft":
+        case "a":
+        case "A":
           e.preventDefault();
           handlePrev();
           break;
         case "ArrowRight":
+        case "d":
+        case "D":
           e.preventDefault();
           handleNext();
           break;

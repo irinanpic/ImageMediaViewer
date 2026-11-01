@@ -51,6 +51,9 @@ pub struct AppSettings {
     /// ユーザー定義のカスタムコンテキストメニュー項目（環境依存の詳細を含めないためデフォルトは空配列）
     #[serde(default)]
     pub custom_context_menu_items: Vec<CustomContextMenuItem>,
+    /// タイムライン一覧にアーカイブを複数画像スタック（積み重なりカード）として表示するか
+    #[serde(default = "default_true")]
+    pub show_archive_stacks_in_timeline: bool,
 }
 
 /// デフォルトで有効化される安全なプラグイン一覧
@@ -61,6 +64,7 @@ pub fn default_enabled_plugins() -> Vec<String> {
     vec![
         "*".to_string(),
         "format.*".to_string(),
+        "archive.*".to_string(),
         "action.open_default".to_string(),
         "action.show_in_folder".to_string(),
         "action.copy_image".to_string(),
@@ -77,6 +81,7 @@ impl Default for AppSettings {
             locale: "ja".to_string(), // デフォルト 日本語
             enabled_plugins: default_enabled_plugins(),
             custom_context_menu_items: Vec::new(), // 環境非依存の空配列
+            show_archive_stacks_in_timeline: true, // デフォルト ON
         }
     }
 }
@@ -104,6 +109,13 @@ pub fn load_settings(data_dir: &Path) -> AppSettings {
                     .any(|p| p == "*" || p == "format.*" || p.starts_with("format.") || p.starts_with("!format."));
                 if !has_format_pattern {
                     s.enabled_plugins.push("format.*".to_string());
+                }
+                let has_archive_pattern = s
+                    .enabled_plugins
+                    .iter()
+                    .any(|p| p == "*" || p == "archive.*" || p.starts_with("archive.") || p.starts_with("!archive."));
+                if !has_archive_pattern {
+                    s.enabled_plugins.push("archive.*".to_string());
                 }
             }
             return s;
@@ -165,7 +177,11 @@ mod tests {
         let modified = AppSettings {
             stay_in_tray: false,
             locale: "en".to_string(),
-            enabled_plugins: vec!["format.*".to_string(), "!format.disabled".to_string()],
+            enabled_plugins: vec![
+                "format.*".to_string(),
+                "archive.*".to_string(),
+                "!format.disabled".to_string(),
+            ],
             custom_context_menu_items: vec![CustomContextMenuItem {
                 id: "test-item".to_string(),
                 name: "Test Action".to_string(),
@@ -174,6 +190,7 @@ mod tests {
                 target_extensions: vec!["png".to_string()],
                 enabled: true,
             }],
+            show_archive_stacks_in_timeline: true,
         };
         save_settings(dir_path, &modified).expect("設定の保存に失敗");
 

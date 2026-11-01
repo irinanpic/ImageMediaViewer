@@ -6,23 +6,44 @@
  * 変更理由: 仕様書§9のImageRecordインターフェースに準拠。不要なフィールドを除去しIPC転送量を最小化
  */
 export type ImageRecord = { 
-/**
- * 画像ID (DB primary key)
- */
-id: number, 
-/**
- * 撮影日時（壁時計時刻をUTCとみなしたUNIXエポック秒）
- */
-takenAt: number, 
-/**
- * Orientation適用後の幅（ピクセル）
- */
-width: number | null, 
-/**
- * Orientation適用後の高さ（ピクセル）
- */
-height: number | null, 
-/**
- * 最終更新日時（ファイルmtime）。サムネイルURLのキャッシュバスターとして使用
- */
-rev: number, };
+  /**
+   * 画像ID (DB primary key)
+   */
+  id: number; 
+  /**
+   * 撮影日時（壁時計時刻をUTCとみなしたUNIXエポック秒）
+   */
+  takenAt: number; 
+  /**
+   * Orientation適用後の幅（ピクセル）
+   */
+  width: number | null; 
+  /**
+   * Orientation適用後の高さ（ピクセル）
+   */
+  height: number | null; 
+  /**
+   * 最終更新日時（ファイルmtime）。サムネイルURLのキャッシュバスターとして使用
+   */
+  rev: number;
+  /**
+   * アーカイブ（ZIP/CBZ等）ファイルであるか
+   */
+  isArchive?: boolean;
+  /**
+   * アーカイブ本体のファイル名（例: "album.zip"）
+   */
+  fileName?: string;
+  /**
+   * アーカイブ本体のファイルパス（クリック時のフォルダ展開用）
+   */
+  filePath?: string;
+  /**
+   * 所属する監視フォルダID
+   */
+  folderId?: number | null;
+  /**
+   * ファイルフォーマット識別子（例: "clip", "png", "jpeg" 等）
+   */
+  format?: string;
+};

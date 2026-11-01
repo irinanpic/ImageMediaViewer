@@ -129,6 +129,44 @@ pub struct ThumbnailPipeline {
     app_state: std::sync::RwLock<Option<std::sync::Weak<crate::state::AppState>>>,
 }
 
+/// メモリ予算の自動返却を保証するRAIIガード
+///
+/// 変更理由: 早期return（?演算子含む）やエラー、パニック時でも
+/// 確実にメモリ予算が返却され、デッドロックによるサムネイル生成停止を根絶するため。
+struct MemoryBudgetGuard<'a> {
+    pipeline: &'a ThumbnailPipeline,
+    amount: usize,
+}
+
+impl<'a> Drop for MemoryBudgetGuard<'a> {
+    fn drop(&mut self) {
+        if self.amount > 0 {
+            self.pipeline
+                .memory_budget_bytes
+                .fetch_sub(self.amount, AtomicOrdering::SeqCst);
+        }
+    }
+}
+
+/// バックグラウンドジョブ並行数の自動減算を保証するRAIIガード
+///
+/// 変更理由: ジョブ完了時やエラー脱出時に確実にactive_lowカウンタを減算し、
+/// バックグラウンド枠の枯渇を防ぐため。
+struct ActiveLowGuard<'a> {
+    pipeline: &'a ThumbnailPipeline,
+    is_active: bool,
+}
+
+impl<'a> Drop for ActiveLowGuard<'a> {
+    fn drop(&mut self) {
+        if self.is_active {
+            self.pipeline
+                .active_low
+                .fetch_sub(1, AtomicOrdering::SeqCst);
+        }
+    }
+}
+
 impl ThumbnailPipeline {
     pub fn new(
         db: Database,
@@ -576,6 +614,10 @@ impl ThumbnailPipeline {
             let heap_empty = state.heap.is_empty();
             if heap_empty && idle_rounds == 0 {
                 drop(state);
+                // 変更理由: 補充前に保留中のバッチをフラッシュし、DBの未生成レコードを正確に反映
+                if !low_batch.is_empty() {
+                    self.flush_low_batch(low_batch);
+                }
                 idle_rounds += 1;
                 if self.refill_background() > 0 {
                     continue;
@@ -591,18 +633,16 @@ impl ThumbnailPipeline {
             }
 
             // 新しいジョブの到着、またはバックグラウンド枠の空きを待つ
-            // ヒープが空で未生成ジョブもない場合は、無駄な定期起床・DB負荷を防ぐため60秒間静止待機
+            // ヒープが空で未生成ジョブもない場合は、無駄なDB負荷を防ぎつつスムーズに復帰できるよう5秒間待機
             let timeout = if heap_empty {
-                Duration::from_secs(60)
+                Duration::from_secs(5)
             } else {
                 Duration::from_millis(50)
             };
-            let (guard, res) = self.condvar.wait_timeout(state, timeout).unwrap();
+            let (guard, _res) = self.condvar.wait_timeout(state, timeout).unwrap();
             drop(guard);
-            if res.timed_out() && heap_empty {
-                // 60秒経過した場合は再度未生成分があるか軽く確認
-                idle_rounds = 0;
-            }
+            // 変更理由: notify通知またはタイムアウトいずれの起床でも、確実に補充を再試行できるようリセット
+            idle_rounds = 0;
         }
     }
 
@@ -676,18 +716,97 @@ impl ThumbnailPipeline {
             return Err("Memory budget not acquired".to_string());
         }
 
+        // 変更理由: 早期return(?演算子含む)やエラー、パニック時でも確実にメモリ予算を解放するRAIIガード
+        let _guard = MemoryBudgetGuard {
+            pipeline: self,
+            amount: est_bytes,
+        };
+
         let result = if let Some(state) = self.get_app_state() {
-            let ext = job.file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
-                plugin.generate_thumbnail(&job.file_path, job.orientation)
+            let path_str = job.file_path.to_string_lossy();
+            if let Some((archive_path, inner_path)) =
+                crate::plugins::split_archive_virtual_path(&path_str)
+            {
+                let raw_bytes = state
+                    .format_plugins
+                    .extract_archive_entry(std::path::Path::new(archive_path), inner_path)?;
+                let (webp_bytes, orig_w, orig_h) =
+                    crate::pipeline::thumbnail::generate_thumbnail_bytes_from_memory(
+                        &raw_bytes,
+                        job.orientation,
+                    )?;
+                // アーカイブ登録時点では width/height が None のため、初回デコード時に補完更新する
+                if job.width.is_none() || job.height.is_none() {
+                    let conn = self.db.writer();
+                    let _ = crate::db::repo::update_image_dimensions_if_empty(
+                        &conn,
+                        job.image_id,
+                        orig_w,
+                        orig_h,
+                    );
+                }
+                Ok(webp_bytes)
+            } else if state.format_plugins.is_supported_archive_path(&job.file_path) {
+                // 変更理由: アーカイブ本体ファイル（未展開状態）の先頭画像サムネイルを高速生成する。
+                // アーカイブ全体を展開せず、セントラルディレクトリから自然順（Natural Sort）で先頭1枚のみを
+                // メモリ上に直接抽出してサムネイル化することで、ZIP展開の遅延なく中身の確認を可能にする。
+                let entries = state
+                    .format_plugins
+                    .list_archive_entries(&job.file_path)?;
+
+                let mut image_entries: Vec<crate::plugins::ArchiveEntryMeta> = entries
+                    .into_iter()
+                    .filter(|e| {
+                        crate::scanner::walker::is_standard_image_extension(&e.extension)
+                            || state.format_plugins.get_by_extension(&e.extension).is_some()
+                    })
+                    .collect();
+
+                image_entries.sort_by(|a, b| crate::plugins::compare_natural(&a.inner_path, &b.inner_path));
+
+                if let Some(first_entry) = image_entries.first() {
+                    // 100MB以上の巨大エントリ（ZIP爆弾等）はメモリ枯渇防止のためスキップ
+                    if first_entry.uncompressed_size > 100 * 1024 * 1024 {
+                        return Err(format!(
+                            "アーカイブ内先頭画像の展開後サイズが上限(100MB)を超過しています: {} bytes",
+                            first_entry.uncompressed_size
+                        ));
+                    }
+                    let raw_bytes = state
+                        .format_plugins
+                        .extract_archive_entry(&job.file_path, &first_entry.inner_path)?;
+                    let (webp_bytes, orig_w, orig_h) =
+                        crate::pipeline::thumbnail::generate_thumbnail_bytes_from_memory(
+                            &raw_bytes,
+                            job.orientation,
+                        )?;
+                    if job.width.is_none() || job.height.is_none() {
+                        let conn = self.db.writer();
+                        let _ = crate::db::repo::update_image_dimensions_if_empty(
+                            &conn,
+                            job.image_id,
+                            orig_w,
+                            orig_h,
+                        );
+                    }
+                    Ok(webp_bytes)
+                } else {
+                    Err("アーカイブ内に画像エントリが存在しません".to_string())
+                }
             } else {
-                generate_thumbnail_bytes(&job.file_path, job.orientation).map_err(|e| e.to_string())
+                let ext = job.file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+                    plugin.generate_thumbnail(&job.file_path, job.orientation)
+                } else {
+                    generate_thumbnail_bytes(&job.file_path, job.orientation)
+                        .map_err(|e| e.to_string())
+                }
             }
         } else {
             generate_thumbnail_bytes(&job.file_path, job.orientation).map_err(|e| e.to_string())
         };
 
-        self.memory_budget_bytes.fetch_sub(est_bytes, AtomicOrdering::SeqCst);
+        // _guard の Drop により est_bytes は自動返却される
         result
     }
 
@@ -701,6 +820,11 @@ impl ThumbnailPipeline {
                 || get_thumbnail_path(&self.cache_dir, &job.quick_hash).exists();
 
             let is_low = job.priority == JobPriority::Low;
+            // 変更理由: ジョブ終了時やパニック時でも確実にactive_lowを減算するRAIIガード
+            let _active_low_guard = ActiveLowGuard {
+                pipeline: self,
+                is_active: is_low,
+            };
 
             let (is_success, status_transitioned) = if is_low {
                 if is_already_done {
@@ -738,9 +862,6 @@ impl ThumbnailPipeline {
                 }
             };
 
-            if is_low {
-                self.active_low.fetch_sub(1, AtomicOrdering::SeqCst);
-            }
             self.completed_count.fetch_add(1, AtomicOrdering::Relaxed);
 
             // 実際にステータスが遷移（0/2 -> 1 または 0/1 -> 2）した場合のみ AppState カウンタに反映
@@ -762,6 +883,15 @@ impl ThumbnailPipeline {
             let mut state = self.queue_state.lock().unwrap();
             state.in_progress.remove(&job.image_id);
             if let Some(waiters) = state.waiters.remove(&job.image_id) {
+                // 変更理由: 画面上のオンデマンド表示待機者（waiters）に通知する前に、
+                // 保留中のLowバッチを確実にフラッシュして thumbnails.db へコミットする。
+                // これにより、起床後の handle_thumb_protocol がサムネイルを見つけられず
+                // 404 NOT_FOUND となるレースコンディションを根本防止する。
+                if !low_batch.is_empty() {
+                    drop(state);
+                    self.flush_low_batch(&mut low_batch);
+                    state = self.queue_state.lock().unwrap();
+                }
                 for waiter in waiters {
                     waiter.send(is_success);
                 }
@@ -877,5 +1007,71 @@ mod tests {
         heap.push(job(JobPriority::Low, 1, 10));
         heap.push(job(JobPriority::Low, 1, 11));
         assert_eq!(heap.pop().unwrap().sequence, 10);
+    }
+
+    #[test]
+    fn test_memory_budget_guard_releases_on_error_or_drop() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let thumb_store = Arc::new(ThumbnailStore::open_in_memory().unwrap());
+        let pipeline = ThumbnailPipeline::new(db, thumb_store, temp_dir.path().to_path_buf());
+
+        assert_eq!(pipeline.memory_budget_bytes.load(AtomicOrdering::SeqCst), 0);
+
+        // ガードによる手動スコープでの返却検証
+        {
+            pipeline.memory_budget_bytes.fetch_add(1024, AtomicOrdering::SeqCst);
+            let _guard = MemoryBudgetGuard {
+                pipeline: &pipeline,
+                amount: 1024,
+            };
+            assert_eq!(pipeline.memory_budget_bytes.load(AtomicOrdering::SeqCst), 1024);
+        }
+        assert_eq!(pipeline.memory_budget_bytes.load(AtomicOrdering::SeqCst), 0);
+
+        // 存在しない不正ファイルに対するサムネイル生成（エラー発生）時でもメモリ予算がリークしないこと
+        let bad_job = ThumbnailJob {
+            priority: JobPriority::High,
+            image_id: 9999,
+            file_path: temp_dir.path().join("non_existent_corrupted_file.jpg"),
+            quick_hash: "badhash123".to_string(),
+            orientation: 1,
+            width: Some(2000),
+            height: Some(2000),
+            generation: 1,
+            sequence: 1,
+        };
+
+        let res = pipeline.generate_thumbnail_bytes_with_budget(&bad_job);
+        assert!(res.is_err());
+        // 重要: エラーで脱出してもメモリ予算が確実に0に戻っていること
+        assert_eq!(pipeline.memory_budget_bytes.load(AtomicOrdering::SeqCst), 0);
+
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn test_active_low_guard_releases_on_drop() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Database::open_in_memory().unwrap();
+        let thumb_store = Arc::new(ThumbnailStore::open_in_memory().unwrap());
+        let pipeline = ThumbnailPipeline::new(db, thumb_store, temp_dir.path().to_path_buf());
+
+        assert_eq!(pipeline.active_low.load(AtomicOrdering::SeqCst), 0);
+
+        pipeline.active_low.fetch_add(1, AtomicOrdering::SeqCst);
+        assert_eq!(pipeline.active_low.load(AtomicOrdering::SeqCst), 1);
+
+        {
+            let _guard = ActiveLowGuard {
+                pipeline: &pipeline,
+                is_active: true,
+            };
+            assert_eq!(pipeline.active_low.load(AtomicOrdering::SeqCst), 1);
+        }
+
+        assert_eq!(pipeline.active_low.load(AtomicOrdering::SeqCst), 0);
+
+        pipeline.shutdown();
     }
 }

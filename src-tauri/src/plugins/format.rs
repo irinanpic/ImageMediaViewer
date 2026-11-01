@@ -5,7 +5,10 @@ use std::sync::{Arc, RwLock};
 
 use crate::pipeline::exif::ExtractedMetadata;
 use super::manifest::{InstalledPluginInfo, PluginActionDefinition, PluginManifest};
-use super::runtime::{discover_plugins, get_plugin_search_dirs, DynamicFormatPlugin};
+use super::runtime::{
+    discover_plugins, get_plugin_search_dirs, ArchiveEntryMeta, ArchivePlugin,
+    BuiltinZipArchivePlugin, DynamicFormatPlugin, ExternalCliArchivePlugin,
+};
 
 /// 画像フォーマット拡張プラグインインターフェース
 ///
@@ -66,10 +69,12 @@ pub struct ReloadResult {
     pub loaded_count: usize,
 }
 
-/// 画像フォーマットプラグイン管理レジストリ内部状態
+/// 画像フォーマットおよびアーカイブプラグイン管理レジストリ内部状態
 struct FormatPluginRegistryInner {
     plugins: HashMap<String, Arc<dyn ImageFormatPlugin>>,
     extension_map: HashMap<String, Arc<dyn ImageFormatPlugin>>,
+    archive_plugins: HashMap<String, Arc<dyn ArchivePlugin>>,
+    archive_extension_map: HashMap<String, Arc<dyn ArchivePlugin>>,
     actions: Vec<PluginActionDefinition>,
     manifests: Vec<PluginManifest>,
 }
@@ -124,6 +129,8 @@ impl FormatPluginRegistry {
             inner: RwLock::new(FormatPluginRegistryInner {
                 plugins: HashMap::new(),
                 extension_map: HashMap::new(),
+                archive_plugins: HashMap::new(),
+                archive_extension_map: HashMap::new(),
                 actions: Vec::new(),
                 manifests: Vec::new(),
             }),
@@ -143,7 +150,20 @@ impl FormatPluginRegistry {
         }
     }
 
-    /// 拡張子に対応するプラグインを取得する
+    /// アーカイブプラグインを手動登録する（テスト・内蔵用）
+    ///
+    /// @param plugin 登録するアーカイブプラグインインスタンス
+    pub fn register_archive(&self, plugin: Arc<dyn ArchivePlugin>) {
+        if let Ok(mut inner) = self.inner.write() {
+            let id = plugin.id().to_string();
+            for ext in plugin.supported_extensions() {
+                inner.archive_extension_map.insert(ext.to_ascii_lowercase(), Arc::clone(&plugin));
+            }
+            inner.archive_plugins.insert(id, plugin);
+        }
+    }
+
+    /// 拡張子に対応するフォーマットプラグインを取得する
     ///
     /// @param ext 拡張子（ピリオド有無・大小文字不問）
     /// @return 対応プラグインが存在すれば Some(Arc<dyn ImageFormatPlugin>)
@@ -151,6 +171,83 @@ impl FormatPluginRegistry {
         let clean = ext.trim().trim_start_matches('.').to_ascii_lowercase();
         let inner = self.inner.read().ok()?;
         inner.extension_map.get(&clean).cloned()
+    }
+
+    /// 拡張子に対応するアーカイブプラグインを取得する
+    ///
+    /// @param ext 拡張子（ピリオド有無・大小文字不問）
+    /// @return 対応アーカイブプラグインが存在すれば Some(Arc<dyn ArchivePlugin>)
+    pub fn get_archive_plugin_by_extension(&self, ext: &str) -> Option<Arc<dyn ArchivePlugin>> {
+        let clean = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+        let inner = self.inner.read().ok()?;
+        inner.archive_extension_map.get(&clean).cloned()
+    }
+
+    /// 指定ファイルパスが現在有効なアーカイブプラグインの対象であるか判定する
+    ///
+    /// @param path ファイルパス
+    /// @return 対応するアーカイブ形式であれば true
+    pub fn is_supported_archive_path(&self, path: &Path) -> bool {
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) => e,
+            None => return false,
+        };
+        self.get_archive_plugin_by_extension(ext).is_some()
+    }
+
+    /// 現在有効なアーカイブプラグインがサポートする拡張子一覧を取得する
+    ///
+    /// @return アーカイブ拡張子リスト（ソート済み・重複排除）
+    pub fn supported_archive_extensions(&self) -> Vec<String> {
+        if let Ok(inner) = self.inner.read() {
+            let mut exts: Vec<String> = inner.archive_extension_map.keys().cloned().collect();
+            exts.sort();
+            exts.dedup();
+            exts
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// アーカイブファイル内のエントリ一覧をプラグイン経由で取得する
+    ///
+    /// @param archive_path アーカイブファイルパス
+    /// @return エントリメタデータ一覧
+    pub fn list_archive_entries(&self, archive_path: &Path) -> Result<Vec<ArchiveEntryMeta>, String> {
+        let ext = archive_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .ok_or_else(|| format!("アーカイブの拡張子が不明です: {}", archive_path.display()))?;
+        let plugin = self.get_archive_plugin_by_extension(ext).ok_or_else(|| {
+            format!(
+                "対応するアーカイブプラグインが見つからないか無効化されています (.{})",
+                ext
+            )
+        })?;
+        plugin.list_entries(archive_path)
+    }
+
+    /// アーカイブ内の指定エントリの生バイト列をメモリ上へ直接抽出する
+    ///
+    /// @param archive_path アーカイブファイルパス
+    /// @param inner_path アーカイブ内相対パス
+    /// @return 抽出された生バイト列
+    pub fn extract_archive_entry(
+        &self,
+        archive_path: &Path,
+        inner_path: &str,
+    ) -> Result<Vec<u8>, String> {
+        let ext = archive_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .ok_or_else(|| format!("アーカイブの拡張子が不明です: {}", archive_path.display()))?;
+        let plugin = self.get_archive_plugin_by_extension(ext).ok_or_else(|| {
+            format!(
+                "対応するアーカイブプラグインが見つからないか無効化されています (.{})",
+                ext
+            )
+        })?;
+        plugin.extract_entry(archive_path, inner_path)
     }
 
     /// プラグインがサポートする追加拡張子一覧を取得する
@@ -173,7 +270,9 @@ impl FormatPluginRegistry {
     /// @return 有効であれば true
     pub fn is_plugin_enabled(&self, id: &str) -> bool {
         if let Ok(inner) = self.inner.read() {
-            inner.plugins.contains_key(id) || inner.manifests.iter().any(|m| m.id == id)
+            inner.plugins.contains_key(id)
+                || inner.archive_plugins.contains_key(id)
+                || inner.manifests.iter().any(|m| m.id == id)
         } else {
             false
         }
@@ -251,6 +350,26 @@ impl FormatPluginRegistry {
             })
             .collect();
 
+        // 内蔵 ZIP / CBZ アーカイブ閲覧プラグインが外部プラグインで上書きされていない場合は一覧に含める
+        if !list.iter().any(|p| p.id == "archive.zip") {
+            let builtin_zip = BuiltinZipArchivePlugin::new();
+            let enabled = is_plugin_enabled_by_patterns(builtin_zip.id(), enabled_plugins);
+            list.push(InstalledPluginInfo {
+                id: builtin_zip.id().to_string(),
+                name: builtin_zip.name().to_string(),
+                version: Some("1.0.0".to_string()),
+                description: Some(
+                    "ZIP / CBZ 圧縮アーカイブを展開せずに仮想フォルダとして高速閲覧・スライド再生します"
+                        .to_string(),
+                ),
+                extensions: builtin_zip.supported_extensions().to_vec(),
+                action_names: Vec::new(),
+                enabled,
+                path: "(built-in)".to_string(),
+                is_user_installed: false,
+            });
+        }
+
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
     }
@@ -259,7 +378,7 @@ impl FormatPluginRegistry {
     ///
     /// 変更理由: ユーザーが新しいプラグインフォルダを追加したり、設定画面でプラグインを有効化した際、
     /// 本体の再起動や再ビルドを不要にし、即座に拡張子監視とアクションを反映させるため。
-    /// ワイルドカード（"*" や "format.*"）および個別無効化（"!id"）による指定にも対応。
+    /// ワイルドカード（"*" や "format.*"、"archive.*"）および個別無効化（"!id"）による指定にも対応。
     ///
     /// @param enabled_plugins 有効化プラグインID一覧
     /// @param app_data_dir アプリケーションデータディレクトリ
@@ -272,8 +391,25 @@ impl FormatPluginRegistry {
 
         let mut new_plugins: HashMap<String, Arc<dyn ImageFormatPlugin>> = HashMap::new();
         let mut new_extension_map: HashMap<String, Arc<dyn ImageFormatPlugin>> = HashMap::new();
+        let mut new_archive_plugins: HashMap<String, Arc<dyn ArchivePlugin>> = HashMap::new();
+        let mut new_archive_extension_map: HashMap<String, Arc<dyn ArchivePlugin>> = HashMap::new();
         let mut new_actions: Vec<PluginActionDefinition> = Vec::new();
         let mut new_manifests: Vec<PluginManifest> = Vec::new();
+
+        // 1. 内蔵 ZIP / CBZ アーカイブプラグインの登録（有効化されている場合）
+        if is_plugin_enabled_by_patterns("archive.zip", enabled_plugins) {
+            let builtin_zip = Arc::new(BuiltinZipArchivePlugin::new());
+            for ext in builtin_zip.supported_extensions() {
+                new_archive_extension_map.insert(
+                    ext.to_ascii_lowercase(),
+                    Arc::clone(&builtin_zip) as Arc<dyn ArchivePlugin>,
+                );
+            }
+            new_archive_plugins.insert(
+                builtin_zip.id().to_string(),
+                builtin_zip as Arc<dyn ArchivePlugin>,
+            );
+        }
 
         for (id, (manifest, plugin_dir)) in discovered {
             if is_plugin_enabled_by_patterns(&id, enabled_plugins) {
@@ -291,8 +427,30 @@ impl FormatPluginRegistry {
                     }
                 }
 
-                // フォーマット抽出エンジンが存在する場合、DynamicFormatPlugin を生成
-                if manifest.extractor.is_some() {
+                let is_archive_manifest = manifest
+                    .plugin_type
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("archive"))
+                    .unwrap_or(false)
+                    || (manifest.archive_list_command.is_some()
+                        && manifest.archive_extract_command.is_some());
+
+                if is_archive_manifest {
+                    let archive_plugin =
+                        Arc::new(ExternalCliArchivePlugin::new(manifest.clone(), plugin_dir));
+                    for ext in archive_plugin.supported_extensions() {
+                        let clean_ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+                        if !clean_ext.is_empty() {
+                            new_archive_extension_map.insert(
+                                clean_ext,
+                                Arc::clone(&archive_plugin) as Arc<dyn ArchivePlugin>,
+                            );
+                        }
+                    }
+                    new_archive_plugins
+                        .insert(id, archive_plugin as Arc<dyn ArchivePlugin>);
+                } else if manifest.extractor.is_some() {
+                    // フォーマット抽出エンジンが存在する場合、DynamicFormatPlugin を生成
                     let dynamic_plugin = Arc::new(DynamicFormatPlugin::new(manifest.clone(), plugin_dir));
                     for ext in dynamic_plugin.supported_extensions() {
                         let clean_ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -310,7 +468,7 @@ impl FormatPluginRegistry {
         // アクションのソート（order昇順）
         new_actions.sort_by_key(|a| a.order.unwrap_or(50));
 
-        let loaded_count = new_plugins.len();
+        let loaded_count = new_plugins.len() + new_archive_plugins.len();
 
         let mut all_extensions: Vec<String> = new_extension_map.keys().cloned().collect();
         all_extensions.sort();
@@ -325,6 +483,8 @@ impl FormatPluginRegistry {
         if let Ok(mut inner) = self.inner.write() {
             inner.plugins = new_plugins;
             inner.extension_map = new_extension_map;
+            inner.archive_plugins = new_archive_plugins;
+            inner.archive_extension_map = new_archive_extension_map;
             inner.actions = new_actions;
             inner.manifests = new_manifests;
         }

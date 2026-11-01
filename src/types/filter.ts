@@ -10,6 +10,7 @@ import type { TagRecord } from "./generated/TagRecord";
 import type { TagWithCount } from "./generated/TagWithCount";
 import type { ImageTagAssignment } from "./generated/ImageTagAssignment";
 import type { SubfolderEntry } from "./generated/SubfolderEntry";
+import type { FolderTreeNode } from "./generated/FolderTreeNode";
 
 export type {
   TimelineFilter,
@@ -17,6 +18,7 @@ export type {
   TagWithCount,
   ImageTagAssignment,
   SubfolderEntry,
+  FolderTreeNode,
 };
 
 /**

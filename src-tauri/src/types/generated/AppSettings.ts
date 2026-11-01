@@ -25,4 +25,8 @@ enabled_plugins: Array<string>,
 /**
  * ユーザー定義のカスタムコンテキストメニュー項目（環境依存の詳細を含めないためデフォルトは空配列）
  */
-custom_context_menu_items: Array<CustomContextMenuItem>, };
+custom_context_menu_items: Array<CustomContextMenuItem>, 
+/**
+ * タイムライン一覧にアーカイブを複数画像スタック（積み重なりカード）として表示するか
+ */
+show_archive_stacks_in_timeline: boolean, };

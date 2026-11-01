@@ -2,7 +2,7 @@
   "id": "format.clipstudio",
   "name": "CLIP STUDIO PAINT (.clip) Support",
   "version": "1.0.0",
-  "description": "CLIP STUDIO PAINT形式（.clip）の内蔵プレビュー画像抽出およびアプリ連携プラグイン（本体分離バイナリ）",
+  "description": "CLIP STUDIO PAINT形式（.clip）のプレビュー画像抽出およびアプリ連携プラグイン",
   "extensions": [
     "clip"
   ],

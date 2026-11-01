@@ -150,13 +150,19 @@ pub async fn handle_thumb_protocol(
         }
     }
 
-    // 4. キャッシュ未存在の場合、原寸画像ファイルからオンデマンド生成
-    let file_path = Path::new(&source.file_path);
-    if !file_path.exists() {
+    // 4. キャッシュ未存在の場合、原寸画像ファイルまたはアーカイブ内エントリからオンデマンド生成
+    let file_exists = if let Some((archive_path, _)) = crate::plugins::split_archive_virtual_path(&source.file_path) {
+        Path::new(archive_path).exists()
+    } else {
+        Path::new(&source.file_path).exists()
+    };
+    if !file_exists {
         warn!("Thumbnail original file not found: path={}", source.file_path);
         return Ok(cors_response_builder(StatusCode::NOT_FOUND)
             .body(b"Original file not found".to_vec())?);
     }
+
+    let file_path = Path::new(&source.file_path);
 
     let success = state
         .thumb_pipeline
@@ -225,6 +231,48 @@ pub async fn handle_original_protocol(
                 .body(b"Image not found".to_vec())?);
         }
     };
+
+    // アーカイブ仮想パス（`<archive_path>!/<inner_path>`）の場合はプラグイン経由でメモリ上に直接抽出して返却
+    if let Some((archive_path_str, inner_path_str)) =
+        crate::plugins::split_archive_virtual_path(&file_path_str)
+    {
+        let archive_path = std::path::PathBuf::from(archive_path_str);
+        let inner_path = inner_path_str.to_string();
+        let state_clone = Arc::clone(&state);
+        let extract_res = tokio::task::spawn_blocking(move || {
+            let bytes = state_clone
+                .format_plugins
+                .extract_archive_entry(&archive_path, &inner_path)?;
+            if let Ok(sz) = imagesize::blob_size(&bytes) {
+                let conn = state_clone.db.writer();
+                let _ = crate::db::repo::update_image_dimensions_if_empty(
+                    &conn,
+                    image_id,
+                    sz.width as u32,
+                    sz.height as u32,
+                );
+            }
+            Ok::<Vec<u8>, String>(bytes)
+        })
+        .await?;
+
+        return match extract_res {
+            Ok(bytes) => {
+                let mime = get_mime_type(format.as_deref(), Path::new(inner_path_str));
+                Ok(cors_response_builder(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, mime)
+                    .body(bytes)?)
+            }
+            Err(e) => {
+                warn!(
+                    "Archive entry extraction failed: path={}, error={}",
+                    file_path_str, e
+                );
+                Ok(cors_response_builder(StatusCode::NOT_FOUND)
+                    .body(b"Archive entry not found".to_vec())?)
+            }
+        };
+    }
 
     let file_path = std::path::PathBuf::from(&file_path_str);
     let fp_clone = file_path.clone();

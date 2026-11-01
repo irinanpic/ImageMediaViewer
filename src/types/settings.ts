@@ -33,4 +33,6 @@ export interface AppSettings {
   enabled_plugins: string[];
   /** ユーザー定義のカスタムコンテキストメニュー項目 */
   custom_context_menu_items: CustomContextMenuItem[];
+  /** タイムライン一覧にアーカイブをスタック（積み重なりカード）として表示するか */
+  show_archive_stacks_in_timeline?: boolean;
 }

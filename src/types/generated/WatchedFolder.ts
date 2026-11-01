@@ -22,6 +22,10 @@ imageCount: number,
  */
 thumbCount: number, 
 /**
+ * サムネイル生成失敗数（パスワード保護ZIPや0バイト等）
+ */
+thumbFailedCount?: number, 
+/**
  * 状態
  */
 status: FolderStatus, };

@@ -8,9 +8,9 @@ use tracing::{info, warn};
 use crate::error::AppError;
 use crate::models::{
     Board, BoardItem, BoardNote, BookmarkRecord, CreateBoardNotePayload, CreateBoardPayload,
-    CreateBookmarkPayload, GetImagesPayload, ImageDetail, ImageRecord, ImageTagAssignment,
-    PlatformInfo, PresetFolder, SubfolderEntry, TagRecord, TagWithCount, ThumbProgress,
-    TimelineFilter, TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload,
+    CreateBookmarkPayload, FolderTreeNode, GetImagesPayload, ImageDetail, ImageRecord,
+    ImageTagAssignment, PlatformInfo, PresetFolder, SubfolderEntry, TagRecord, TagWithCount,
+    ThumbProgress, TimelineFilter, TimelineSummary, UpdateBoardItemPayload, UpdateBoardNotePayload,
     UpdateBoardPayload, WatchedFolder, WindowState,
 };
 use crate::pipeline::JobPriority;
@@ -304,21 +304,70 @@ pub async fn prefetch_thumbnails(
     Ok(())
 }
 
+/// アーカイブ仮想パス（`<archive_path>!/<inner_path>`）を外部アプリで開けるよう、必要に応じて一時ファイルへ抽出する
+///
+/// 変更理由: 外部ペイントソフトやOS既定アプリは `!/` を含む仮想パスを直接認識できないため、
+/// アーカイブ内画像に対してのみオンデマンドで `cache_dir/archive_preview_temp/` に1枚だけ一時展開して実パスを渡す。
+fn resolve_virtual_path_to_real_or_temp(
+    state: &AppState,
+    raw_path: &str,
+) -> Result<String, AppError> {
+    if let Some((archive_path_str, inner_path_str)) =
+        crate::plugins::split_archive_virtual_path(raw_path)
+    {
+        let bytes = state
+            .format_plugins
+            .extract_archive_entry(Path::new(archive_path_str), inner_path_str)
+            .map_err(|e| AppError::io(format!("アーカイブ内ファイルの抽出に失敗: {}", e)))?;
+
+        let temp_dir = state.cache_dir.join("archive_preview_temp");
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| AppError::io(format!("一時展開ディレクトリの作成に失敗: {}", e)))?;
+
+        let hash_prefix = &blake3::hash(raw_path.as_bytes()).to_hex()[..12];
+        let raw_file_name = inner_path_str
+            .rsplit('/')
+            .next()
+            .unwrap_or("preview.png");
+        let safe_name: String = raw_file_name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let temp_file = temp_dir.join(format!("{}_{}", hash_prefix, safe_name));
+        std::fs::write(&temp_file, &bytes)
+            .map_err(|e| AppError::io(format!("一時ファイルの書き出しに失敗: {}", e)))?;
+        Ok(temp_file.to_string_lossy().to_string())
+    } else {
+        Ok(raw_path.to_string())
+    }
+}
+
 /// OSのファイルマネージャ（エクスプローラ）で該当ファイルを表示
 ///
 /// 変更理由: 仕様書§2.2(F-12)「OSのファイルマネージャで該当ファイルを表示」
+/// アーカイブ仮想パス（`!/` を含む）の場合は親アーカイブファイルを選択状態で表示する。
 #[command]
 pub async fn reveal_in_file_manager(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     id: i64,
 ) -> Result<(), AppError> {
-    let path_str = {
+    let raw_path_str = {
         let conn = state.db.reader()?;
         crate::db::repo::get_image_file_info(&conn, id)?
             .map(|(p, _, _, _)| p)
             .ok_or_else(|| AppError::not_found("画像が見つかりません"))?
     };
+
+    let path_str = crate::plugins::split_archive_virtual_path(&raw_path_str)
+        .map(|(arch, _)| arch.to_string())
+        .unwrap_or(raw_path_str);
 
     #[cfg(target_os = "android")]
     {
@@ -450,7 +499,7 @@ pub async fn get_thumb_progress(state: State<'_, Arc<AppState>>) -> Result<Thumb
 }
 
 /// ウィンドウ状態設定ファイルのパスを取得
-fn get_window_state_path() -> PathBuf {
+pub fn get_window_state_path() -> PathBuf {
     if let Ok(appdata) = std::env::var("APPDATA") {
         return PathBuf::from(appdata)
             .join("com.imagemediaviewer.desktop")
@@ -464,9 +513,8 @@ fn get_window_state_path() -> PathBuf {
     PathBuf::from("window_state.json")
 }
 
-/// ウィンドウ状態を取得
-#[command]
-pub async fn get_window_state() -> Result<WindowState, AppError> {
+/// 同期的にウィンドウ状態を取得
+pub fn get_window_state_sync() -> Result<WindowState, AppError> {
     let path = get_window_state_path();
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(state) = serde_json::from_str::<WindowState>(&content) {
@@ -476,18 +524,29 @@ pub async fn get_window_state() -> Result<WindowState, AppError> {
     Ok(WindowState::default())
 }
 
-/// ウィンドウ状態を保存
-#[command]
-pub async fn save_window_state(state: WindowState) -> Result<(), AppError> {
+/// 同期的にウィンドウ状態を保存
+pub fn save_window_state_sync(state: &WindowState) -> Result<(), AppError> {
     let path = get_window_state_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let json = serde_json::to_string_pretty(&state)
+    let json = serde_json::to_string_pretty(state)
         .map_err(|e| AppError::internal(format!("ウィンドウ状態のシリアライズに失敗: {}", e)))?;
     std::fs::write(&path, json)
         .map_err(|e| AppError::internal(format!("ウィンドウ状態の保存に失敗: {}", e)))?;
     Ok(())
+}
+
+/// ウィンドウ状態を取得
+#[command]
+pub async fn get_window_state() -> Result<WindowState, AppError> {
+    get_window_state_sync()
+}
+
+/// ウィンドウ状態を保存
+#[command]
+pub async fn save_window_state(state: WindowState) -> Result<(), AppError> {
+    save_window_state_sync(&state)
 }
 
 /// ムードボード一覧を取得
@@ -1761,7 +1820,7 @@ pub async fn open_file_with_default_app(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    let target_path = if let Some(p) = path {
+    let raw_target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
         let conn = state.db.reader()?;
@@ -1771,6 +1830,8 @@ pub async fn open_file_with_default_app(
     } else {
         return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
     };
+
+    let target_path = resolve_virtual_path_to_real_or_temp(&state, &raw_target_path)?;
 
     #[cfg(target_os = "android")]
     {
@@ -1792,6 +1853,7 @@ pub async fn open_file_with_default_app(
 /// 変更理由: アクションプラグイン「フォルダで表示」のバックエンド処理。
 /// デスクトップ環境では対象ファイルを選択状態でエクスプローラーを開き、
 /// Android 環境では DocumentsContract またはファイルマネージャ用 Intent で該当フォルダを表示する。
+/// アーカイブ内画像（`!/` を含む）の場合は親アーカイブファイルを選択状態で表示する。
 ///
 /// @param app Tauri AppHandle
 /// @param state アプリケーション状態
@@ -1804,7 +1866,7 @@ pub async fn show_in_folder(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    let target_path = if let Some(p) = path {
+    let raw_target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
         let conn = state.db.reader()?;
@@ -1814,6 +1876,10 @@ pub async fn show_in_folder(
     } else {
         return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
     };
+
+    let target_path = crate::plugins::split_archive_virtual_path(&raw_target_path)
+        .map(|(arch, _)| arch.to_string())
+        .unwrap_or(raw_target_path);
 
     #[cfg(target_os = "android")]
     {
@@ -1874,7 +1940,7 @@ pub async fn execute_plugin_action(
     id: Option<i64>,
     path: Option<String>,
 ) -> Result<(), AppError> {
-    let target_path = if let Some(p) = path {
+    let raw_target_path = if let Some(p) = path {
         p
     } else if let Some(img_id) = id {
         let conn = state.db.reader()?;
@@ -1884,6 +1950,8 @@ pub async fn execute_plugin_action(
     } else {
         return Err(AppError::invalid_argument("パスまたは画像IDを指定してください"));
     };
+
+    let target_path = resolve_virtual_path_to_real_or_temp(&state, &raw_target_path)?;
 
     let action_def = state
         .format_plugins
@@ -2030,7 +2098,7 @@ pub async fn open_file_with_app(
     id: Option<i64>,
     file_path: Option<String>,
 ) -> Result<(), AppError> {
-    let target_path = if let Some(p) = file_path {
+    let raw_target_path = if let Some(p) = file_path {
         p
     } else if let Some(img_id) = id {
         let conn = state.db.reader()?;
@@ -2040,6 +2108,8 @@ pub async fn open_file_with_app(
     } else {
         return Err(AppError::invalid_argument("ファイルパスまたは画像IDを指定してください"));
     };
+
+    let target_path = resolve_virtual_path_to_real_or_temp(&state, &raw_target_path)?;
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -2112,6 +2182,12 @@ pub async fn trash_file(
             .ok_or_else(|| AppError::not_found("画像が見つかりません"))?;
         (p, h)
     };
+
+    if crate::plugins::split_archive_virtual_path(&file_path_str).is_some() {
+        return Err(AppError::invalid_argument(
+            "アーカイブ内の個別ファイルは直接ゴミ箱へ移動できません",
+        ));
+    }
 
     let target_path = std::path::PathBuf::from(&file_path_str);
 
@@ -2557,7 +2633,15 @@ pub fn copy_image_to_clipboard_core(
         ));
     };
 
-    if !resolved_path.exists() {
+    let resolved_path_str = resolved_path.to_string_lossy().to_string();
+    if let Some((archive_path, _)) = crate::plugins::split_archive_virtual_path(&resolved_path_str) {
+        if !Path::new(archive_path).exists() {
+            return Err(AppError::not_found(format!(
+                "親アーカイブファイルが存在しません: {}",
+                archive_path
+            )));
+        }
+    } else if !resolved_path.exists() {
         return Err(AppError::not_found(format!(
             "画像ファイルが存在しません: {}",
             resolved_path.display()
@@ -2575,8 +2659,17 @@ pub fn copy_image_to_clipboard_core(
             .and_then(|e| e.to_str())
             .unwrap_or("");
 
-        // 1. プラグイン対応フォーマット（.clip等）の場合はプラグインから内蔵プレビューバイト列を抽出してデコード
-        let dyn_img = if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
+        // 1. アーカイブ仮想パスの場合はメモリ上に直接抽出し、プラグイン形式または標準画像としてデコード
+        let dyn_img = if let Some((archive_path, inner_path)) =
+            crate::plugins::split_archive_virtual_path(&resolved_path_str)
+        {
+            let entry_bytes = state
+                .format_plugins
+                .extract_archive_entry(Path::new(archive_path), inner_path)
+                .map_err(|e| AppError::internal(format!("アーカイブ内画像の抽出に失敗: {}", e)))?;
+            image::load_from_memory(&entry_bytes)
+                .map_err(|e| AppError::internal(format!("アーカイブ内画像のデコードに失敗: {}", e)))?
+        } else if let Some(plugin) = state.format_plugins.get_by_extension(ext) {
             let (preview_bytes, _) = plugin
                 .extract_original_preview(&resolved_path)
                 .map_err(|e| AppError::internal(format!("プラグインプレビュー抽出失敗: {}", e)))?;
@@ -2665,6 +2758,188 @@ pub async fn get_subfolder_tree(
     let conn = state.db.reader()?;
     let entries = crate::db::repo::get_subfolder_tree(&conn, folder_id)?;
     Ok(entries)
+}
+
+/// 指定した監視フォルダ配下のディレクトリおよびアーカイブ仮想フォルダの再帰階層ツリーを取得するコマンド
+///
+/// 変更理由: サイドバー上で通常のサブフォルダとアーカイブファイル（.zip, .cbz 等）、および
+/// アーカイブ内のサブフォルダを統合された階層ツリーとして表示可能にするため。
+///
+/// @param state アプリケーション共有状態
+/// @param folder_id 監視フォルダID
+/// @return ルート直下の FolderTreeNode リスト
+#[command]
+pub async fn get_folder_hierarchy(
+    state: State<'_, Arc<AppState>>,
+    folder_id: i64,
+) -> Result<Vec<FolderTreeNode>, AppError> {
+    let state_clone = Arc::clone(&state);
+    tauri::async_runtime::spawn_blocking(move || {
+        let archive_exts = state_clone.format_plugins.supported_archive_extensions();
+        let conn = state_clone.db.reader()?;
+        let tree = crate::db::repo::get_folder_hierarchy(&conn, folder_id, &archive_exts)?;
+        Ok::<Vec<FolderTreeNode>, AppError>(tree)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("階層ツリー取得タスク失敗: {}", e)))?
+}
+
+/// アーカイブ（圧縮ファイル）をオンデマンドで走査し、内部画像をカタログDBへ一括インデックスするコア処理
+///
+/// 変更理由: 通常スキャン時にはアーカイブ内を展開せず、ユーザーがサイドバーで該当アーカイブを
+/// 選択した瞬間にのみセントラルディレクトリから O(1) で一覧取得＆自然順ソートして登録するため。
+/// 既に未変更のままインデックス済みの場合は 0ms で即座に既存件数を返す。
+pub fn open_archive_folder_core(
+    state: &Arc<AppState>,
+    folder_id: i64,
+    archive_path_param: &str,
+) -> Result<usize, AppError> {
+    // 1. 監視フォルダルートパスを取得し、archive_path_param が相対パスの場合も絶対パスへ解決
+    let root_path: String = {
+        let conn = state.db.reader()?;
+        conn.query_row(
+            "SELECT path FROM watched_folders WHERE id = ?1;",
+            rusqlite::params![folder_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| AppError::not_found("監視フォルダが見つかりません"))?
+    };
+
+    // もし "manga.zip!/sub" のように内部パスが付いていた場合はアーカイブ本体パスのみを取り出す
+    let raw_arch = archive_path_param
+        .split_once("!/")
+        .map(|(a, _)| a)
+        .unwrap_or(archive_path_param)
+        .trim();
+
+    let resolved_arch_path = {
+        let p = Path::new(raw_arch);
+        if p.is_absolute() && p.exists() {
+            normalize_path(&p.to_string_lossy())
+        } else {
+            let joined = Path::new(&root_path).join(raw_arch.trim_start_matches(['/', '\\']));
+            normalize_path(&joined.to_string_lossy())
+        }
+    };
+
+    let arch_path_obj = Path::new(&resolved_arch_path);
+    if !arch_path_obj.is_file() {
+        return Err(AppError::not_found(format!(
+            "アーカイブファイルが見つかりません: {}",
+            resolved_arch_path
+        )));
+    }
+
+    let meta = std::fs::metadata(arch_path_obj)
+        .map_err(|e| AppError::io(format!("アーカイブのメタデータ取得に失敗: {}", e)))?;
+    let archive_mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // 2. キャッシュヒット判定: アーカイブの mtime が変化しておらず既に登録済みなら 0ms で即座に件数を返す
+    {
+        let conn = state.db.reader()?;
+        if let Ok(Some(existing_count)) = crate::db::repo::get_indexed_archive_count_if_unchanged(
+            &conn,
+            folder_id,
+            &resolved_arch_path,
+            archive_mtime,
+        ) {
+            return Ok(existing_count);
+        }
+    }
+
+    // 3. アーカイブプラグインから内部エントリ一覧を取得（展開せずセントラルディレクトリのみ走査）
+    let entries = state
+        .format_plugins
+        .list_archive_entries(arch_path_obj)
+        .map_err(AppError::internal)?;
+
+    // 対応画像フォーマット（標準画像拡張子または有効なFormatPlugin拡張子）のみを抽出し、自然順（Natural Sort）でソート
+    let mut image_entries: Vec<crate::plugins::ArchiveEntryMeta> = entries
+        .into_iter()
+        .filter(|e| {
+            crate::scanner::walker::is_standard_image_extension(&e.extension)
+                || state.format_plugins.get_by_extension(&e.extension).is_some()
+        })
+        .collect();
+
+    image_entries.sort_by(|a, b| crate::plugins::compare_natural(&a.inner_path, &b.inner_path));
+
+    let now = chrono::Utc::now().timestamp();
+    let mut new_records = Vec::with_capacity(image_entries.len());
+
+    // taken_at もページ順序が崩れないよう archive_mtime をベースに保持する
+    for entry in &image_entries {
+        let virtual_path = format!("{}!/{}", resolved_arch_path, entry.inner_path);
+        let hash_input = format!(
+            "archive_v1:{}:{}:{}:{}",
+            resolved_arch_path, archive_mtime, entry.inner_path, entry.uncompressed_size
+        );
+        let quick_hash = blake3::hash(hash_input.as_bytes()).to_hex().to_string();
+
+        new_records.push(crate::db::repo::NewImageRecord {
+            folder_id,
+            file_path: virtual_path,
+            file_size: entry.uncompressed_size,
+            file_mtime: archive_mtime,
+            taken_at: entry.mtime_secs.unwrap_or(archive_mtime),
+            taken_at_source: 1,
+            width: None,
+            height: None,
+            orientation: 1,
+            format: Some(entry.extension.clone()),
+            quick_hash,
+            indexed_at: now,
+            source_url: None,
+        });
+    }
+
+    let inserted_count = {
+        let mut writer = state.db.writer();
+        crate::db::repo::upsert_archive_entries(
+            &mut writer,
+            folder_id,
+            &resolved_arch_path,
+            &new_records,
+        )?
+    };
+
+    state.bump_catalog_version();
+    state.init_thumb_progress();
+
+    Ok(inserted_count)
+}
+
+/// アーカイブ（圧縮ファイル）をオンデマンドで開き、内部画像をDBへインデックス登録するコマンド
+///
+/// @param app Tauri AppHandle
+/// @param state アプリケーション共有状態
+/// @param folder_id 監視フォルダID
+/// @param archive_path アーカイブのパス（相対パスまたは絶対パス）
+/// @return アーカイブ内の有効画像枚数
+#[command]
+pub async fn open_archive_folder(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    folder_id: i64,
+    archive_path: String,
+) -> Result<usize, AppError> {
+    let state_clone = Arc::clone(&state);
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        open_archive_folder_core(&state_clone, folder_id, &archive_path)
+    })
+    .await
+    .map_err(|e| AppError::internal(format!("アーカイブ展開タスク失敗: {}", e)))??;
+
+    let ver = state.current_catalog_version();
+    let _ = app.emit("catalog-changed", serde_json::json!({ "version": ver }));
+    state.emit_thumb_progress_throttled();
+
+    Ok(count)
 }
 
 /// 登録されている全タグ一覧（付与画像数付き）を取得するコマンド
